@@ -3,15 +3,20 @@
 [English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.md) |
 [简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)
 
+An **unofficial Apache RocketMQ client for .NET**.
+
+It provides **full client functionality** across RocketMQ 5 protobuf/gRPC and classic Remoting, covering Producer,
+Consumer, and Admin APIs as well as transactional, timed/delay, FIFO, and priority messages.
+
+Designed for **.NET 8 or later**, it integrates with **Microsoft dependency injection**, Generic Host, options, and
+logging, and provides a **modern, strongly typed API experience**.
+
 > **Start with the [runnable samples](samples/README.md).** Each sample directory explains its required
 > RocketMQ Broker or Proxy capabilities, resource setup, configuration, run command, and protocol caveats.
 
-An idiomatic Apache RocketMQ client for .NET. The current version supports .NET 8 or later and provides
-separate APIs for RocketMQ 5 protobuf/gRPC and classic Remoting.
-
 ## Features and status
 
-`✅` means the package implements the client API. Server-side capabilities and configuration still apply.
+`✅` means the corresponding client project implements the API. Server-side capabilities and configuration still apply.
 
 ### RocketMQ 5 gRPC
 
@@ -30,15 +35,10 @@ See the [gRPC guide](src/EventHorizon.RocketMQ.Grpc/README.md) and
 | Push consumer with FIFO message listener | ✅ | Each `MessageGroup` is processed in order. |
 | Push consumer with FIFO consume accelerator | ✅ | Independent message groups dispatch in parallel while preserving each group's order. |
 | Priority message | ✅ | Set `Message.Priority`. |
-
-#### Project-specific additions
-
-| Feature | Status | Notes |
-| --- | :---: | --- |
 | Lite Producer messages and LitePushConsumer | ✅ | LitePush requires a Proxy implementation of `SyncLiteSubscription`. |
 | Tag and SQL filtering | ✅ | SQL filtering requires the target server's filtering configuration. |
 | Runtime subscriptions, retry, and dead-letter handling | ✅ | Available through SimpleConsumer, PushConsumer, or LitePushConsumer as applicable. |
-| Dependency injection, options, logging, Generic Host lifecycle, and named/keyed profiles | ✅ | Register with `AddRocketMQGrpc`. |
+| Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQGrpc`. |
 
 gRPC Push and LitePush use client-initiated assignment and long polling; they are not protocol-level Broker push.
 
@@ -57,7 +57,7 @@ See the [Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md) and
 | LitePullConsumer | ✅ | Client-side polling, assignment, seek, pause/resume, and commit; clustered consumption only. |
 | POPConsumer | ✅ | Explicit queue selection, receipt acknowledgement, and invisibility renewal; normal topics only. |
 | PushConsumer | ✅ | Clustering or broadcasting, concurrent or FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
-| Dependency injection, options, logging, Generic Host lifecycle, and named/keyed profiles | ✅ | Register with `AddRocketMQRemoting`. |
+| Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQRemoting`. |
 
 Classic Push is also client-initiated long polling. SQL filtering requires Broker configuration, and POP requires a
 Broker that supports POP. Protocol-specific exceptions derive from the shared `RocketMQClientException` base type.
@@ -75,7 +75,7 @@ common exception type; applications normally receive it transitively.
 
 The protocols intentionally have independent registrations, options, interfaces, results, and exceptions.
 Use `AddRocketMQGrpc` for a Proxy-backed client and `AddRocketMQRemoting` for a classic NameServer-backed
-client. One host may install and use both packages through separate named profiles.
+client. One host may install and use both packages through independent client registrations.
 
 ## Repository
 

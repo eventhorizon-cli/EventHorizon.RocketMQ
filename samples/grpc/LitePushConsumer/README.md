@@ -35,31 +35,27 @@ role; configure LiteTopic names through `LiteTopics`, `SubscribeLiteAsync`, or
   RocketMQ 5.5.0 does not implement this service.
 - Every Broker that stores the parent topic must enable `enableLmq=true` and
   `enableMultiDispatch=true`.
-- Create the LITE parent topic with `message.type=LITE`, then bind the consumer group to that exact
-  parent topic with `lite.bind.topic`. The default resources can be provisioned as follows:
+- Use the dedicated LitePush environment. It enables the two Broker flags above, starts
+  `mqproxy -pm cluster` at `localhost:8081`, and automatically creates the LITE parent Topic and
+  Consumer Group that match this sample's defaults.
+- Stop any environment that already publishes host port `8081` before starting this one.
 
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-lite-manual -a +message.type=LITE
-
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-    -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-lite-push-sample \
-    --attributes +lite.bind.topic=rocketmq-dotnet-lite-manual
-  ```
-
-- The supplied RocketMQ 5.5.0 Compose environment supports this sample when started with its
-  checked-in configuration: it enables the two Broker flags above and starts `mqproxy -pm cluster`
-  at `localhost:8081`. It is not equivalent to the unsupported Broker-integrated Proxy mode.
-
-Start the supplied environment from the repository root:
+Start the dedicated environment from the repository root:
 
 ```shell
-docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 ```
+
+The completed `resource-init` service creates `rocketmq-dotnet-lite-manual` with `message.type=LITE` and binds
+`rocketmq-dotnet-grpc-lite-push-sample` to that parent Topic. `rocketmq-dotnet-lite-sample` remains the LiteTopic
+that this Consumer synchronizes when it starts.
+
+See the [LitePush environment guide](../../../test-environments/rocketmq-litepush/README.md) for the topology,
+persistence behavior, and local port limits.
 
 ## Run
 
-After provisioning the LITE parent topic and group, run from the repository root:
+After the environment is ready, run from the repository root:
 
 ```shell
 dotnet run --project samples/grpc/LitePushConsumer

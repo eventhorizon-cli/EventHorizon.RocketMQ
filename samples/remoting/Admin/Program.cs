@@ -23,6 +23,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
+// NamesrvAddr discovers routes; per-queue queries then connect directly to the selected Broker.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
 
 builder.Services.AddEndpointsApiExplorer();
@@ -44,6 +45,7 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
+// These endpoints only inspect existing state; they do not create resources, update offsets, or modify Broker state.
 app.MapGet("/topics/{topic}/queues", GetMessageQueuesAsync)
     .WithName("GetRemotingMessageQueues")
     .WithSummary("Discover writable message queues for a topic.")
@@ -125,6 +127,7 @@ static async Task<IResult> GetQueueOffsetsAsync(
     CancellationToken cancellationToken)
 {
     var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
+    // The default reads the committed maximum; false requests the Broker's in-flight maximum.
     var useCommittedOffset = committed ?? true;
 
     try
@@ -239,6 +242,8 @@ static async Task<IResult> ViewMessageAsync(
 
     try
     {
+        // OffsetMessageId embeds the target Broker endpoint, so this physical-message lookup bypasses
+        // NameServer routing.
         var message = await admin.ViewMessageAsync(topic, offsetMessageId, cancellationToken).ConfigureAwait(false);
         return Results.Ok(MessageViewResponse.From(message));
     }

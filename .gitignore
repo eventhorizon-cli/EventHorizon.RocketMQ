@@ -2,8 +2,10 @@
 # Created by https://www.toptal.com/developers/gitignore/api/csharp,visualstudio,visualstudiocode,jetbrains
 # Edit at https://www.toptal.com/developers/gitignore?templates=csharp,visualstudio,visualstudiocode,jetbrains
 
-# Optional Docker Compose bind mounts for the local RocketMQ test environment.
+# Optional Docker Compose bind mounts for local RocketMQ test environments.
 test-environments/rocketmq/data/
+test-environments/rocketmq-litepush/data/
+test-environments/rocketmq-multi-broker/data/
 
 ### Csharp ###
 ## Ignore Visual Studio temporary files, build results, and

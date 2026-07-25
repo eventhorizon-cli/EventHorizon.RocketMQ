@@ -1,0 +1,22 @@
+services:
+  volume-init:
+    volumes:
+      - ./data/nameserver-logs:/volumes/nameserver
+      - ./data/broker-logs:/volumes/broker-logs
+      - ./data/broker-store:/volumes/broker-store
+      - ./data/proxy-logs:/volumes/proxy-logs
+
+  nameserver:
+    volumes:
+      - ./data/nameserver-logs:/home/rocketmq/logs
+
+  broker:
+    volumes:
+      - ./broker.conf:/home/rocketmq/rocketmq-5.5.0/conf/broker-litepush.conf:ro
+      - ./data/broker-store:/home/rocketmq/store
+      - ./data/broker-logs:/home/rocketmq/logs
+
+  proxy:
+    volumes:
+      - ./proxy.json:/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json:ro
+      - ./data/proxy-logs:/home/rocketmq/logs

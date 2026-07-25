@@ -1,6 +1,6 @@
 # Remoting Pull Consumer 示例
 
-[English](README.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 此 Generic Host 使用 `IRemotingPullConsumer` 显式进行队列发现、位点读取、长轮询和 Broker 位点更新。当应用而非
 后台分发器需要选择队列和位点时，应以此为起点。
@@ -23,11 +23,11 @@
 
 ## Broker 和网络前置条件
 
-- 使用经典 Remoting NameServer 和 Broker。`NamesrvAddr` 不是 Proxy 端点：客户端从 NameServer 获取路由，进程
+- 使用 classic Remoting NameServer 和 Broker。`NamesrvAddr` 不是 Proxy 端点：客户端从 NameServer 获取路由，进程
   还必须能够访问每个公布的 Broker 地址。
 - 创建普通 topic `rocketmq-dotnet-manual`，并允许 group `remoting-sample-pull-consumer` 消费，或同时修改这两项
   设置。启用 ACL 的 Broker 还需要授予此 group 路由查询和消费权限。
-- 随附的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.md)适合在宿主机上运行此普通 topic 示例。
+- 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机上运行此普通 topic 示例。
   在仓库根目录准备默认资源：
 
 ```shell
@@ -56,5 +56,5 @@ dotnet run --project samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples
 - 新 group 默认使用 `End`，因此首次启动会跳过队列中已存在的消息。不符合预期时，请显式选择 `Beginning` 或
   `Timestamp`。
 - 这是手动队列和位点控制，并非自动 consumer group 分配。除非应用自行协调队列归属和位点写入，否则不要以同一
-  group 扩展多个实例。
-- 示例在记录收到的 batch 后提交位点。替换日志为业务处理时，只应在处理已完成或可安全重试后提交。
+  group 运行多个实例。
+- 示例在记录收到的 batch 后提交位点。替换日志为业务处理时，仅在处理完成，或重复执行仍然安全时提交。

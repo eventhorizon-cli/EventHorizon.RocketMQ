@@ -16,7 +16,7 @@
 namespace EventHorizon.RocketMQ.Grpc;
 
 /// <summary>
-/// Configures a RocketMQ 5 gRPC client profile.
+/// Configures a RocketMQ 5 gRPC client.
 /// </summary>
 public sealed class GrpcClientOptions : RocketMQClientOptions
 {

@@ -1,20 +1,71 @@
 # EventHorizon.RocketMQ.Remoting
 
-[English](README.md) |
-[简体中文](README.zh-CN.md)
+[English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
+[简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
 
-> **[请先阅读仓库总览和可运行示例](../../README.zh-CN.md)。** 其中包含跨协议功能矩阵和包选择说明。
+`EventHorizon.RocketMQ.Remoting` 是面向 .NET 8 及更高版本的非官方 Apache RocketMQ classic Remoting Project
+和 NuGet Package，并集成 Microsoft 依赖注入、Options、日志记录和 Generic Host 生命周期管理。
 
-`EventHorizon.RocketMQ.Remoting` 是 EventHorizon.RocketMQ 的经典 NameServer/Broker 协议实现，支持 .NET 8
-及以上，并集成 Microsoft 依赖注入、Options、日志记录和 Generic Host 生命周期管理。
+客户端先连接 RocketMQ NameServer，再根据路由信息发现 Broker 并直接建立连接。应用需要使用经典协议时，
+请使用该 Package；需要通过 Proxy 使用 RocketMQ 5 protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
 
-应用需要直接连接 RocketMQ NameServer 和 Broker 时，请使用该包；需要通过 Proxy 使用 RocketMQ 5
-protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
+> **请先阅读[仓库总览](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)和
+> [可运行示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.zh-CN.md)。**
+> 仓库总览说明两种协议各自支持的功能以及如何选择 Package；可运行示例展示各个客户端角色的实际接入方式。
+
+## 快速开始
+
+### 安装
+
+配置当前环境使用的 NuGet source，然后安装 Remoting Package：
+
+```shell
+dotnet add package EventHorizon.RocketMQ.Remoting
+```
+
+`EventHorizon.RocketMQ.Shared` 会作为传递依赖引入，无需单独安装。
+
+### 最小注册与使用
+
+通过 `AddRocketMQRemoting` 创建客户端注册，再通过 `AddRemotingProducer` 添加角色，并在端点中注入其协议专用接口。
+下面的 ASP.NET Core Minimal API 会在每次 `POST /messages` 请求时发送一条消息。
+
+```csharp
+using EventHorizon.RocketMQ.Producer;
+using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Producer;
+using Microsoft.AspNetCore.Builder;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
+{
+    options.NamesrvAddr = "nameserver-a:9876;nameserver-b:9876";
+});
+
+rocketMQ.AddRemotingProducer(options =>
+{
+    options.GroupName = "orders-producer";
+});
+
+var app = builder.Build();
+
+app.MapPost("/messages", async (IRemotingProducer producer, CancellationToken cancellationToken) =>
+{
+    return await producer.SendAsync(
+        new Message("orders", "hello"u8.ToArray()),
+        cancellationToken);
+});
+
+await app.RunAsync();
+```
+
+默认客户端注册通过常规参数注入或构造函数注入进行解析。同一客户端注册中的同一角色只能注册一次；重复的
+客户端注册与角色组合会在服务注册期间失败。
 
 ## 支持的功能
 
-`✅` 表示该包已实现客户端 API。目标 RocketMQ NameServer 和 Broker 仍必须支持并启用相应的服务端功能。
-`—` 表示经典 Remoting 包不提供该 API。
+`✅` 表示该 Project 已实现客户端 API。目标 RocketMQ NameServer 和 Broker 仍必须支持并启用相应的服务端功能。
 
 | 功能 | 状态 | 条件和说明 |
 | --- | :---: | --- |
@@ -29,49 +80,13 @@ protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
 | Producer 请求-响应 | ✅ | 应用网络必须允许 Broker 为响应所需的回调。 |
 | 只读 `IRemotingAdmin` | ✅ | 支持队列发现、通过 `OffsetMessageId` 查询物理消息，以及位点/时间查询。`ViewMessageAsync` 会直接连接 ID 中编码的 Broker 端点。 |
 | `IRemotingPullConsumer` | ✅ | 支持显式队列和位点，以及 tag 或 SQL 过滤。SQL 过滤要求目标 Broker 配置过滤能力。 |
-| `IRemotingLitePullConsumer` | ✅ | 支持集群自动或手动分配、客户端维护位点、提交、暂停、恢复和 seek。目前仅支持集群消费。 |
+| `IRemotingLitePullConsumer` | ✅ | 支持订阅后的自动分配，或通过 `AssignAsync` 手动分配；客户端维护位点、提交、暂停、恢复和 seek。目前仅支持集群消费。 |
 | `IRemotingPopConsumer` | ✅ | 支持手动选择物理队列、receipt 确认以及普通 topic POP 消息的可见期续租；Broker 必须支持 POP。 |
 | `IRemotingPushConsumer` | ✅ | 支持集群或广播消费、运行时订阅、可配置起始位点、并发或 FIFO 分发、重试、死信处理，以及 Broker 触发的重平衡或位点重置。 |
 | 队列有序 Push 消费 | ✅ | 使用可选的 Broker 队列锁实现有序消费；仅在目标 Broker 支持经典锁定流程时配置。 |
 | 内置 Socket 传输 | ✅ | 基于 `System.IO.Pipelines`，支持可选 TLS、多个 NameServer 地址、Broker 故障转移、ACL 签名、命名空间和可配置帧限制；不依赖 Bedrock Framework。 |
-| 依赖注入、Options、日志、Generic Host 生命周期以及命名/键控 profile | ✅ | 使用 `AddRocketMQRemoting` 注册 profile，再添加所需角色。 |
+| 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 创建客户端注册，再添加所需角色。 |
 | RocketMQ 5 Proxy gRPC 和 `SimpleConsumer` API | — | 需要通过 Proxy 使用 protobuf/gRPC API 时，请使用 `EventHorizon.RocketMQ.Grpc`。 |
-
-## 安装
-
-配置当前环境使用的包源，然后安装 Remoting 包：
-
-```shell
-dotnet add package EventHorizon.RocketMQ.Remoting --version 0.1.0-alpha.1
-```
-
-`EventHorizon.RocketMQ.Shared` 会作为传递依赖引入，无需单独安装。
-
-## 基本注册
-
-通过 `AddRocketMQRemoting` 注册各个客户端角色。Generic Host 会随应用程序启动和停止已注册角色。
-
-```csharp
-using Microsoft.Extensions.Hosting;
-using EventHorizon.RocketMQ.Remoting;
-
-var builder = Host.CreateApplicationBuilder(args);
-
-var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
-{
-    options.NamesrvAddr = "nameserver-a:9876;nameserver-b:9876";
-});
-
-rocketMQ.AddRemotingProducer(options =>
-{
-    options.GroupName = "orders-producer";
-});
-
-await builder.Build().RunAsync();
-```
-
-默认配置通过常规构造函数注入进行解析。同一配置中的同一角色只能注册一次；重复的
-`(profile, role)` 注册会在服务注册期间失败。
 
 ## 连接与安全
 
@@ -279,11 +294,11 @@ public sealed class OrderOffsets(IRemotingAdmin admin)
 ```
 
 当消费组没有已提交位点时，`GetConsumerOffsetAsync` 返回 `null`；Broker 未报告可用消息时，
-`GetEarliestMessageStoreTimeAsync` 返回 `null`。其余方法可查询队列最早位点、当前最大位点，或以 lower/upper
-边界按时间查找位点。
+`GetEarliestMessageStoreTimeAsync` 返回 `null`。其余方法可查询队列最早位点、当前最大位点，或按时间以
+`Lower`（下界）/`Upper`（上界）查找位点。
 
 `ViewMessageAsync` 可通过经典发送返回的物理 `RemotingSendResult.OffsetMessageId` 读取一条已存储消息。
-它不是 Producer 分配的 `MessageId`：其中编码了 Broker 端点和 commit log 位点。Admin 客户端会解析该端点并
+它不是 Producer 分配的 `MessageId`：其中编码了 Broker 端点和 CommitLog 位点。Admin 客户端会解析该端点并
 直接连接，因此应用网络必须能访问 ID 内嵌的 Broker 地址和端口；NameServer 的路由发现无法替代该连接。
 
 ```csharp
@@ -291,7 +306,7 @@ var sent = await producer.SendAsync(new Message("orders", "receipt"u8.ToArray())
 var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancellationToken);
 ```
 
-可运行的 HTTP 和 Swagger 接口请参阅[Remoting Admin 示例](../../samples/remoting/Admin/README.zh-CN.md)。
+可运行的 HTTP 和 Swagger 接口请参阅[Remoting Admin 示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/Admin/README.zh-CN.md)。
 
 ## PullConsumer
 
@@ -401,7 +416,7 @@ Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长�
 消息，并确认每条 Broker 签发的 receipt。它不执行后台分配或自动分发；未确认的消息会在 receipt 可见期
 到期后由 Broker 重新投递。
 
-经典 Broker 的单次 POP 最多接受 32 条消息；`BatchSize` 和每次调用的 `maxMessages` 参数都会执行该限制。
+经典 Broker 的单次 POP 最多接受 32 条消息；`BatchSize` 和每次调用的 `maxMessages` 参数均受该上限限制。
 
 ```csharp
 using EventHorizon.RocketMQ.Consumer;
@@ -439,8 +454,8 @@ public sealed class OrderPopper(IRemotingPopConsumer consumer)
 ```
 
 处理需要更长时间时，应在当前可见期到期前调用 `ChangeInvisibleTimeAsync`；它会返回新的 receipt，后续确认
-必须使用该新 receipt。初始 API 仅支持直接的普通物理 topic checkpoint，刻意不提供自动分配、广播模式、
-有序 POP、批量确认或 retry/logical topic checkpoint 处理。
+必须使用该新 receipt。该初始 API 仅支持普通物理 topic 的直接 checkpoint，并有意不提供自动分配、广播模式、
+有序 POP、批量确认，以及 retry/logical topic 的 checkpoint 处理。
 
 POP 命令码超出了 RocketMQ 可选二进制 command-header 格式保留的有符号 16 位 code 字段。已注册的默认
 序列化器使用 JSON，POP 必须使用它；不要为该角色替换为 `RocketMQ` 二进制 header 序列化器。
@@ -477,10 +492,10 @@ public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 ```
 
 返回 `Success` 可提交消息，返回 `Retry` 可请求 Broker 重新投递，返回 `DeadLetter` 会将消息发送到
-死信队列。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳并协调当前队列接收器。
-泛型注册会为当前 client profile 选择处理程序生命周期：`Singleton` 会为每个 profile/role 创建一个实例，
-且必须线程安全；`Scoped` 和 `Transient` 会为每次处理尝试在新的异步服务 scope 中解析处理程序。
-`MessageHandler` 委托仍适合简单的无状态回调，但不能与 typed handler 同时配置。
+死信队列。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。
+泛型注册会为当前客户端注册选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，
+且必须线程安全；`Scoped` 和 `Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。
+`MessageHandler` 委托仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
 
 ### 队列有序消费
 
@@ -501,11 +516,11 @@ rocketMQ.AddRemotingPushConsumer(options =>
 正常停止后释放锁。返回 `Retry` 会在本地暂停当前队列，后续消息不会越过它；返回 `DeadLetter` 会先将
 当前消息发送回 Broker，再推进队列。广播模式也会保持每个本地队列的串行处理，但不会获取 Broker 锁。
 
-`ConsumeOrderly` 与 Producer 的 `MessageGroup` 不同。 `MessageGroup` 提供稳定的生产端队列亲和性
+`ConsumeOrderly` 与 Producer 的 `MessageGroup` 不同。`MessageGroup` 提供稳定的生产端队列亲和性
 和本地 FIFO 分发，但不会获取经典 Broker 队列锁。
 
-队列锁仍是至少一次语义。若处理程序在锁丢失后继续执行，其外部副作用仍可能与新的锁持有者重叠，
-因此有序处理程序必须保持幂等。
+队列锁仍是至少一次语义。若 handler 在锁丢失后继续执行，其外部副作用仍可能与新的锁持有者重叠，
+因此有序 handler 必须保持幂等。
 
 新消费组默认从末尾开始。当消费组没有已提交位点时，可配置其他起点：
 
@@ -532,9 +547,10 @@ options.LocalOffsetStorePath = Path.Combine(
 如果默认客户端标识在不同启动之间会变化，请使用稳定且特定于实例的路径。广播模式没有消费组拥有的
 重试或死信队列，因此 `Retry` 和 `DeadLetter` 结果会被丢弃，本地位点仍会向前推进。
 
-## 命名配置与生命周期
+## 多客户端配置与 keyed service
 
-同一应用连接多个集群或需要同一角色的多个实例时，请使用命名配置。配置名称就是 .NET 键控服务的键。
+同一应用连接多个集群或需要同一角色的多个实例时，请使用 keyed 客户端注册。注册名称即
+`registrationName`；该 `registrationName` 同时作为 keyed service 的 key。
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -554,12 +570,12 @@ public sealed class AuditPublisher(
 }
 ```
 
-每个配置和角色分别拥有独立的传输与生命周期。从独立 `ServiceProvider` 而不是 Generic Host 解析
+每个客户端注册和角色分别拥有独立的传输与生命周期。从独立 `ServiceProvider` 而不是 Generic Host 解析
 客户端时，请显式调用 `StartAsync` 和 `StopAsync`。
 
 ## 兼容性与异常
 
-- 该包直接连接经典 NameServer 和 Broker 端点，不会连接 RocketMQ Proxy。
+- 该 Project 直接连接经典 NameServer 和 Broker 端点，不会连接 RocketMQ Proxy。
 - `IRemotingProducer` 独立实现经典 half-message 事务、延迟消息撤回和请求-响应；它们的 wire contract
   和服务端兼容性与 gRPC Producer API 各自独立。
 - PullConsumer、LitePullConsumer、POPConsumer 和 PushConsumer 在适用时都使用 Broker 长轮询。
@@ -567,7 +583,7 @@ public sealed class AuditPublisher(
   可见 receipt；PushConsumer 还会执行自动分发，并支持经典 Broker 回调兼容。
 - POP 使用 RocketMQ 5 Broker 引入的经典 `POP_MESSAGE`、确认和可见期变更命令。它要求 JSON 命令序列化，
   因为这些请求码超出了可选二进制 command-header 格式的有符号 16 位 code 字段。
-- 随附的集成测试环境使用 Apache RocketMQ 5.5.0。SQL 过滤、TLS、ACL、优先级和 Lite 消息等能力
+- 本仓库提供的本地 Docker Compose 测试环境使用 Apache RocketMQ 5.5.0。SQL 过滤、TLS、ACL、优先级和 Lite 消息等能力
   仍取决于目标集群配置和服务端支持。
 - `RemotingCommandException` 表示 NameServer 或 Broker 拒绝了命令，并保留原始 `ResponseCode`；
   它继承 `RocketMQClientException`，可用于协议无关的异常处理。
@@ -584,7 +600,7 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 ```
 
 Remoting 客户端使用 `localhost:9876` 的 NameServer。通过
-[环境说明](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/rocketmq/README.md)
+[环境说明](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/rocketmq/README.zh-CN.md)
 中的命令创建主题和消费组，然后移除环境：
 
 ```shell

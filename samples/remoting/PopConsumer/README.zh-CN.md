@@ -1,9 +1,9 @@
 # Remoting POP Consumer 示例
 
-[English](README.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-此 Generic Host 使用 `IRemotingPopConsumer` 显式选择物理队列，并通过 receipt 消费 POP 消息。它在发现到的队列
-之间轮转，处理每条返回消息，然后确认其 Broker receipt。
+此 Generic Host 使用 `IRemotingPopConsumer` 显式选择物理队列，并以 receipt 为凭据接收 POP 消息。它会轮流处理
+已发现队列中的返回消息，并确认 Broker 返回的 receipt。
 
 ## 公共角色和默认配置
 
@@ -23,12 +23,12 @@
 
 ## Broker 和网络前置条件
 
-- 使用支持 `POP_MESSAGE`、确认和可见期变更命令的 RocketMQ 5 时代经典 Broker。仅有 NameServer 并不足够，配置的
+- 使用 RocketMQ 5 的经典 Broker，并确保其支持 `POP_MESSAGE`、确认和可见期变更命令。仅有 NameServer 并不足够，配置的
   `NamesrvAddr` 也不是 Proxy 端点。
 - 进程必须能访问 NameServer 和路由发现返回的 Broker 地址。
 - 创建普通 topic `rocketmq-dotnet-manual`，并允许 group `remoting-sample-pop-consumer`，或同时修改这两项设置。
   启用 ACL 时，为此 group 授予路由查询、POP、确认和可见期变更权限。
-- 随附的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.md)运行 RocketMQ 5.5.0，适合在宿主机运行
+- 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)运行 RocketMQ 5.5.0，适合在宿主机运行
   此普通 topic POP 示例。在仓库根目录准备默认资源：
 
 ```shell
@@ -39,7 +39,8 @@ docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin
   -n nameserver:9876 -c DefaultCluster -g remoting-sample-pop-consumer
 ```
 
-随附 Broker 会公布宿主机可访问的地址。在另一容器或网络中运行应用时，请替换 `localhost:9876` 和 Broker 公布地址。
+此环境的 Broker 会公布宿主机可访问的地址。在其他容器或网络中运行应用时，请改为配置该环境可访问的 NameServer
+和 Broker 公布地址。
 
 ## 运行
 
@@ -47,13 +48,13 @@ docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin
 dotnet run --project samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj
 ```
 
-Host 会持续运行直到 Ctrl+C。使用 Remoting Producer 示例或其他 Producer 向 topic 添加消息。
+应用会持续运行，直到按下 Ctrl+C。使用 Remoting Producer 示例或其他 Producer 向 topic 添加消息。
 
 ## 重要行为
 
 - POP 由客户端发起。该示例一次手动选择一个物理队列，不提供后台队列分配、消息分发或自动确认。
 - 每条返回消息都带有 receipt。必须在其可见期到期前确认；否则消息会重新具备投递资格。耗时较长的业务必须在到期前
-  调用 `ChangeInvisibleTimeAsync`，并确认它返回的**替换 receipt**。
-- 示例在记录日志后立即确认，因为日志记录是它的全部处理步骤。应将该位置替换为成功的业务处理，并按重复投递可能发生
-  的前提设计业务。
+  调用 `ChangeInvisibleTimeAsync`，并确认它新返回的 receipt。
+- 示例在记录日志后立即确认，因为日志记录是它的全部处理步骤。应将该位置替换为成功的业务处理；业务逻辑应能容忍
+  重复投递。
 - POP 不是 PushConsumer 的变体。它直接暴露 receipt 生命周期和物理队列，因此扩展方式和队列所有权仍由应用负责。

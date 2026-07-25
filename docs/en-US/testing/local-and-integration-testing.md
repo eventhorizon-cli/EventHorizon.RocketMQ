@@ -4,7 +4,7 @@
 
 ## Context
 
-The two client packages have different runtime dependencies. A gRPC integration path requires a
+The two client projects have different runtime dependencies. A gRPC integration path requires a
 working RocketMQ Proxy; a Remoting integration path requires a NameServer, reachable Broker routes,
 and a classic Broker transport. Unit tests cannot establish those guarantees, while a permanently
 running local cluster makes automated tests less isolated and harder to reproduce.
@@ -20,8 +20,8 @@ Unit tests
     -> deterministic collaborators, no RocketMQ network
 
 Integration tests
-    -> shared Testcontainers fixture
-    -> isolated NameServer + Broker + cluster Proxy
+    -> protocol-isolated Testcontainers fixtures
+    -> single-Broker baseline and three-Broker route coverage
     -> protocol-specific integration test assemblies
 
 Manual samples
@@ -30,14 +30,14 @@ Manual samples
 ```
 
 The shared Testcontainers project is infrastructure, not another protocol client. It must not
-reference either production protocol package. The gRPC and Remoting integration-test assemblies
+reference either production protocol project. The gRPC and Remoting integration-test assemblies
 reference it and keep their assertions protocol-specific.
 
 ## How It Works
 
 ### Unit tests
 
-The production packages have matching unit-test projects:
+The production projects have matching unit-test projects:
 
 - [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests)
 - [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests)
@@ -62,6 +62,18 @@ manual Compose ports. The protocol-specific test projects are:
 - [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests)
 - [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests)
 
+The multi-Broker fixtures complement the baseline fixture:
+
+- [`RocketMQMultiBrokerRemotingContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerRemotingContainerFixture.cs)
+  starts a NameServer and three host-reachable master Brokers. The Remoting test requires a complete route for
+  `broker-a`, `broker-b`, and `broker-c`, then sends to an explicit queue on each Broker.
+- [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
+  starts a NameServer, three master Brokers, and a cluster-mode Proxy on an isolated Docker network. The gRPC test
+  sends through the Proxy and confirms that every Broker has stored messages.
+
+The fixtures create the test topic on each Broker with `mqadmin updateTopic -b` and wait for the complete route.
+Do not assume that `updateTopic -c DefaultCluster` creates a topic on every master Broker.
+
 Run the relevant project when a change affects live Proxy, Broker, NameServer, wire transport, or
 interoperability behavior:
 
@@ -75,9 +87,12 @@ them.
 
 ### Manual Compose environment
 
-`test-environments` groups self-contained manual Compose stacks. Its current
-[`rocketmq`](../../../test-environments/rocketmq) environment is designed for people running the samples or
-inspecting a local cluster. It exposes stable loopback endpoints:
+`test-environments` groups self-contained manual Compose stacks. Choose
+[`rocketmq`](../../../test-environments/rocketmq) for general single-Broker samples,
+[`rocketmq-litepush`](../../../test-environments/rocketmq-litepush) for the self-initializing LitePush sample, and
+[`rocketmq-multi-broker`](../../../test-environments/rocketmq-multi-broker) for manual three-Broker route inspection.
+
+The single-Broker environment exposes stable loopback endpoints:
 
 | Client path | Local endpoint |
 | --- | --- |
@@ -91,10 +106,9 @@ By default, Docker named volumes keep logs and message data across `docker compo
 optional host-volume override stores the same data under `test-environments/rocketmq/data` for
 inspection.
 
-The [local environment guide](../../../test-environments/rocketmq/README.md) describes startup,
-resource preparation, persistence, reset behavior, and LitePush-specific setup. The
-[samples index](../../../samples/README.md) links each runnable project to its exact Broker or
-Proxy requirements.
+The [test-environment index](../../../test-environments/README.md) explains the purpose, ports, and startup
+constraints of each stack. The [samples index](../../../samples/README.md) links each runnable project to its exact
+Broker or Proxy requirements.
 
 ## Trade-offs and Constraints
 
@@ -104,15 +118,13 @@ Proxy requirements.
   behavior that actually crosses the transport boundary.
 - Compose is intentionally manual and persistent by default. It is useful for learning and samples,
   but it is not a replacement for isolated integration-test fixtures.
-- The local 5.5.0 Proxy supports the gRPC paths documented by the samples, including LitePush with
-  the required parent topic and group configuration. It does not turn every protobuf RPC declared
-  upstream into an available server feature.
-- Configuration changes to the Compose stack require validating the rendered configuration with
-  `docker compose -f test-environments/rocketmq/compose.yaml config --quiet`.
+- The dedicated LitePush environment creates the required parent topic and consumer group during Compose startup.
+  It does not turn every protobuf RPC declared upstream into an available server feature.
+- Configuration changes require validating the rendered Compose file for the affected environment.
 
 ## Related Reading
 
-- [Local RocketMQ environment guide](../../../test-environments/rocketmq/README.md)
+- [Test-environment index](../../../test-environments/README.md)
 - [Runnable samples](../../../samples/README.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)

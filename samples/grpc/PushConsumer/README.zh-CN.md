@@ -38,10 +38,10 @@ Producer 示例的默认 tag 为 `sample`，因此其默认消息会匹配此订
     -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-push-sample
   ```
 
-- 随附的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持该标准 PushConsumer 路径。其 Broker 开启了
+- 本仓库提供的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持该标准 PushConsumer 路径。其 Broker 开启了
   自动建 topic 和 subscription group；生产部署通常仍应显式准备这些资源。
 
-在仓库根目录启动随附环境：
+在仓库根目录启动本仓库提供的环境：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait

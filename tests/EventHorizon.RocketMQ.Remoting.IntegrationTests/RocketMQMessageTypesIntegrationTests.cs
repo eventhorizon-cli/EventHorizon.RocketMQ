@@ -37,7 +37,7 @@ public sealed class RocketMQMessageTypesIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task NamedProfileCombinesRemotingDelayProducerAndConsumer()
+    public async Task KeyedClientRegistrationCombinesRemotingDelayProducerAndConsumer()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var tag = $"delay-{Guid.NewGuid():N}";

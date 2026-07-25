@@ -1,0 +1,34 @@
+services:
+  volume-init:
+    volumes:
+      - ./data/nameserver-logs:/volumes/nameserver
+      - ./data/broker-a-logs:/volumes/broker-a-logs
+      - ./data/broker-a-store:/volumes/broker-a-store
+      - ./data/broker-b-logs:/volumes/broker-b-logs
+      - ./data/broker-b-store:/volumes/broker-b-store
+      - ./data/broker-c-logs:/volumes/broker-c-logs
+      - ./data/broker-c-store:/volumes/broker-c-store
+      - ./data/proxy-logs:/volumes/proxy-logs
+
+  nameserver:
+    volumes:
+      - ./data/nameserver-logs:/home/rocketmq/logs
+
+  broker-a:
+    volumes:
+      - ./data/broker-a-store:/home/rocketmq/store
+      - ./data/broker-a-logs:/home/rocketmq/logs
+
+  broker-b:
+    volumes:
+      - ./data/broker-b-store:/home/rocketmq/store
+      - ./data/broker-b-logs:/home/rocketmq/logs
+
+  broker-c:
+    volumes:
+      - ./data/broker-c-store:/home/rocketmq/store
+      - ./data/broker-c-logs:/home/rocketmq/logs
+
+  proxy:
+    volumes:
+      - ./data/proxy-logs:/home/rocketmq/logs

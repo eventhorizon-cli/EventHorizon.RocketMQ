@@ -1,4 +1,4 @@
-# Dependency-Injection Profiles and Lifetimes
+# Dependency-Injection Client Registrations and Lifetimes
 
 [English](dependency-injection-and-lifetimes.md) | [Simplified Chinese](../../zh-CN/architecture/dependency-injection-and-lifetimes.md)
 
@@ -7,7 +7,7 @@
 A RocketMQ role is not a lightweight request object. Producers can own route and telemetry state;
 consumers own subscriptions, background receive work, acknowledgement state, and shutdown logic.
 An application can also need more than one independent RocketMQ configuration, for example a
-default profile and an audit profile.
+default client registration and an audit keyed client registration.
 
 The client must compose those resources through the application's existing `IServiceCollection`
 without constructing a hidden `ServiceProvider`, while still allowing a push handler to depend on
@@ -15,36 +15,37 @@ scoped application services such as a database context.
 
 ## Decision
 
-Each protocol registers an explicit client profile:
+Each protocol adds an explicit client registration:
 
 ```text
 IServiceCollection
   |
   +-- AddRocketMQGrpc(...) or AddRocketMQRemoting(...)
         |
-        +-- profile options
+        +-- client registration options
         +-- one or more protocol-specific roles
         +-- a role-specific transport graph
         +-- hosted start/stop integration
 ```
 
-The default overload registers unkeyed services. The keyed overload creates a named profile whose
-roles are resolved with the same key through .NET keyed services. gRPC starts at
+The default overload adds a default client registration and exposes unkeyed services. The keyed overload adds a
+keyed client registration. Its registration name is also used as the .NET keyed-service key when resolving its roles.
+gRPC starts at
 [`AddRocketMQGrpc`](../../../src/EventHorizon.RocketMQ.Grpc/GrpcRocketMQServiceCollectionExtensions.cs);
 Remoting starts at
 [`AddRocketMQRemoting`](../../../src/EventHorizon.RocketMQ.Remoting/RemotingRocketMQServiceCollectionExtensions.cs).
 
-Each profile exposes only its protocol-specific roles. For example, a gRPC profile can add
+Each client registration exposes only its protocol-specific roles. For example, a gRPC client registration can add
 `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, or `IGrpcLitePushConsumer`; a
-Remoting profile can add `IRemotingProducer`, `IRemotingAdmin`, Pull, LitePull, POP, or Push roles.
+Remoting client registration can add `IRemotingProducer`, `IRemotingAdmin`, Pull, LitePull, POP, or Push roles.
 There is no common `IProducer` or `IConsumer` registration.
 
 ## How It Works
 
-### Profiles and roles
+### Client registrations and roles
 
-Profile configuration is named options. The registration code validates the connection settings and
-then derives a logical client name for every role. A role is registered only once per profile; a
+Each client registration has its own named options configuration. The registration code validates the connection
+settings and then derives a logical client name for every role. A role is registered only once per client registration; a
 second registration of the same role fails early rather than accidentally sharing a lifecycle.
 
 The role registration helpers are transport-local:
@@ -86,7 +87,7 @@ shutdown work.
 ### Push-handler lifetimes
 
 The generic Push registration overloads accept a handler type and a `ServiceLifetime`. The factory
-registration is keyed to the profile so handlers cannot cross profile boundaries.
+registration is keyed to the internal role key, so handlers cannot cross client-registration boundaries.
 
 | Handler lifetime | Resolution behavior |
 | --- | --- |
@@ -102,12 +103,12 @@ does not create an application DI scope for the caller.
 
 ## Trade-offs and Constraints
 
-- A profile may have one registration of each role. Use another named/keyed profile when the
-  application needs a second independent instance of the same role.
+- A client registration may add each role once. Add another keyed client registration when the application needs a
+  second independent instance of the same role.
 - A singleton handler must not capture a scoped dependency. Choose `Scoped` when a message operation
   uses scoped services, and keep the handler's work bounded by the delivery cancellation token.
-- A keyed service is an application-level profile identifier, not a RocketMQ Broker feature. It can
-  point to the same cluster or to a different cluster.
+- A registration name identifies an application-level keyed client registration, not a RocketMQ Broker feature. It can
+  point to the same cluster or to a different cluster and is also used as the .NET keyed-service key.
 - The registration APIs intentionally do not call `BuildServiceProvider`. The application's final
   host owns validation, construction, scopes, and disposal.
 - Do not promote a consumer engine to a shared global service just to avoid a constructor parameter.
@@ -118,4 +119,4 @@ does not create an application DI scope for the caller.
 - [Protocol boundaries and dependencies](protocol-boundaries.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
-- [Keyed profile examples](../../../samples/README.md#producer-web-api-and-swagger)
+- [Keyed client-registration examples](../../../samples/README.md#producer-web-api-and-swagger)

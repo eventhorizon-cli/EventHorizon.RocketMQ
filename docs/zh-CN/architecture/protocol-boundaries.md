@@ -1,4 +1,4 @@
-# 协议边界：把 gRPC 和经典 Remoting 当作两个客户端
+# 协议边界：把 gRPC 和 classic Remoting 当作两个客户端
 
 [English](../../en-US/architecture/protocol-boundaries.md) | [简体中文](protocol-boundaries.md)
 
@@ -12,7 +12,7 @@ RocketMQ 5 的 protobuf/gRPC 客户端连接的是 Proxy；经典客户端则先
 
 早期把两条路径放在一个“通用客户端”之下看似方便，却会产生误导：一个在经典 Broker 中可用的队列、
 位点或回调 API，未必在 Proxy API 中有对应的服务端实现。反过来，gRPC 的 receipt、不可见时间和
-telemetry 也不应被伪装成经典 Remoting 的类型。
+telemetry 也不应被伪装成 classic Remoting 的类型。
 
 ## 决策
 
@@ -27,11 +27,11 @@ EventHorizon.RocketMQ.Remoting ┘
 - `EventHorizon.RocketMQ.Grpc` 和 `EventHorizon.RocketMQ.Remoting` 只依赖 Shared，彼此不引用。
 - Shared 只保存真正协议无关的概念：`Message`、过滤表达式、`ConsumeResult`、`QueryOffsetPolicy`、
   公共选项基类与 `RocketMQClientException`。
-- 每个协议包自行定义 Producer、Consumer、结果、状态、队列模型、选项、注册方法和异常类型。
+- 每个协议 Project 自行定义 Producer、Consumer、结果、状态、队列模型、配置选项、注册方法和异常类型。
 - 应用显式选择 `AddRocketMQGrpc` 或 `AddRocketMQRemoting`；没有隐藏的 transport selector，也没有
   传输无关的 `IProducer` 或 `IConsumer`。
 
-这种设计允许一个 Host 同时安装两个包，但要求调用方明确知道每个实例连接的是 Proxy 还是
+这种设计允许一个 Host 同时安装两个 Package，但要求调用方明确知道每个实例连接的是 Proxy 还是
 NameServer/Broker。
 
 ## 如何工作
@@ -53,7 +53,7 @@ Shared 不是“以后再把所有类型放进来的公共文件夹”。只有�
 
 ### gRPC 的公开角色以 Proxy 能力为准
 
-gRPC 包公开 `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer` 和
+gRPC Project 公开 `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer` 和
 `IGrpcLitePushConsumer`。它们位于
 [`src/EventHorizon.RocketMQ.Grpc`](../../../src/EventHorizon.RocketMQ.Grpc)，并通过 `Endpoint` 连接
 RocketMQ Proxy。
@@ -64,7 +64,7 @@ RocketMQ Proxy。
 
 ### Remoting 保留经典角色，而不是模拟 gRPC
 
-Remoting 包公开的角色包括 `IRemotingAdmin`、`IRemotingProducer`、`IRemotingPullConsumer`、
+Remoting Project 公开的角色包括 `IRemotingAdmin`、`IRemotingProducer`、`IRemotingPullConsumer`、
 `IRemotingLitePullConsumer`、`IRemotingPopConsumer` 和 `IRemotingPushConsumer`。它们位于
 [`src/EventHorizon.RocketMQ.Remoting`](../../../src/EventHorizon.RocketMQ.Remoting)，并使用
 `NamesrvAddr` 发现 Broker。
@@ -89,18 +89,18 @@ Broker 地址。
 ## 取舍与约束
 
 **显式优于自动降级。** 一个 gRPC 调用不会在失败后悄悄切换为 Remoting；这种切换会改变认证、网络路径、
-重试、消息结果和运维前提。需要双协议时，应用应注册两个命名 profile 并在注入点选择正确接口。
+重试、消息结果和运维前提。需要双协议时，应用应分别注册 gRPC 和 Remoting 客户端，并在注入点选择正确接口。
 
 **类型会有重复。** `GrpcMessageView` 与 `RemotingMessageView`、两种 send result 以及两套 options 看起来
 相似，但它们保留了各自必要的语义。为了减少少量重复而抹平这些差异，长期会让 API 更难正确使用。
 
-**Shared 必须保持轻。** Shared 不引用 Microsoft DI、Options、gRPC、Socket 传输或任一协议包。这个约束
-避免了依赖反转，也使应用可只安装一个协议包。
+**Shared 必须保持轻。** Shared 不引用 Microsoft DI、Options、gRPC、Socket 传输或任一协议 Project。这个约束
+避免了依赖反转，也使应用可只安装一个协议 Package。
 
 ## 延伸阅读
 
 - [依赖注入与生命周期](dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
 - [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)
-- [gRPC 包指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
-- [Remoting 包指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
+- [gRPC Project 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
+- [Remoting Project 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)

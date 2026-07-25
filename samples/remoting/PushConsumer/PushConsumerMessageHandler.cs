@@ -34,7 +34,8 @@ internal sealed class PushConsumerMessageHandler(
             message.QueueId,
             message.QueueOffset,
             Encoding.UTF8.GetString(message.Body));
-        // Return Retry when application work has not completed and the message should be redelivered.
+        // Success advances the original queue offset. In clustering mode, Retry sends failed work back for redelivery
+        // before that offset advances.
         return ValueTask.FromResult(ConsumeResult.Success);
     }
 }

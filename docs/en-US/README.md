@@ -8,7 +8,7 @@ transport-specific behavior lives. They are design material, not a replacement f
 samples or protocol guides.
 
 Start with the [repository overview](../../README.md) to choose a package, then use the
-[runnable samples](../../samples/README.md) for setup and executable code. The protocol package
+[runnable samples](../../samples/README.md) for setup and executable code. The protocol project
 guides contain the complete public API and compatibility references:
 
 - [gRPC guide](../../src/EventHorizon.RocketMQ.Grpc/README.md)
@@ -19,8 +19,8 @@ guides contain the complete public API and compatibility references:
 | Article | Focus |
 | --- | --- |
 | [RocketMQ deployment and client architecture](architecture/rocketmq-architecture.md) | NameServer, Broker, Proxy, the gRPC and Remoting paths, LitePush, and the bundled Compose topology. |
-| [Protocol boundaries and dependencies](architecture/protocol-boundaries.md) | Why gRPC, Remoting, and shared models are separate packages. |
-| [Dependency-injection profiles and lifetimes](architecture/dependency-injection-and-lifetimes.md) | Profiles, keyed registrations, hosted lifecycle, and per-role consumer engines. |
+| [Protocol boundaries and dependencies](architecture/protocol-boundaries.md) | Why gRPC, Remoting, and shared models are separate projects. |
+| [Dependency-injection client registrations and lifetimes](architecture/dependency-injection-and-lifetimes.md) | Default and keyed client registrations, hosted lifecycle, and per-role consumer engines. |
 | [gRPC consumer model](grpc/consumer-model.md) | Proxy-backed Simple, Push, and LitePush consumers, including the absence of a public gRPC Pull API. |
 | [Classic Remoting transport and client roles](remoting/transport-and-client-roles.md) | NameServer routing, the built-in pipeline transport, and the Remoting Admin role. |
 | [Local and integration testing](testing/local-and-integration-testing.md) | Testcontainers isolation, the manual Compose environment, and when to use each. |
@@ -30,7 +30,7 @@ guides contain the complete public API and compatibility references:
 Read [protocol boundaries](architecture/protocol-boundaries.md) first when deciding where new code
 belongs. Follow it with [dependency injection and lifetimes](architecture/dependency-injection-and-lifetimes.md)
 when adding a role or integrating the client into an application. The protocol articles explain the
-runtime model and server assumptions that are intentionally not shared between the two packages.
+runtime model and server assumptions that are intentionally not shared between the two projects.
 
 ## Scope
 

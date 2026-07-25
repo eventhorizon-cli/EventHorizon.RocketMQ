@@ -20,7 +20,7 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 ```
 
 When automatic resource creation is disabled, create the default `rocketmq-dotnet-manual` topic and the consumer
-groups used by the samples before running them:
+groups used by the standard samples before running them:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
@@ -29,14 +29,22 @@ for group in rocketmq-dotnet-grpc-simple-sample rocketmq-dotnet-grpc-push-sample
 do
     docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup -n nameserver:9876 -c DefaultCluster -g "$group"
 done
-
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-lite-manual -a +message.type=LITE
-
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-lite-push-sample --attributes +lite.bind.topic=rocketmq-dotnet-lite-manual
 ```
 
-See the [local test environment guide](../test-environments/rocketmq/README.md) for the endpoints and additional
+See the [general local environment guide](../test-environments/rocketmq/README.md) for the endpoints and additional
 Broker commands.
+
+LitePush uses its own environment because it needs a LITE parent Topic, a matching Consumer Group binding, and a
+cluster-mode Proxy that implements `SyncLiteSubscription`. Stop any environment that publishes `localhost:8081`, then
+start the dedicated environment:
+
+```shell
+docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
+```
+
+It automatically prepares `rocketmq-dotnet-lite-manual` and `rocketmq-dotnet-grpc-lite-push-sample`; the sample
+synchronizes its `rocketmq-dotnet-lite-sample` LiteTopic subscription when it starts. See the
+[LitePush environment guide](../test-environments/rocketmq-litepush/README.md) for the exact setup and limits.
 
 The gRPC projects use `RocketMQ:Client` for `GrpcClientOptions` and `RocketMQ:Producer` or
 `RocketMQ:Consumer` for the role options. Sample-only runtime settings, such as a message body or subscription
@@ -82,23 +90,23 @@ curl --request POST http://localhost:5000/messages \
 
 Replace `samples/grpc/Producer` with `samples/remoting/Producer` to use the classic Remoting Producer sample.
 
-Both Producer samples also register an `audit` keyed profile. `POST /profiles/audit/messages` sends through that
-profile, independently of the default `POST /messages` route. The audit handler receives its protocol-specific
-producer from DI with keyed injection:
+Both Producer samples also register an `audit` keyed client registration with registration name `audit`. `POST /clients/audit/messages`
+sends through its .NET keyed service, independently of the default `POST /messages` route. The audit handler receives its protocol-specific
+producer from that service. The registration name is also used as the keyed-service key for `FromKeyedServices`:
 
 ```csharp
 [FromKeyedServices("audit")] IGrpcProducer producer
 ```
 
-The Remoting sample uses the same attribute with `IRemotingProducer`. The audit profile defaults to the same local
-RocketMQ environment as the default profile, but can be configured independently: gRPC reads
+The Remoting sample uses the same attribute with `IRemotingProducer`. The audit keyed client registration defaults to
+the same local RocketMQ environment as the default client registration, but can be configured independently: gRPC reads
 `RocketMQ:Audit:Client` and `RocketMQ:Audit:Producer`; Remoting reads `RocketMQ:Audit:Remoting` and
 `RocketMQ:Audit:Producer`.
 
-Send through the audit profile with the same optional JSON body:
+Send through the audit keyed service with the same optional JSON body:
 
 ```shell
-curl --request POST http://localhost:5000/profiles/audit/messages \
+curl --request POST http://localhost:5000/clients/audit/messages \
     --header 'Content-Type: application/json' \
     --data '{"body":"Audit event from curl."}'
 ```
@@ -120,10 +128,10 @@ Run a gRPC project with its directory as the project argument, for example:
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-The bundled RocketMQ 5.5.0 environment supports the standard gRPC producer, SimpleConsumer, PushConsumer, and
-LitePush paths. The LitePush sample uses the separate `rocketmq-dotnet-lite-manual` LITE parent topic and the
-prepared `rocketmq-dotnet-grpc-lite-push-sample` group above. See the
-[gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) for complete LitePush compatibility requirements.
+The general RocketMQ 5.5.0 environment supports the standard gRPC Producer, SimpleConsumer, and PushConsumer paths.
+The dedicated LitePush environment supports the LitePush sample and provisions its LITE parent Topic and Consumer
+Group automatically. See the [gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) for the complete LitePush
+compatibility requirements.
 
 ## Classic Remoting
 

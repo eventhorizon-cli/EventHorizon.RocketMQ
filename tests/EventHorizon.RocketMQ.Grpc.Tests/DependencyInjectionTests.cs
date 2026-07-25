@@ -186,7 +186,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddGrpcProducer_RejectsDuplicateRoleForProfile()
+    public void AddGrpcProducer_RejectsDuplicateRoleForDefaultClientRegistration()
     {
         var services = new ServiceCollection();
         var builder = services
@@ -196,6 +196,7 @@ public sealed class DependencyInjectionTests
         var exception = Assert.Throws<InvalidOperationException>(() => builder.AddGrpcProducer());
 
         Assert.Contains("already registered", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("default client registration", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -238,7 +239,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task NamedProfilesRegisterMultipleGrpcProducersWithIndependentOptionsAndLifecycle()
+    public async Task KeyedClientRegistrationsRegisterMultipleGrpcProducersWithIndependentOptionsAndLifecycle()
     {
         var services = new ServiceCollection();
         services

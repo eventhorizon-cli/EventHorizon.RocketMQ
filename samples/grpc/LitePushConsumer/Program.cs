@@ -23,11 +23,16 @@ var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
 
+// The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
+// Lite Push uses client-initiated long polling.
+// Handler results drive automatic acknowledgement, retry, or DLQ forwarding.
+// ServiceLifetime.Scoped creates a fresh DI scope for each message handling attempt.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcLitePushConsumer<LitePushConsumerMessageHandler>(
         ServiceLifetime.Scoped,
         consumerSection.Bind);
+// AddGrpcLitePushConsumer registers the lifecycle service; this hosted service only reports the active LiteTopics.
 builder.Services.AddHostedService<LitePushConsumer>();
 
 await builder.Build().RunAsync();

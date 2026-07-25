@@ -59,7 +59,7 @@ You are an AI coding assistant for this repository.
 - Construct each internal Consumer Engine in the matching protocol composition root and inject it through its
   protocol-specific internal interface. Each registered Consumer role owns one Engine instance and its lifecycle;
   do not register Consumer Engines as shared global services or instantiate them inside Consumer implementations.
-- Register gRPC profiles with `AddRocketMQGrpc` and classic Remoting profiles with
+- Register gRPC client registrations with `AddRocketMQGrpc` and classic Remoting client registrations with
   `AddRocketMQRemoting`. Do not introduce a transport selector, a shared builder, or a shared root
   registration method.
 - Place code under a protocol's `Protocol` folder only when it is communication infrastructure reused across
@@ -86,9 +86,14 @@ You are an AI coding assistant for this repository.
 - `tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure` contains shared Testcontainers infrastructure and is not a test
   assembly. It must not reference a production protocol project.
 - `tests/EventHorizon.RocketMQ.Benchmarks` contains BenchmarkDotNet benchmarks.
-- `test-environments` groups Docker Compose environments for manual local testing. Its `rocketmq` child currently
-  provides the local RocketMQ stack. Integration tests use their own Testcontainers fixture and do not require any
-  manual environment to be started first.
+- `test-environments` groups Docker Compose environments for manual local testing. Each environment includes a local
+  RocketMQ Dashboard at `http://localhost:8082`:
+  - `rocketmq` is the general single-Broker stack for standard Remoting and gRPC exploration.
+  - `rocketmq-litepush` is the self-initializing gRPC LitePush sample stack; its Compose startup creates the
+    repository's LITE parent Topic and Consumer Group.
+  - `rocketmq-multi-broker` contains three independent master Brokers for route, partitioning, Remoting, and gRPC
+    testing. It is not a high-availability or replication topology.
+  Integration tests use their own Testcontainers fixture and do not require any manual environment to be started first.
 - `README.md` and `README.zh-CN.md` are concise English and Simplified Chinese repository overviews that
   link to the protocol guides. Detailed gRPC documentation lives in `src/EventHorizon.RocketMQ.Grpc/README.md`
   and `README.zh-CN.md`; detailed classic Remoting documentation lives in
@@ -108,7 +113,8 @@ When modifying code, always consider whether related documentation must be updat
 - Update the matching `docs/en-US` and `docs/zh-CN` design article when an architectural decision, protocol
   boundary, dependency-injection lifecycle, transport model, or testing strategy changes. Keep the two language
   trees structurally and semantically synchronized.
-- Update the matching `test-environments/<environment>/README.md` when a manual environment or its commands change.
+- Update the matching `test-environments/<environment>/README.md` and `README.zh-CN.md` when a manual environment or
+  its commands change.
 - Keep examples consistent with the implemented API and supported server versions.
 - Do not update documentation unnecessarily for internal refactors that do not affect behavior or public
   contracts.
@@ -245,10 +251,12 @@ dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.Rocke
 dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
 ```
 
-- Validate the affected test environment with its Compose file. For RocketMQ:
+- Validate the affected test environment with its Compose file. For example:
 
 ```bash
 docker compose -f test-environments/rocketmq/compose.yaml config --quiet
+docker compose -f test-environments/rocketmq-litepush/compose.yaml config --quiet
+docker compose -f test-environments/rocketmq-multi-broker/compose.yaml config --quiet
 ```
 
 - If a required command cannot be executed, clearly state which command was not run and why.

@@ -1,74 +1,97 @@
 # EventHorizon.RocketMQ.Grpc
 
-[English](README.md) |
-[简体中文](README.zh-CN.md)
+[English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
+[简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
 
-> **[请先阅读仓库总览和可运行示例](../../README.zh-CN.md)。** 其中包含跨协议功能矩阵和包选择说明。
+`EventHorizon.RocketMQ.Grpc` 是本仓库面向 .NET 8 及更高版本的非官方 Apache RocketMQ 5
+protobuf/gRPC Project 和 NuGet Package。它只通过 `Endpoint` 连接 RocketMQ Proxy，不会直接连接 NameServer 或
+Broker。
 
-一个符合 .NET 习惯的 Apache RocketMQ 5 protobuf/gRPC 客户端，支持 .NET 8 及以上版本。客户端
-连接 RocketMQ Proxy，不会直接连接 NameServer。
+> 请先通过[仓库总览](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)
+> 了解两种协议各自支持的功能以及如何选择 Package，完整应用请参考
+> [可运行的 gRPC 示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.zh-CN.md#grpc)。
+
+## 快速开始
+
+先配置应用所使用的 NuGet 源，再安装 gRPC Package。Shared Package 会作为传递依赖引入。
+
+```shell
+dotnet add package EventHorizon.RocketMQ.Grpc
+```
+
+假设 `localhost:8081` 上已有可访问的 Proxy，并且已创建 `orders` topic，下面的 ASP.NET Core
+Minimal API 会注册默认 Producer，并将其注入发送消息的 endpoint：
+
+```csharp
+using System.Text;
+using EventHorizon.RocketMQ.Grpc;
+using EventHorizon.RocketMQ.Grpc.Producer;
+using EventHorizon.RocketMQ.Producer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var rocketMQ = builder.Services.AddRocketMQGrpc(
+    options => options.Endpoint = "localhost:8081");
+rocketMQ.AddGrpcProducer();
+
+var app = builder.Build();
+
+app.MapPost("/messages", async (
+    IGrpcProducer producer,
+    CancellationToken cancellationToken) =>
+{
+    var receipt = await producer.SendAsync(
+        new Message("orders", Encoding.UTF8.GetBytes("created")),
+        cancellationToken);
+
+    return Results.Ok(new { receipt.MessageId });
+});
+
+await app.RunAsync();
+```
+
+ASP.NET Core Host 会随应用启动和停止已注册的 Producer。完整应用可参考
+[Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/Producer/README.zh-CN.md)、
+[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/SimpleConsumer/README.zh-CN.md)、
+[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/PushConsumer/README.zh-CN.md) 和
+[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/LitePushConsumer/README.zh-CN.md)
+示例目录。
 
 ## 支持的功能
 
-`✅` 表示该包已实现客户端 API。目标 RocketMQ Proxy 和 Broker 仍必须支持并启用相应的服务端功能。
-`—` 表示 gRPC 包不提供该 API。
+`✅` 表示该 Project 已实现客户端 API。目标 RocketMQ Proxy 和 Broker 仍必须支持并启用相应的服务端功能。
+`—` 表示 gRPC Project 不提供该 API。
 
 | 功能 | 状态 | 条件和说明 |
 | --- | :---: | --- |
 | 普通 Producer 消息 | ✅ | 通过 `IGrpcProducer.SendAsync` 发送。 |
 | FIFO Producer 消息 | ✅ | 设置 `MessageGroup`；目标服务端必须支持 FIFO 投递。 |
 | 定时或延迟 Producer 消息 | ✅ | 设置 `DeliveryTimestamp`；目标服务端必须支持定时投递。 |
-| 撤回定时或延迟消息 | ✅ | 在消息投递前使用返回的 recall handle。 |
+| 撤回定时或延迟消息 | ✅ | 在消息投递前使用返回的 `RecallHandle`。 |
 | 优先级 Producer 消息 | ✅ | 设置 `Priority`；目标服务端必须支持优先级消息。 |
-| Lite Producer 消息 | ✅ | 设置 `LiteTopic`；需要支持 Lite 消息的 Proxy 和 Broker。 |
+| Lite Producer 消息 | ✅ | 设置 `LiteTopic`；需要使用支持 Lite 消息的 Proxy 和 Broker。 |
 | 事务 Producer 消息 | ✅ | 在启动前声明所有事务主题，并提供事务检查器。 |
-| 指定队列、队列选择器、批量或单向发送 | — | 这些经典 Remoting Producer API 不属于 `IGrpcProducer`。 |
-| Producer 请求-响应 | — | 该经典 Remoting Producer API 不属于 `IGrpcProducer`。 |
+| 指定队列、队列选择器、批量或单向发送 | — | 这些 classic Remoting Producer API 不属于 `IGrpcProducer`。 |
+| Producer 请求-响应 | — | 该 classic Remoting Producer API 不属于 `IGrpcProducer`。 |
 | `IGrpcSimpleConsumer` | ✅ | 应用控制接收、确认、不可见时间、死信转发和订阅。RocketMQ 5.5.0 Proxy 的最小长轮询间隔为五秒。 |
 | `IGrpcPushConsumer` | ✅ | 支持并发或 FIFO 分发、确认、不可见时间续期、重试、死信处理和运行时订阅。它通过客户端发起的分配查询和 `ReceiveMessage` 长轮询实现。 |
-| `IGrpcLitePushConsumer` | ✅ | 在一个 bind topic 下从 LiteTopic 进行并发或 FIFO 分发。Proxy 必须实现 `SyncLiteSubscription`；它同样使用客户端发起的长轮询。 |
+| `IGrpcLitePushConsumer` | ✅ | 在一个 bind topic 下从 LiteTopic 进行并发或 FIFO 分发。需要使用支持 `SyncLiteSubscription` RPC 的 Proxy；它同样使用客户端发起的长轮询。 |
 | 协议层面的 Broker Push | — | Push 和 LitePush 都不是由服务端主动发起的 Broker Push。 |
 | 直接连接 NameServer 或 Broker | — | gRPC 通过 `Endpoint` 连接 RocketMQ Proxy。 |
-| 依赖注入、Options、日志、Generic Host 生命周期以及命名/键控 profile | ✅ | 使用 `AddRocketMQGrpc` 注册 profile，再添加所需角色。 |
+| 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQGrpc` 创建客户端注册，再添加所需角色。 |
 
-## 安装
+## 客户端注册和连接
 
-先配置应用所使用的包源，再安装 gRPC 包。Shared 包会作为传递依赖引入。
+`Endpoint` 接受一个或多个以分号分隔的 Proxy 地址。发往这些地址的请求会在请求截止时间内故障转移。
+`RequestTimeout`、`RouteCacheDuration` 和 `HeartbeatInterval` 可分别控制请求、路由刷新和心跳时序。
+启用 `UseTLS` 后使用 TLS；通过 `AccessKey`、`AccessSecret` 和 `SecurityToken` 配置 ACL 凭据；
+`Namespace` 用于限定 topic 和 consumer group。`AddRocketMQGrpc` 的返回值用于继续添加 Producer 和
+Consumer 角色。
 
-```shell
-dotnet add package EventHorizon.RocketMQ.Grpc --version 0.1.0-alpha.1
-```
-
-## Host 注册和连接
-
-使用 `AddRocketMQGrpc` 注册 gRPC 配置，再添加应用所需的角色。Generic Host 会随应用启动和停止
-已注册的角色。
-
-```csharp
-using Microsoft.Extensions.Hosting;
-using EventHorizon.RocketMQ.Grpc;
-
-var builder = Host.CreateApplicationBuilder(args);
-
-var rocketMQ = builder.Services.AddRocketMQGrpc(options =>
-{
-    options.Endpoint = "proxy-a:8081;proxy-b:8081";
-    options.RequestTimeout = TimeSpan.FromSeconds(3);
-    options.RouteCacheDuration = TimeSpan.FromSeconds(30);
-    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-});
-
-// Add Producer or Consumer roles through rocketMQ.
-
-await builder.Build().RunAsync();
-```
-
-`Endpoint` 接受一个或多个以分号分隔的 Proxy 地址。访问点请求会在请求截止时间内故障转移。启用
-`UseTLS` 后使用 TLS；通过 `AccessKey`、`AccessSecret` 和 `SecurityToken` 配置 ACL 凭据；
-`Namespace` 用于限定主题和消费组。
-
-当一个 Host 需要连接多个集群或注册同一角色的多个实例时，请使用命名配置。配置名称也是键控服务
-的键。
+当一个 Host 需要连接多个集群或注册同一角色的多个实例时，请使用 keyed 客户端注册。注册名称即
+`registrationName`；该 `registrationName` 同时作为 keyed service 的 key。
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -85,19 +108,18 @@ public sealed class OrderPublisher(
 }
 ```
 
-每个配置中的同一角色只能注册一次。未命名配置使用常规构造函数注入。当从独立的
+每个客户端注册中的同一角色只能注册一次。默认客户端注册使用常规构造函数注入。当从独立的
 `ServiceProvider` 而非 Generic Host 解析客户端时，请显式调用其 `StartAsync` 和 `StopAsync`。
 
 ## Producer
 
-使用 `AddGrpcProducer` 注册 `IGrpcProducer`，然后将其注入应用服务。
+快速开始已经通过 `AddGrpcProducer` 注册了 `IGrpcProducer`。将其注入应用服务后，可以发送带有更丰富
+元数据的消息：
 
 ```csharp
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Producer;
-
-rocketMQ.AddGrpcProducer();
 
 public sealed class OrderPublisher(IGrpcProducer producer)
 {
@@ -118,8 +140,8 @@ public sealed class OrderPublisher(IGrpcProducer producer)
 }
 ```
 
-`SendAsync` 返回不可变的 `GrpcSendReceipt`，其中包含消息 ID、位点、可选事务 ID、可选撤回句柄和
-Broker 端点。发送失败通过异常报告，而不是通过回执状态值报告。
+`SendAsync` 返回不可变的 `GrpcSendReceipt`，其中包含消息 ID、位点、可选事务 ID、可选的
+`RecallHandle` 和关联的 Broker 端点列表。发送失败会抛出异常，不会通过回执状态值表示。
 
 需要特殊消息类型时，只能设置以下属性中的一个：
 
@@ -130,7 +152,8 @@ Broker 端点。发送失败通过异常报告，而不是通过回执状态值�
 
 ### 事务
 
-在 Producer 启动前声明所有事务主题，并配置一个检查器，以便 Broker 请求时恢复持久化的本地结果。
+如需启用事务，请将快速开始中的 `AddGrpcProducer()` 替换为带配置的注册。在 Producer 启动前声明所有
+事务 topic，并配置一个检查器，以便 Broker 请求时恢复持久化的本地结果。
 
 ```csharp
 using EventHorizon.RocketMQ.Grpc.Producer;
@@ -221,7 +244,7 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 }
 ```
 
-`SubscribeAsync` 和 `UnsubscribeAsync` 会更新实时订阅集合。Consumer 还提供
+`SubscribeAsync` 和 `UnsubscribeAsync` 会更新当前生效的订阅集合。Consumer 还提供
 `ChangeInvisibleDurationAsync` 和 `ForwardToDeadLetterQueueAsync`。RocketMQ 5.5.0 Proxy 默认的
 最小长轮询间隔为五秒，因此使用该服务端时，请将 `AwaitDuration` 保持在五秒或更长。
 
@@ -256,17 +279,17 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 ```
 
 返回 `Success` 会确认消息，返回 `Retry` 会使消息重新变为可投递状态，返回 `DeadLetter` 会将消息
-转发到死信队列。损坏的消息不会进入处理程序：普通消息会重新变为可投递状态，损坏的 FIFO 消息会
-在释放同组下一条消息前进入死信队列。运行时订阅变更会立即协调接收器。泛型注册会为当前 client profile
-选择处理程序生命周期：`Singleton` 会为每个 profile/role 创建一个实例，且必须线程安全；`Scoped` 和
-`Transient` 会为每次处理尝试在新的异步服务 scope 中解析处理程序。`MessageHandler` 委托仍适合简单的
-无状态回调，但不能与 typed handler 同时配置。
+转发到死信队列。损坏的消息不会进入 handler：普通消息会重新变为可投递状态，损坏的 FIFO 消息会
+在释放同组下一条消息前进入死信队列。运行时订阅变更会立即更新当前接收器。泛型注册会为当前客户端注册
+选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，且必须线程安全；`Scoped` 和
+`Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。`MessageHandler` 委托仍适合
+简单的无状态回调，但不能与类型化 handler 同时配置。
 
 ## LitePushConsumer
 
-当需要从共享同一个 LITE parent/bind topic 的多个 LiteTopic 自动分发消息时，使用
+当需要自动分发绑定到同一 LITE parent topic 的多个 LiteTopic 消息时，使用
 `IGrpcLitePushConsumer`。它复用 `IGrpcPushConsumer` 的长轮询、确认、重试、死信、并发和 FIFO
-选项，但订阅对象是 LiteTopic，而不是普通主题过滤器。
+选项，但订阅对象是 LiteTopic，而不是普通 topic 过滤器。
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -284,8 +307,8 @@ rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 });
 ```
 
-不要为该角色调用继承的 `Subscribe` 方法，也不要配置普通主题订阅。客户端启动时会发送完整的
-LiteTopic 集合、定期协调该集合，并可通过 `SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 在运行时
+不要为该角色调用继承的 `Subscribe` 方法，也不要配置普通 topic 订阅。客户端会在启动时同步完整的
+LiteTopic 集合，并按配置的间隔再次同步；也可通过 `SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 在运行时
 更新订阅。Lite Push 与标准 Push 使用相同的 `IGrpcPushMessageHandler` 和生命周期语义：
 
 ```csharp
@@ -300,8 +323,12 @@ await consumer.SubscribeLiteAsync(
 - 在存储该 LITE parent topic 的每个 Broker 上启用 `enableLmq=true` 和 `enableMultiDispatch=true`。
 - 使用 `message.type=LITE` 创建 parent topic。
 - 创建 consumer group 时设置 `lite.bind.topic=<parent-topic>`。
-- 连接实现了 `SyncLiteSubscription` 的 cluster-mode Proxy。在 RocketMQ 5.5.0 中，
-  `mqbroker --enable-proxy` 启动的 local Proxy 没有实现该服务；请改用 `mqproxy -pm cluster` 或兼容的新版 Proxy。
+- 连接支持 `SyncLiteSubscription` RPC 的 cluster-mode Proxy。在 RocketMQ 5.5.0 中，
+  `mqbroker --enable-proxy` 启动的 Broker-integrated Proxy 不支持该 RPC；请改用 `mqproxy -pm cluster` 或兼容的新版 Proxy。
+
+`SyncLiteSubscription` 是 LitePush 的订阅控制 RPC。客户端通过它向 Proxy 同步 consumer group、bind topic 和
+LiteTopic 集合；它不负责传输消息。独立的 cluster-mode Proxy 可以与 Broker 共用一个容器或 Compose service，
+不需要因此另建一套 Compose 环境。
 
 LiteTopic 名称和配额限制仍由服务端决定；订阅被拒绝时会抛出 `GrpcServiceException`，且不会改变本地订阅集合。
 
@@ -322,7 +349,7 @@ docker compose -f test-environments/rocketmq/compose.yaml config --quiet
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 ```
 
-请使用[环境 README](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/rocketmq/README.md)
+请使用[环境说明](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/rocketmq/README.zh-CN.md)
 中的命令创建主题和消费组。停止并删除
 环境：
 
@@ -338,4 +365,4 @@ dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.Rocke
 
 ## 许可证
 
-本项目基于 [Apache License 2.0](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/LICENSE) 授权。
+本 Project 基于 [Apache License 2.0](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/LICENSE) 授权。

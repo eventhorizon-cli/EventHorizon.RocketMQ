@@ -36,10 +36,10 @@ Producer 示例的默认 tag 为 `sample`，因此其默认消息会匹配此订
     -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-simple-sample
   ```
 
-- 随附的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持 SimpleConsumer。其 Broker 开启了自动建
+- 本仓库提供的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持 SimpleConsumer。其 Broker 开启了自动建
   topic 和 subscription group；但生产部署通常应先由管理员创建这两个资源。
 
-在仓库根目录启动随附环境：
+在仓库根目录启动本仓库提供的环境：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
@@ -58,11 +58,11 @@ dotnet run --project samples/grpc/SimpleConsumer
 
 ## 语义与常见误解
 
-- `ReceiveAsync` 只租约消息，不会确认消息。示例只在成功记录日志后确认；未确认的消息会在 30 秒不可见
-  时间到期后再次可见。
+- `ReceiveAsync` 只租约消息，不会确认消息。示例只在成功记录日志后确认；未确认的消息会在 30 秒的不可见时长
+  到期后再次可见。
 - Worker 会使用 `MaxDeliveryAttempts` 将损坏消息显式转发到该 group 的死信队列。普通处理失败不会被当成成功；
   确认失败会使消息保留为可重新投递状态。
-- 随附 RocketMQ 5.5.0 Proxy 的最小长轮询间隔是五秒。使用该服务端时，请把 `AwaitDuration` 保持为五秒或更长。
+- 本仓库提供的 RocketMQ 5.5.0 Proxy 的最小长轮询间隔是五秒。使用该服务端时，请把 `AwaitDuration` 保持为五秒或更长。
 - consumer group 是共享状态。以相同 group 运行多个实例会分摊消息；要独立重放或查看相同 topic，请使用不同 group。
 - 这是应用主动 Receive/确认，不是 Broker Push。需要客户端自动管理长轮询和分发时，请使用 PushConsumer 示例。
 

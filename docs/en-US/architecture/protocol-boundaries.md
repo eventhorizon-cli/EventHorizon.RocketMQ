@@ -11,7 +11,7 @@ server requirements are therefore different.
 
 Treating those differences as interchangeable behind one client interface tends to leak the
 transport at the worst possible time: configuration becomes ambiguous, a result lacks the data a
-caller needs, or an API appears usable against a server that cannot perform it. The package layout
+caller needs, or an API appears usable against a server that cannot perform it. The project layout
 makes the choice visible at compile time instead.
 
 ## Decision
@@ -49,14 +49,14 @@ This is a deliberate architectural boundary, not merely a source-folder conventi
 
 ## How It Works
 
-Shared concepts are deliberately narrow. The shared package owns the protocol-neutral
+Shared concepts are deliberately narrow. The shared project owns the protocol-neutral
 [`Message`](../../../src/EventHorizon.RocketMQ.Shared/Producer/Message.cs), filters and consumer
 models under [`Consumer`](../../../src/EventHorizon.RocketMQ.Shared/Consumer), common client-option
 bases, and [`RocketMQClientException`](../../../src/EventHorizon.RocketMQ.Shared/Exceptions/RocketMQClientException.cs).
 Those types can be useful to both clients without implying that the clients have the same wire
 behavior.
 
-Everything that exposes protocol behavior remains in the owning package. For example:
+Everything that exposes protocol behavior remains in the owning project. For example:
 
 | Concern | gRPC ownership | Remoting ownership |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ AddRocketMQRemoting(options => options.NamesrvAddr = "nameserver:9876")
 ```
 
 They intentionally do not share a root `AddRocketMQ` method. An application that needs both can
-install both packages and register separate profiles; it still receives protocol-specific interfaces
+install both packages and register separate client registrations; it still receives protocol-specific interfaces
 from DI.
 
 ## Trade-offs and Constraints
@@ -88,7 +88,7 @@ from DI.
 - Similar concepts are intentionally duplicated when their behavior is transport-specific. A
   `GrpcMessageView` is not silently substituted for a `RemotingMessageView`, and the send results
   preserve the identifiers and status relevant to their protocol.
-- Adding a capability to one package does not add it to the other. Documentation and samples must
+- Adding a capability to one project does not add it to the other. Documentation and samples must
   state the protocol and server prerequisites rather than relying on a generic feature claim.
 - Shared must remain free of Proxy, NameServer, socket, protobuf, DI, and options dependencies. Put
   a new type in Shared only when it is genuinely protocol-neutral and can be understood without
@@ -98,7 +98,7 @@ from DI.
 
 ## Related Reading
 
-- [Dependency-injection profiles and lifetimes](dependency-injection-and-lifetimes.md)
+- [Dependency-injection client registrations and lifetimes](dependency-injection-and-lifetimes.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
 - [Runnable samples](../../../samples/README.md)

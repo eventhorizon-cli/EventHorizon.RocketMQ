@@ -1,0 +1,43 @@
+#!/bin/sh
+
+set -eu
+
+mqadmin=/home/rocketmq/rocketmq-5.5.0/bin/mqadmin
+nameserver_address=nameserver:9876
+cluster_name=DefaultCluster
+broker_name=broker-litepush
+parent_topic=rocketmq-dotnet-lite-manual
+consumer_group=rocketmq-dotnet-grpc-lite-push-sample
+
+attempt=1
+while [ "$attempt" -le 60 ]; do
+    cluster_list="$($mqadmin clusterList -n "$nameserver_address" 2>/dev/null || true)"
+    if printf '%s\n' "$cluster_list" | grep -Fq "$broker_name"; then
+        break
+    fi
+
+    echo "Waiting for $broker_name to register with NameServer ($attempt/60)..."
+    sleep 1
+    attempt=$((attempt + 1))
+done
+
+if [ "$attempt" -gt 60 ]; then
+    echo "$broker_name did not register with NameServer in time." >&2
+    exit 1
+fi
+
+$mqadmin updateTopic \
+    -n "$nameserver_address" \
+    -c "$cluster_name" \
+    -t "$parent_topic" \
+    -a +message.type=LITE
+
+$mqadmin updateSubGroup \
+    -n "$nameserver_address" \
+    -c "$cluster_name" \
+    -g "$consumer_group" \
+    --attributes +lite.bind.topic="$parent_topic"
+
+$mqadmin topicRoute -n "$nameserver_address" -t "$parent_topic"
+
+echo "LitePush resources are ready: parent topic $parent_topic; consumer group $consumer_group."

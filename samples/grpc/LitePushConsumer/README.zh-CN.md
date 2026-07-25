@@ -28,41 +28,37 @@ LITE parent/bind topic 的 LiteTopic 消息，并通过 `SyncLiteSubscription` �
 
 ## 前置条件
 
-- `RocketMQ:Client:Endpoint` 必须指向实现 `SyncLiteSubscription` 的 cluster-mode RocketMQ 5 Proxy。RocketMQ 5.5.0
+- `RocketMQ:Client:Endpoint` 必须指向支持 `SyncLiteSubscription` RPC 的 cluster-mode RocketMQ 5 Proxy。RocketMQ 5.5.0
   中通过 `mqbroker --enable-proxy` 启动的 Broker-integrated Proxy 不实现该服务。
 - 存储 parent topic 的每个 Broker 都必须开启 `enableLmq=true` 和 `enableMultiDispatch=true`。
-- 用 `message.type=LITE` 创建 LITE parent topic，再用 `lite.bind.topic` 将 consumer group 绑定到完全相同的 parent
-  topic。默认资源可按以下方式创建：
+- 请使用 LitePush 专用环境。它会开启上述两个 Broker 配置，在 `localhost:8081` 启动 `mqproxy -pm cluster`，并自动
+  创建与示例默认设置一致的 LITE parent Topic 和 Consumer Group。
+- 启动前请停止其他占用宿主机 `8081` 端口的环境。
 
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-lite-manual -a +message.type=LITE
-
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-    -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-lite-push-sample \
-    --attributes +lite.bind.topic=rocketmq-dotnet-lite-manual
-  ```
-
-- 使用仓库检查入的配置启动时，随附 RocketMQ 5.5.0 Compose 环境支持该示例：它开启了上述两个 Broker 配置，并在
-  `localhost:8081` 运行 `mqproxy -pm cluster`。这与不支持的 Broker-integrated Proxy 模式不同。
-
-在仓库根目录启动随附环境：
+在仓库根目录启动专用环境：
 
 ```shell
-docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 ```
+
+`resource-init` 成功结束后，会创建带有 `message.type=LITE` 的 `rocketmq-dotnet-lite-manual`，并将
+`rocketmq-dotnet-grpc-lite-push-sample` 绑定到该 parent Topic。`rocketmq-dotnet-lite-sample` 仍然是 Consumer
+启动时同步的 LiteTopic。
+
+拓扑、持久化行为和本地端口限制请参阅
+[LitePush 环境说明](../../../test-environments/rocketmq-litepush/README.zh-CN.md)。
 
 ## 运行
 
-准备 LITE parent topic 和 group 后，在仓库根目录执行：
+环境启动完成后，在仓库根目录执行：
 
 ```shell
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-Host 会持续运行直到按下 Ctrl+C，并在启动时记录配置的 LiteTopic。要看到消息，请使用兼容 Producer 向
-`rocketmq-dotnet-lite-manual` parent topic 下的 `rocketmq-dotnet-lite-sample` 发布 Lite message；标准 Producer
-示例只发送普通消息，不会写入 LiteTopic。
+Host 会持续运行直到按下 Ctrl+C，并在启动时记录配置的 LiteTopic。要收到消息，需要使用支持 Lite message 的 Producer 向
+`rocketmq-dotnet-lite-manual` parent topic 下的 `rocketmq-dotnet-lite-sample` 发送 Lite 消息；标准 Producer 示例只发送普通
+消息，不会写入 LiteTopic。
 
 ## 语义与常见误解
 

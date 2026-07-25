@@ -1,12 +1,13 @@
 # RocketMQ test environment
 
-[All test environments](../README.md)
+[All test environments](../README.md) | [简体中文](README.zh-CN.md)
 
 This directory defines a local Apache RocketMQ 5.5.0 environment for manual client testing. It starts:
 
 - a NameServer on `localhost:9876`;
 - a Broker on `localhost:10911`;
 - a cluster-mode Proxy on `localhost:8080` (remoting) and `localhost:8081` (gRPC).
+- RocketMQ Dashboard on `http://localhost:8082`.
 
 An additional one-shot `volume-init` service gives the image's non-root `rocketmq` user ownership
 of the persistent log and store volumes. It exits before the NameServer starts.
@@ -16,13 +17,23 @@ registered with the NameServer, the container starts `mqproxy -pm cluster`. This
 Broker address advertised by the NameServer while providing the cluster Proxy services required by LitePush. It is
 intentionally different from starting the Broker with `mqbroker --enable-proxy`.
 
+Dashboard runs in a separate container but shares the Broker network namespace. It can therefore use the
+`127.0.0.1:10911` Broker route returned by the NameServer. It listens on container port `8082` so it does not
+conflict with the Proxy's remoting port.
+
 For the component roles, protocol paths, and complete local deployment topology, see the
 [RocketMQ architecture note](../../docs/en-US/architecture/rocketmq-architecture.md).
+
+For the bundled LitePush sample, prefer the self-initializing
+[`rocketmq-litepush`](../rocketmq-litepush) environment. Its Compose startup creates the sample's LITE parent topic
+and consumer group automatically.
 
 ## Start and inspect
 
 Run these commands from this directory, or add `-f test-environments/rocketmq/compose.yaml` when
 running them from the repository root.
+
+The first run also pulls `apacherocketmq/rocketmq-dashboard:2.1.0` when it is not already available locally.
 
 ```shell
 docker compose config --quiet
@@ -35,6 +46,9 @@ Confirm that the Broker registered with the NameServer:
 ```shell
 docker compose exec broker sh mqadmin clusterList -n nameserver:9876
 ```
+
+Open [RocketMQ Dashboard](http://localhost:8082) to inspect the cluster, Topics, Consumer Groups, and messages.
+Dashboard can also modify RocketMQ resources, so use it only as a local development tool.
 
 ## Optional host-directory persistence
 
@@ -74,7 +88,9 @@ docker compose exec broker sh mqadmin topicRoute \
   -n nameserver:9876 -t rocketmq-dotnet-manual
 ```
 
-For gRPC LitePush, create a dedicated LITE parent topic and configure the consumer group's bind topic:
+For manual gRPC LitePush experiments in this general environment, create a dedicated LITE parent topic and configure
+the consumer group's bind topic. This is not required for the bundled LitePush sample when it uses
+[`rocketmq-litepush`](../rocketmq-litepush): that environment creates its default resources automatically.
 
 ```shell
 docker compose exec broker sh mqadmin updateTopic \
@@ -95,6 +111,7 @@ Use these client endpoints:
 | --- | --- |
 | Legacy remoting producer/consumer | NameServer `localhost:9876` |
 | RocketMQ 5 gRPC producer/consumer | Proxy `localhost:8081` |
+| RocketMQ Dashboard | Browser `http://localhost:8082` |
 
 The RocketMQ 5.5.0 Proxy supports the standard gRPC send, simple-consumer, push-consumer, and LitePush paths when
 the Lite parent topic and consumer group are prepared as above.

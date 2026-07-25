@@ -20,44 +20,56 @@ using Microsoft.Extensions.Options;
 namespace EventHorizon.RocketMQ.Remoting;
 
 /// <summary>
-/// Provides dependency-injection registration methods for RocketMQ classic remoting client profiles.
+/// Provides dependency-injection methods for registering RocketMQ classic remoting clients.
 /// </summary>
 public static class RemotingRocketMQServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds the default RocketMQ classic remoting client profile.
+    /// Registers the default RocketMQ classic remoting client.
     /// </summary>
-    /// <param name="services">The service collection to which the client profile is added.</param>
+    /// <param name="services">The service collection to which the client is registered.</param>
     /// <param name="configure">The delegate used to configure the client.</param>
-    /// <returns>A builder used to add producer or consumer roles to the profile.</returns>
+    /// <returns>A builder used to add producer or consumer roles to the client registration.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="services"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
     public static RemotingRocketMQBuilder AddRocketMQRemoting(
         this IServiceCollection services,
         Action<RemotingClientOptions> configure) =>
         AddRocketMQRemotingCore(services, Options.DefaultName, null, configure);
 
     /// <summary>
-    /// Adds a named RocketMQ classic remoting client profile. Roles added through the returned builder are
-    /// resolved with <c>GetRequiredKeyedService&lt;T&gt;(serviceKey)</c>.
+    /// Registers a RocketMQ classic remoting client under the specified registration name.
+    /// Roles added through the returned builder are resolved as keyed services with
+    /// <c>GetRequiredKeyedService&lt;T&gt;(registrationName)</c>.
     /// </summary>
-    /// <param name="services">The service collection to which the client profile is added.</param>
-    /// <param name="serviceKey">The key used to identify and resolve the client profile.</param>
+    /// <param name="services">The service collection to which the client is registered.</param>
+    /// <param name="registrationName">
+    /// The name that identifies the client registration, its named options, and its keyed services.
+    /// </param>
     /// <param name="configure">The delegate used to configure the client.</param>
-    /// <returns>A builder used to add producer or consumer roles to the profile.</returns>
+    /// <returns>A builder used to add producer or consumer roles to the keyed client registration.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="services"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="registrationName"/> is empty or consists only of white-space characters.
+    /// </exception>
     public static RemotingRocketMQBuilder AddRocketMQRemoting(
         this IServiceCollection services,
-        string serviceKey,
+        string registrationName,
         Action<RemotingClientOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
-        ArgumentException.ThrowIfNullOrWhiteSpace(serviceKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(registrationName);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddRocketMQRemotingCore(services, serviceKey, serviceKey, configure);
+        return AddRocketMQRemotingCore(services, registrationName, registrationName, configure);
     }
 
     private static RemotingRocketMQBuilder AddRocketMQRemotingCore(
         IServiceCollection services,
         string optionsName,
-        string? serviceKey,
+        string? registrationName,
         Action<RemotingClientOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -87,6 +99,6 @@ public static class RemotingRocketMQServiceCollectionExtensions
                 $"{RemotingClientOptions.MinimumRemotingFrameSize} bytes.");
 
         services.TryAddSingleton(TimeProvider.System);
-        return new RemotingRocketMQBuilder(services, optionsName, serviceKey);
+        return new RemotingRocketMQBuilder(services, optionsName, registrationName);
     }
 }

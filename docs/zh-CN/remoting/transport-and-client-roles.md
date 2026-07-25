@@ -1,23 +1,23 @@
-# 经典 Remoting：传输、路由与客户端角色
+# classic Remoting：传输、路由与客户端角色
 
 [English](../../en-US/remoting/transport-and-client-roles.md) | [简体中文](transport-and-client-roles.md)
 
-经典 Remoting 不是“gRPC 的低级实现”。它保留 RocketMQ NameServer/Broker 协议的路由、回调、队列和
+classic Remoting 不是“gRPC 的低级实现”。它保留 RocketMQ NameServer/Broker 协议的 route、回调、队列和
 消费模型，因此需要独立的传输实现与角色边界。应用选择它时，也是在选择直接可达的 NameServer 和 Broker
 网络拓扑。
 
 ## 背景
 
-Remoting 客户端先连接 NameServer 获取 topic route，然后对路由中的 Broker 发起请求。一次应用调用可能
+Remoting 客户端先连接 NameServer 获取 topic route，然后对 route 中的 Broker 发起请求。一次应用调用可能
 涉及多个端点：NameServer、master/slave Broker，以及在请求-响应场景中由 Broker 发起的经典回调。
 
 过去实现依赖 Bedrock Framework 的 Socket transport。当前实现改为内置的 `System.IO.Pipelines` 和
-`Socket`，把协议 framing、连接复用、取消、故障处理和 TLS 控制保留在本仓库中。这样减少生产依赖，同时
+`Socket`，把协议 framing、连接复用、取消、故障处理和 TLS 控制保留在本仓库中。这样减少了生产依赖，同时
 要求客户端实现明确处理经典 wire protocol 的细节。
 
 ## 决策
 
-`EventHorizon.RocketMQ.Remoting` 通过 `AddRocketMQRemoting` 注册连接 profile，并公开经典协议自己的
+`EventHorizon.RocketMQ.Remoting` 通过 `AddRocketMQRemoting` 创建默认客户端注册，并公开经典协议自己的
 角色：
 
 | 角色 | 主要职责 | 是否有后台生命周期 |
@@ -25,7 +25,7 @@ Remoting 客户端先连接 NameServer 获取 topic route，然后对路由中�
 | `IRemotingAdmin` | 只读路由、位点、时间和物理消息查询 | — |
 | `IRemotingProducer` | 发送、队列选择、批量、事务、撤回与请求-响应 | ✅ |
 | `IRemotingPullConsumer` | 应用显式选择队列和位点来拉取、确认/提交 | ✅ |
-| `IRemotingLitePullConsumer` | 集群分配、客户端位点、pause/resume/seek | ✅ |
+| `IRemotingLitePullConsumer` | 订阅后的自动分配或 `AssignAsync` 手工分配、客户端位点、pause/resume/seek | ✅ |
 | `IRemotingPopConsumer` | POP receipt、确认和可见期续租 | ✅ |
 | `IRemotingPushConsumer` | 自动消费、重试、死信、重平衡与经典 Broker 兼容行为 | ✅ |
 
@@ -38,7 +38,7 @@ Remoting 客户端先连接 NameServer 获取 topic route，然后对路由中�
 
 `NamesrvAddr` 可以包含多个以分号分隔的地址。内部
 [`TopicRouteService`](../../../src/EventHorizon.RocketMQ.Remoting/Protocol/Route/TopicRouteService.cs)
-按 topic 缓存路由，并在缓存失效时向 NameServer 请求新 route。并发的同一 topic 刷新会合并到一个门控操作；
+按 topic 缓存 route，并在缓存失效时向 NameServer 请求新 route。并发的同一 topic 刷新会合并到一个门控操作；
 在刷新失败而旧缓存尚有效时，客户端可以继续使用旧 route。
 
 这解释了一个重要部署事实：连接 NameServer 成功不表示消息路径一定可用。NameServer 返回的 Broker 地址
@@ -62,7 +62,7 @@ Remoting 客户端先连接 NameServer 获取 topic route，然后对路由中�
 ### 3. TLS 与 ACL 在协议边界处理
 
 启用 `UseTLS` 时，连接在 TCP 之上建立 `SslStream`。`ConfigureLegacySslOptions` 可配置私有根、mTLS、
-SNI、吊销检查或协议选择；该回调可能并发执行，且每条连接都会得到新的选项实例。
+SNI、吊销检查或协议选择；该回调可能并发执行，且每条连接都会得到新的配置对象。
 
 同时设置 `AccessKey` 与 `AccessSecret` 后，
 [`LegacyAclSigner`](../../../src/EventHorizon.RocketMQ.Remoting/Protocol/LegacyAclSigner.cs) 会对 NameServer 和
@@ -74,8 +74,8 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 
 - **Pull**：调用方决定 `RemotingPullMessageQueue`、起始 offset、批量与处理节奏。适合需要明确 queue/offset
   语义的工作流；成功处理后才应提交 offset。
-- **LitePull**：在客户端维护分配和 offset，提供 pause、resume 与 seek。当前实现仅支持集群消费，不能把
-  它当作广播 Consumer。
+- **LitePull**：订阅模式使用自动分配；也可以使用 `AssignAsync` 手工指定队列。两种模式互斥，客户端维护
+  offset，并提供 pause、resume 与 seek。当前实现仅支持集群消费，不能把它当作广播 Consumer。
 - **POP**：Broker 返回 receipt；应用使用 receipt 确认，并在长时间处理时请求更改不可见期。receipt 不是
   可跨消息、跨队列复用的 token。
 - **Push**：客户端仍以拉取/长轮询为基础，但加上经典 group、心跳、Broker 回调、重平衡和可选队列锁的
@@ -105,10 +105,10 @@ ACL、重连和 route 仍由本项目维护。修改这些代码时应配合 fra
 单个发送测试。
 
 **不要把经典类型搬进 Shared。** `RemotingMessageQueue`、`RemotingSendStatus`、POP receipt 和 route 数据
-都有经典协议语义。它们留在 Remoting 包中，可以避免 gRPC 用户错误依赖无法实现的能力。
+都有经典协议语义。它们留在 Remoting Project 中，可以避免 gRPC 用户错误依赖无法实现的能力。
 
 **服务端特性仍需验证。** SQL 过滤、POP、Lite、优先级、定时撤回、事务、请求-响应回调和队列锁均可能依赖
-Broker 版本、Broker 配置与网络策略。请使用[Remoting 包指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
+Broker 版本、Broker 配置与网络策略。请使用[Remoting Project 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
 和[可运行样例索引](../../../samples/README.zh-CN.md)逐项确认。
 
 ## 延伸阅读

@@ -34,6 +34,7 @@ internal sealed class LitePullConsumer(
         {
             try
             {
+                // Subscription mode polls only client-assigned queues; rebalance can temporarily leave none to poll.
                 var result = await consumer.PollAsync(cancellationToken: stoppingToken).ConfigureAwait(false);
                 foreach (var message in result.Messages)
                 {
@@ -47,7 +48,7 @@ internal sealed class LitePullConsumer(
                         Encoding.UTF8.GetString(message.Body));
                 }
 
-                // Persist positions only after the application has processed this poll successfully.
+                // Commit the advanced local positions only after the returned messages have been processed.
                 await consumer.CommitAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

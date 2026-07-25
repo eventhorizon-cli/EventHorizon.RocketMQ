@@ -16,16 +16,16 @@ for example `RocketMQ__Client__Endpoint=proxy.example:8081`.
 | `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
 | `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
 | `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the default producer profile. |
-| `RocketMQ:Audit:Client:*` | Same as `RocketMQ:Client` | Connection settings for the independent keyed `audit` profile. |
-| `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the keyed `audit` profile. |
+| `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the default client registration. |
+| `RocketMQ:Audit:Client:*` | Same as `RocketMQ:Client` | Connection settings for the independent keyed client registration with registration name `audit`. |
+| `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the keyed client registration with registration name `audit`. |
 | `Sample:Topic` | `rocketmq-dotnet-manual` | Topic used when a request omits `topic`. |
 | `Sample:Tag` | `sample` | Tag used when a request omits `tag`. An empty value removes the tag. |
 | `Sample:Message` | `Hello from the RocketMQ gRPC producer sample.` | UTF-8 body used when a request omits `body`. |
 
-This role has no consumer group. `POST /messages` uses the unnamed/default producer profile;
-`POST /profiles/audit/messages` resolves a separate `IGrpcProducer` with the DI key `audit`.
-The key is application configuration, not a Broker-side audit feature.
+This role has no consumer group. `POST /messages` uses the default client registration;
+`POST /clients/audit/messages` resolves a separate `IGrpcProducer` from the .NET keyed service for registration name `audit`.
+The registration name is application configuration, not a Broker-side audit feature, and is also used as the keyed-service key.
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ ASPNETCORE_URLS=http://localhost:5000 \
   dotnet run --no-launch-profile --project samples/grpc/Producer
 ```
 
-Then send a message through the default profile:
+Then send a message through the default client registration:
 
 ```shell
 curl --request POST http://localhost:5000/messages \
@@ -73,7 +73,7 @@ curl --request POST http://localhost:5000/messages \
   --data '{"topic":"rocketmq-dotnet-manual","tag":"sample","body":"Hello from curl."}'
 ```
 
-Use the same JSON shape with `POST /profiles/audit/messages` to select the keyed profile. Swagger
+Use the same JSON shape with `POST /clients/audit/messages` to select the keyed client registration. Swagger
 is available at `/swagger`; its OpenAPI document is `/swagger/v1/swagger.json`.
 
 ## Semantics and common pitfalls
@@ -86,7 +86,7 @@ is available at `/swagger`; its OpenAPI document is `/swagger/v1/swagger.json`.
 - `topic`, `tag`, and `body` are optional request fields. Omitting a field uses the `Sample` default;
   specifying an empty tag deliberately clears the tag.
 - The default and `audit` endpoints can point at different Proxies or clusters. They happen to use
-  the same local defaults, but they are separate DI profiles and neither route falls back to the
+  the same local defaults, but they are separate DI client registrations and neither route falls back to the
   other.
 
 For production options and non-standard message types, see the

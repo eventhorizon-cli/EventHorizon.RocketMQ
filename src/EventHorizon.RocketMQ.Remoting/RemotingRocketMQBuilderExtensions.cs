@@ -104,7 +104,7 @@ public static class RemotingRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingProducerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingProducer>(provider, builder.ServiceKey)));
+                RemotingRocketMQRegistration.GetRoleService<IRemotingProducer>(provider, builder.RegistrationName)));
         return builder;
     }
 
@@ -136,7 +136,9 @@ public static class RemotingRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPullConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPullConsumer>(provider, builder.ServiceKey)));
+                RemotingRocketMQRegistration.GetRoleService<IRemotingPullConsumer>(
+                    provider,
+                    builder.RegistrationName)));
         return builder;
     }
 
@@ -176,7 +178,9 @@ public static class RemotingRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingLitePullConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingLitePullConsumer>(provider, builder.ServiceKey)));
+                RemotingRocketMQRegistration.GetRoleService<IRemotingLitePullConsumer>(
+                    provider,
+                    builder.RegistrationName)));
         return builder;
     }
 
@@ -210,7 +214,9 @@ public static class RemotingRocketMQBuilderExtensions
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
     /// </exception>
-    /// <exception cref="InvalidOperationException">A push consumer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A push consumer is already registered for this client registration.
+    /// </exception>
     public static RemotingRocketMQBuilder AddRemotingPushConsumer<TMessageHandler>(
         this RemotingRocketMQBuilder builder,
         ServiceLifetime handlerLifetime,
@@ -275,7 +281,9 @@ public static class RemotingRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPushConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPushConsumer>(provider, builder.ServiceKey)));
+                RemotingRocketMQRegistration.GetRoleService<IRemotingPushConsumer>(
+                    provider,
+                    builder.RegistrationName)));
         return builder;
     }
 
@@ -320,7 +328,7 @@ public static class RemotingRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPopConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPopConsumer>(provider, builder.ServiceKey)));
+                RemotingRocketMQRegistration.GetRoleService<IRemotingPopConsumer>(provider, builder.RegistrationName)));
         return builder;
     }
 

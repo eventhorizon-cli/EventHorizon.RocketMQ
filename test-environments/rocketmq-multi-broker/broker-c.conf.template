@@ -1,0 +1,23 @@
+brokerClusterName=DefaultCluster
+brokerName=broker-c
+brokerId=0
+
+# Replaced by the Compose startup command. It must be reachable from the host and Proxy container.
+brokerIP1=__ROCKETMQ_ADVERTISED_HOST__
+namesrvAddr=nameserver:9876
+listenPort=10931
+
+brokerRole=ASYNC_MASTER
+flushDiskType=ASYNC_FLUSH
+deleteWhen=04
+fileReservedTime=24
+
+defaultTopicQueueNums=8
+autoCreateTopicEnable=true
+autoCreateSubscriptionGroup=true
+enablePropertyFilter=true
+recallMessageEnable=true
+
+# Lite messages use LMQ multi-dispatch queues.
+enableLmq=true
+enableMultiDispatch=true

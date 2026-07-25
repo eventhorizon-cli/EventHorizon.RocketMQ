@@ -39,6 +39,10 @@ builder.Services
         "Subscription filters are required.")
     .ValidateOnStart();
 
+// The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
+// Push delivery uses client-initiated long polling.
+// Handler results drive automatic acknowledgement, retry, or DLQ forwarding.
+// ServiceLifetime.Scoped creates a fresh DI scope for each message handling attempt.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>

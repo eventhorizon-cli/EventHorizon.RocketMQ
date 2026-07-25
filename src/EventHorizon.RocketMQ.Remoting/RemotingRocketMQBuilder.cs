@@ -18,27 +18,27 @@ using Microsoft.Extensions.DependencyInjection;
 namespace EventHorizon.RocketMQ.Remoting;
 
 /// <summary>
-/// Configures roles for a registered RocketMQ classic remoting client profile.
+/// Configures roles for a RocketMQ classic remoting client registration.
 /// </summary>
 public sealed class RemotingRocketMQBuilder
 {
-    internal RemotingRocketMQBuilder(IServiceCollection services, string optionsName, string? serviceKey)
+    internal RemotingRocketMQBuilder(IServiceCollection services, string optionsName, string? registrationName)
     {
         Services = services;
         OptionsName = optionsName;
-        ServiceKey = serviceKey;
+        RegistrationName = registrationName;
     }
 
     /// <summary>
-    /// Gets the service collection to which the client profile and its roles are added.
+    /// Gets the service collection to which the client registration and its roles are added.
     /// </summary>
     public IServiceCollection Services { get; }
 
     /// <summary>
-    /// Gets the key used to resolve services registered by this builder, or <see langword="null"/>
-    /// for the default unkeyed registration.
+    /// Gets the name that identifies the client registration and its named options, or <see langword="null"/>
+    /// for the default unkeyed registration. The same name is used as the keyed-service key.
     /// </summary>
-    public string? ServiceKey { get; }
+    public string? RegistrationName { get; }
 
     internal string OptionsName { get; }
 }

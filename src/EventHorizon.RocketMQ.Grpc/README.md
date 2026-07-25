@@ -1,18 +1,70 @@
 # EventHorizon.RocketMQ.Grpc
 
-[English](README.md) |
-[简体中文](README.zh-CN.md)
+[English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
+[简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
 
-> **[Read the repository overview and runnable samples first](../../README.md).** It contains the
-> cross-protocol feature matrix and package-selection guidance.
+`EventHorizon.RocketMQ.Grpc` is the repository's unofficial Apache RocketMQ 5 protobuf/gRPC project and
+NuGet package for .NET 8 or later. It connects only to a RocketMQ Proxy through `Endpoint`; it does not
+connect directly to a NameServer or Broker.
 
-An idiomatic .NET client for the Apache RocketMQ 5 protobuf/gRPC protocol. It targets .NET 8 or
-later and connects to a RocketMQ Proxy, not directly to a NameServer.
+> See the [repository overview](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.md)
+> for the cross-protocol matrix and package-selection guidance, then use the
+> [runnable gRPC samples](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.md#grpc)
+> for complete applications.
+
+## Quick start
+
+Configure the package source used by your application, then install the gRPC package. The shared package is
+referenced transitively.
+
+```shell
+dotnet add package EventHorizon.RocketMQ.Grpc
+```
+
+With a reachable Proxy on `localhost:8081` and an existing `orders` topic, this ASP.NET Core Minimal API
+registers the default Producer and injects it into an endpoint that sends one message:
+
+```csharp
+using System.Text;
+using EventHorizon.RocketMQ.Grpc;
+using EventHorizon.RocketMQ.Grpc.Producer;
+using EventHorizon.RocketMQ.Producer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var rocketMQ = builder.Services.AddRocketMQGrpc(
+    options => options.Endpoint = "localhost:8081");
+rocketMQ.AddGrpcProducer();
+
+var app = builder.Build();
+
+app.MapPost("/messages", async (
+    IGrpcProducer producer,
+    CancellationToken cancellationToken) =>
+{
+    var receipt = await producer.SendAsync(
+        new Message("orders", Encoding.UTF8.GetBytes("created")),
+        cancellationToken);
+
+    return Results.Ok(new { receipt.MessageId });
+});
+
+await app.RunAsync();
+```
+
+The ASP.NET Core host starts and stops the registered Producer with the application. Complete applications are
+available in the [Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/Producer/README.md),
+[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/SimpleConsumer/README.md),
+[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/PushConsumer/README.md), and
+[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/LitePushConsumer/README.md)
+sample directories.
 
 ## Supported features
 
-`✅` means this package implements the client API. A target RocketMQ Proxy and Broker must still
-support and enable the applicable server-side feature. `—` means the gRPC package does not expose
+`✅` means this Project implements the client API. A target RocketMQ Proxy and Broker must still
+support and enable the applicable server-side feature. `—` means the gRPC Project does not expose
 that API.
 
 | Feature | Status | Conditions and notes |
@@ -31,47 +83,18 @@ that API.
 | `IGrpcLitePushConsumer` | ✅ | Supports concurrent or FIFO dispatch from LiteTopics under one bind topic. The Proxy must implement `SyncLiteSubscription`; it also uses client-initiated long polling. |
 | Protocol-level Broker push | — | Push and LitePush are not server-initiated Broker push. |
 | Direct NameServer or Broker connection | — | gRPC connects to a RocketMQ Proxy through `Endpoint`. |
-| Dependency injection, options, logging, Generic Host lifecycle, and named/keyed profiles | ✅ | Register a profile with `AddRocketMQGrpc`, then add the required roles. |
+| Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQGrpc`, then add the required roles. |
 
-## Installation
-
-Configure the package source used by your application, then install the gRPC package. The shared
-package is referenced transitively.
-
-```shell
-dotnet add package EventHorizon.RocketMQ.Grpc --version 0.1.0-alpha.1
-```
-
-## Host registration and connection
-
-Register a gRPC profile with `AddRocketMQGrpc`, then add each role needed by the application. A
-Generic Host starts and stops registered roles with the application.
-
-```csharp
-using Microsoft.Extensions.Hosting;
-using EventHorizon.RocketMQ.Grpc;
-
-var builder = Host.CreateApplicationBuilder(args);
-
-var rocketMQ = builder.Services.AddRocketMQGrpc(options =>
-{
-    options.Endpoint = "proxy-a:8081;proxy-b:8081";
-    options.RequestTimeout = TimeSpan.FromSeconds(3);
-    options.RouteCacheDuration = TimeSpan.FromSeconds(30);
-    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-});
-
-// Add Producer or Consumer roles through rocketMQ.
-
-await builder.Build().RunAsync();
-```
+## Client registration and connection
 
 `Endpoint` accepts one or more semicolon-separated Proxy addresses. Access-point requests fail over
-within their request deadline. Set `UseTLS` to use TLS. `AccessKey`, `AccessSecret`, and
-`SecurityToken` configure ACL credentials; `Namespace` qualifies topics and consumer groups.
+within their request deadline. `RequestTimeout`, `RouteCacheDuration`, and `HeartbeatInterval` control
+request, route refresh, and heartbeat timing. Set `UseTLS` to use TLS. `AccessKey`, `AccessSecret`, and
+`SecurityToken` configure ACL credentials; `Namespace` qualifies topics and consumer groups. The
+`AddRocketMQGrpc` return value is the builder used to add Producer and Consumer roles.
 
-When one host needs multiple clusters or multiple instances of the same role, use named profiles.
-The profile name is also the keyed-service key.
+When one host needs multiple clusters or multiple instances of the same role, add a keyed client registration.
+Its `registrationName` is also used as the .NET keyed-service key.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -88,20 +111,19 @@ public sealed class OrderPublisher(
 }
 ```
 
-A role can be registered only once in a profile. Unnamed profiles use ordinary constructor
+A role can be registered only once per client registration. The default client registration uses ordinary constructor
 injection. When clients are resolved from a standalone `ServiceProvider` instead of a Generic Host,
 call their `StartAsync` and `StopAsync` methods explicitly.
 
 ## Producer
 
-Register `IGrpcProducer` with `AddGrpcProducer` and inject it into application services.
+The quick start registers `IGrpcProducer` with `AddGrpcProducer`. Inject it into application services to send
+messages with richer metadata:
 
 ```csharp
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Producer;
-
-rocketMQ.AddGrpcProducer();
 
 public sealed class OrderPublisher(IGrpcProducer producer)
 {
@@ -136,8 +158,9 @@ Set exactly one specialized message property when needed:
 
 ### Transactions
 
-Declare every transactional topic before the Producer starts and configure a checker that can
-recover the durable local outcome when requested by the Broker.
+To enable transactions, replace the quick-start `AddGrpcProducer()` call with a configured registration.
+Declare every transactional topic before the Producer starts and configure a checker that can recover the
+durable local outcome when requested by the Broker.
 
 ```csharp
 using EventHorizon.RocketMQ.Grpc.Producer;
@@ -268,8 +291,8 @@ Return `Success` to acknowledge a message, `Retry` to make it available for rede
 `DeadLetter` to forward it to the dead-letter queue. Corrupted messages do not reach the handler:
 ordinary messages become available for redelivery, while corrupted FIFO messages are dead-lettered
 before the next group member is released. Runtime subscription changes reconcile receivers
-immediately. The generic registration selects the handler lifetime for the current client profile:
-`Singleton` creates one handler per profile/role and must be thread-safe; `Scoped` and `Transient`
+immediately. The generic registration selects the handler lifetime for the current client registration:
+`Singleton` creates one handler per client registration/role and must be thread-safe; `Scoped` and `Transient`
 resolve a handler in a new async service scope for each handling attempt. The `MessageHandler`
 delegate remains available for small stateless callbacks, but cannot be combined with a typed handler.
 
@@ -315,6 +338,10 @@ Prepare the RocketMQ deployment before starting a Lite Push consumer:
 - Connect to a cluster-mode Proxy that implements `SyncLiteSubscription`. In RocketMQ 5.5.0, the local Proxy
   started by `mqbroker --enable-proxy` does not implement this service; use `mqproxy -pm cluster` or a compatible
   newer Proxy.
+
+`SyncLiteSubscription` is LitePush's subscription-control RPC. It synchronizes the consumer group, bind topic, and
+LiteTopic set with the Proxy; it does not transfer messages. A separate cluster-mode Proxy can share a container or
+Compose service with a Broker, so it does not require a separate Compose environment.
 
 The service remains authoritative for LiteTopic name and quota constraints; a rejected subscription is reported
 through `GrpcServiceException` and does not change the local subscription set.

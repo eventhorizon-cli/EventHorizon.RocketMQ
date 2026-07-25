@@ -3,15 +3,16 @@
 [简体中文](README.zh-CN.md)
 
 This ASP.NET Core minimal API resolves `IRemotingProducer` from dependency injection and sends normal Apache
-RocketMQ messages through the classic Remoting protocol. It registers both the default producer profile and an
-independent keyed `audit` profile.
+RocketMQ messages through the classic Remoting protocol. It registers both the default client registration and an
+independent keyed client registration with registration name `audit`. That registration name is also used as the
+.NET keyed-service key.
 
 ## Public role and endpoints
 
-| Route | Producer profile | Purpose |
+| Route | Client registration | Purpose |
 | --- | --- | --- |
 | `POST /messages` | Default `IRemotingProducer` | Sends one normal message. |
-| `POST /profiles/audit/messages` | Keyed `"audit"` `IRemotingProducer` | Sends one normal message through the audit profile. |
+| `POST /clients/audit/messages` | Keyed service: `IRemotingProducer` (registration name `audit`) | Sends one normal message through the audit keyed service. |
 
 Swagger UI is available at `/swagger`; the checked-in HTTP launch profile opens
 `http://localhost:5184/swagger` when the launcher honors it. Both routes accept an optional JSON body with
@@ -31,9 +32,9 @@ The sample reads these sections from `appsettings.json`.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes for the default profile. |
+| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes for the default client registration. |
 | `RocketMQ:Producer:GroupName` | `remoting-sample-producer` | Default producer identity. |
-| `RocketMQ:Audit:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used by the keyed audit profile. |
+| `RocketMQ:Audit:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used by the keyed client registration with registration name `audit`. |
 | `RocketMQ:Audit:Producer:GroupName` | `remoting-sample-audit-producer` | Audit producer identity. |
 | `Sample:Topic` | `rocketmq-dotnet-manual` | Topic used when the request omits `topic`. |
 | `Sample:Tag` | `sample` | Tag used when the request omits `tag`. |
@@ -85,9 +86,9 @@ curl --request POST http://localhost:5000/messages \
 
 ## Important behavior
 
-- The audit route is not a mirror or an automatic audit of `/messages`. It resolves only the keyed `audit`
-  producer, so call that route explicitly when a message should use the audit profile.
-- Both profiles use the same top-level `Sample` defaults. Configure the audit `Remoting` and `Producer` sections
+- The audit route is not a mirror or an automatic audit of `/messages`. It resolves only the keyed service for
+  registration name `audit`, so call that route explicitly when a message should use the audit keyed service.
+- Both client registrations use the same top-level `Sample` defaults. Configure the audit `Remoting` and `Producer` sections
   separately only when it must use a different cluster or producer identity.
 - This is a normal-message example. It does not demonstrate transactions, delayed delivery, request-reply, or
   one-way sends.

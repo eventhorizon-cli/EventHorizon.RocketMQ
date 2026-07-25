@@ -15,7 +15,7 @@ server-initiated push connection to the application.
 
 ## Decision
 
-The gRPC package exposes the consumer models that the supported Proxy path can perform:
+The gRPC project exposes the consumer models that the supported Proxy path can perform:
 
 | API | Application controls | Receive model |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ The gRPC package exposes the consumer models that the supported Proxy path can p
 There is deliberately no public `IGrpcPullConsumer` in this repository. The checked-in service
 definition declares `PullMessage`, `GetOffset`, `UpdateOffset`, and `QueryOffset`, but the internal
 [gRPC client abstraction](../../../src/EventHorizon.RocketMQ.Grpc/Protocol/IRocketMQGrpcClient.cs)
-does not call them and the package exposes no API around them. The Apache Proxy used by the supplied
+does not call them and the project exposes no API around them. The Apache Proxy used by the supplied
 RocketMQ 5.5.0 environment does not provide the complete Pull and offset behavior needed by a
 classic Pull consumer.
 
@@ -121,8 +121,8 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
 
 ## Related Reading
 
-- [gRPC package guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md)
+- [gRPC project guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md)
 - [gRPC SimpleConsumer sample](../../../samples/grpc/SimpleConsumer/README.md)
 - [gRPC PushConsumer sample](../../../samples/grpc/PushConsumer/README.md)
 - [Protocol boundaries and dependencies](../architecture/protocol-boundaries.md)
-- [Dependency-injection profiles and lifetimes](../architecture/dependency-injection-and-lifetimes.md)
+- [Dependency-injection client registrations and lifetimes](../architecture/dependency-injection-and-lifetimes.md)

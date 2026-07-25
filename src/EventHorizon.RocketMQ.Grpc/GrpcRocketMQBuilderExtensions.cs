@@ -31,30 +31,34 @@ using Proto = Apache.Rocketmq.V2;
 namespace EventHorizon.RocketMQ.Grpc;
 
 /// <summary>
-/// Provides methods for adding producer and consumer roles to a RocketMQ gRPC client profile.
+/// Provides methods for adding producer and consumer roles to a RocketMQ gRPC client registration.
 /// </summary>
 public static class GrpcRocketMQBuilderExtensions
 {
     /// <summary>
     /// Adds a gRPC producer role with default producer options.
     /// </summary>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> is <see langword="null"/>.</exception>
-    /// <exception cref="InvalidOperationException">A producer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A producer is already registered for this client registration.
+    /// </exception>
     public static GrpcRocketMQBuilder AddGrpcProducer(this GrpcRocketMQBuilder builder) =>
         AddGrpcProducer(builder, static _ => { });
 
     /// <summary>
     /// Adds a configured gRPC producer role.
     /// </summary>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="configure">The delegate used to configure the producer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
-    /// <exception cref="InvalidOperationException">A producer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A producer is already registered for this client registration.
+    /// </exception>
     public static GrpcRocketMQBuilder AddGrpcProducer(
         this GrpcRocketMQBuilder builder,
         Action<GrpcProducerOptions> configure)
@@ -80,20 +84,22 @@ public static class GrpcRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<GrpcProducerHostedService>(
                 provider,
-                GrpcRocketMQRegistration.GetRoleService<IGrpcProducer>(provider, builder.ServiceKey)));
+                GrpcRocketMQRegistration.GetRoleService<IGrpcProducer>(provider, builder.RegistrationName)));
         return builder;
     }
 
     /// <summary>
     /// Adds a configured gRPC simple-consumer role.
     /// </summary>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="configure">The delegate used to configure the simple consumer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
-    /// <exception cref="InvalidOperationException">A simple consumer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A simple consumer is already registered for this client registration.
+    /// </exception>
     public static GrpcRocketMQBuilder AddGrpcSimpleConsumer(
         this GrpcRocketMQBuilder builder,
         Action<GrpcSimpleConsumerOptions> configure)
@@ -118,20 +124,22 @@ public static class GrpcRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<GrpcSimpleConsumerHostedService>(
                 provider,
-                GrpcRocketMQRegistration.GetRoleService<IGrpcSimpleConsumer>(provider, builder.ServiceKey)));
+                GrpcRocketMQRegistration.GetRoleService<IGrpcSimpleConsumer>(provider, builder.RegistrationName)));
         return builder;
     }
 
     /// <summary>
     /// Adds a configured gRPC push-consumer role that receives messages through client-initiated long polling.
     /// </summary>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="configure">The delegate used to configure the push consumer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
-    /// <exception cref="InvalidOperationException">A push consumer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A push consumer is already registered for this client registration.
+    /// </exception>
     public static GrpcRocketMQBuilder AddGrpcPushConsumer(
         this GrpcRocketMQBuilder builder,
         Action<GrpcPushConsumerOptions> configure)
@@ -146,7 +154,7 @@ public static class GrpcRocketMQBuilderExtensions
     /// Adds a configured gRPC push-consumer role with a dependency-injected message handler.
     /// </summary>
     /// <typeparam name="TMessageHandler">The type that processes received messages.</typeparam>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="handlerLifetime">The dependency-injection lifetime used for the message handler.</param>
     /// <param name="configure">The delegate used to configure the push consumer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
@@ -156,7 +164,9 @@ public static class GrpcRocketMQBuilderExtensions
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
     /// </exception>
-    /// <exception cref="InvalidOperationException">A push consumer is already registered for the profile.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A push consumer is already registered for this client registration.
+    /// </exception>
     public static GrpcRocketMQBuilder AddGrpcPushConsumer<TMessageHandler>(
         this GrpcRocketMQBuilder builder,
         ServiceLifetime handlerLifetime,
@@ -178,14 +188,14 @@ public static class GrpcRocketMQBuilderExtensions
     /// <summary>
     /// Adds a configured gRPC Lite Push consumer role that dispatches messages from LiteTopics under a bind topic.
     /// </summary>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="configure">The delegate used to configure the Lite Push consumer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// A Lite Push consumer is already registered for the profile.
+    /// A Lite Push consumer is already registered for this client registration.
     /// </exception>
     public static GrpcRocketMQBuilder AddGrpcLitePushConsumer(
         this GrpcRocketMQBuilder builder,
@@ -201,7 +211,7 @@ public static class GrpcRocketMQBuilderExtensions
     /// Adds a configured gRPC Lite Push consumer role with a dependency-injected message handler.
     /// </summary>
     /// <typeparam name="TMessageHandler">The type that processes received messages.</typeparam>
-    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="builder">The builder for the RocketMQ gRPC client registration.</param>
     /// <param name="handlerLifetime">The dependency-injection lifetime used for the message handler.</param>
     /// <param name="configure">The delegate used to configure the Lite Push consumer.</param>
     /// <returns>The same builder so that additional roles can be configured.</returns>
@@ -212,7 +222,7 @@ public static class GrpcRocketMQBuilderExtensions
     /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// A Lite Push consumer is already registered for the profile.
+    /// A Lite Push consumer is already registered for this client registration.
     /// </exception>
     public static GrpcRocketMQBuilder AddGrpcLitePushConsumer<TMessageHandler>(
         this GrpcRocketMQBuilder builder,
@@ -278,7 +288,7 @@ public static class GrpcRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<GrpcPushConsumerHostedService>(
                 provider,
-                GrpcRocketMQRegistration.GetRoleService<IGrpcPushConsumer>(provider, builder.ServiceKey)));
+                GrpcRocketMQRegistration.GetRoleService<IGrpcPushConsumer>(provider, builder.RegistrationName)));
         return builder;
     }
 
@@ -338,7 +348,7 @@ public static class GrpcRocketMQBuilderExtensions
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<GrpcLitePushConsumerHostedService>(
                 provider,
-                GrpcRocketMQRegistration.GetRoleService<IGrpcLitePushConsumer>(provider, builder.ServiceKey)));
+                GrpcRocketMQRegistration.GetRoleService<IGrpcLitePushConsumer>(provider, builder.RegistrationName)));
         return builder;
     }
 

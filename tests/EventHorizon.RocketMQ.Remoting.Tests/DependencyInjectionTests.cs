@@ -71,7 +71,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingProducer_RejectsDuplicateRoleForProfile()
+    public void AddRemotingProducer_RejectsDuplicateRoleForRegistrationName()
     {
         var builder = new ServiceCollection()
             .AddRocketMQRemoting("orders", options => options.NamesrvAddr = "127.0.0.1:9876")
@@ -80,7 +80,7 @@ public sealed class DependencyInjectionTests
         var exception = Assert.Throws<InvalidOperationException>(() => builder.AddRemotingProducer());
 
         Assert.Contains("already registered", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("orders", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("registration name 'orders'", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -382,7 +382,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task NamedProfilesRegisterIndependentRemotingProducersAndOptions()
+    public async Task KeyedClientRegistrationsRegisterIndependentRemotingProducersAndOptions()
     {
         var services = new ServiceCollection();
         services

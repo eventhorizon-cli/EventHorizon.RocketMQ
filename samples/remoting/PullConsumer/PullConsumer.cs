@@ -35,6 +35,7 @@ internal sealed class PullConsumer(
         {
             try
             {
+                // NameServer discovery provides Broker queues; this pull loop owns queue selection and offsets.
                 var queues = await consumer.GetMessageQueuesAsync(_options.Topic, stoppingToken).ConfigureAwait(false);
                 if (queues.Count == 0)
                 {
@@ -67,6 +68,7 @@ internal sealed class PullConsumer(
                                 Encoding.UTF8.GetString(message.Body));
                         }
 
+                        // Persist after processing so an earlier failure retries the batch from the previous offset.
                         offsets[queue] = result.NextOffset;
                         await consumer.UpdateOffsetAsync(queue, result.NextOffset, stoppingToken).ConfigureAwait(false);
                     }

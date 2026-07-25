@@ -24,8 +24,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
-// The profile key selects an independent DI client; it does not enable a Broker audit feature.
-const string AuditProfile = "audit";
+// A registration name identifies an independent client registration and doubles as its keyed-service key;
+// "audit" is application composition metadata, not a Broker feature.
+const string AuditRegistrationName = "audit";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
@@ -35,7 +36,7 @@ builder.Services.AddSwaggerGen(static options =>
     {
         Title = "RocketMQ gRPC Producer Sample API",
         Version = "v1",
-        Description = "Sends messages with the default and audit RocketMQ gRPC producer profiles."
+        Description = "Sends messages with the default and keyed audit RocketMQ gRPC producers."
     });
 });
 
@@ -52,11 +53,13 @@ builder.Services
     .Validate(static options => !string.IsNullOrWhiteSpace(options.Message), "Message body is required.")
     .ValidateOnStart();
 
+// Endpoints must target RocketMQ Proxies; gRPC clients do not connect directly to Brokers.
+// The first call creates the default unkeyed registration; the second creates an independent keyed registration.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcProducer(producerSection.Bind);
 builder.Services
-    .AddRocketMQGrpc(AuditProfile, auditClientSection.Bind)
+    .AddRocketMQGrpc(AuditRegistrationName, auditClientSection.Bind)
     .AddGrpcProducer(auditProducerSection.Bind);
 
 var app = builder.Build();
@@ -67,14 +70,15 @@ app.MapPost("/messages", SendMessageAsync)
     .WithName("SendMessage")
     .WithSummary("Sends a message with the default gRPC producer.")
     .WithDescription(
-        "Uses the default RocketMQ gRPC producer profile configured in " +
+        "Uses the default RocketMQ gRPC producer configured in " +
         "RocketMQ:Client and RocketMQ:Producer.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
-app.MapPost("/profiles/audit/messages", SendAuditMessageAsync)
+app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithName("SendAuditMessage")
     .WithSummary("Sends a message with the audit gRPC producer.")
-    .WithDescription("Uses the audit keyed RocketMQ gRPC producer profile configured in RocketMQ:Audit.")
+    .WithDescription(
+        "Uses the RocketMQ gRPC producer registered with registration name 'audit' and configured in RocketMQ:Audit.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 await app.RunAsync();
@@ -127,7 +131,7 @@ static async Task<IResult> SendMessageAsync(
 
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
-    [FromKeyedServices(AuditProfile)] IGrpcProducer producer,
+    [FromKeyedServices(AuditRegistrationName)] IGrpcProducer producer,
     IOptions<ProducerSampleOptions> sampleOptions,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>

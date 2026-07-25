@@ -182,11 +182,18 @@ not affect the standard gRPC Producer, SimpleConsumer, or PushConsumer, but it p
 startup and runtime Lite subscription changes. The [LitePush sample](../../../samples/grpc/LitePushConsumer/README.md)
 has the executable configuration steps.
 
-## Bundled Compose Environment
+## Local Compose Environments
 
 [`test-environments/rocketmq`](../../../test-environments/rocketmq) is a single-Broker environment
 for manual verification, not a production cluster template. It uses the Apache RocketMQ 5.5.0 image,
-starts a NameServer, Broker, and cluster-mode Proxy, and binds all published ports to `127.0.0.1`.
+starts a NameServer, Broker, cluster-mode Proxy, and RocketMQ Dashboard, and binds all published ports to
+`127.0.0.1`.
+
+Use [`rocketmq-litepush`](../../../test-environments/rocketmq-litepush) for the repository's LitePush sample. Its Compose
+startup automatically creates the sample's LITE parent topic and consumer group.
+
+Use [`rocketmq-multi-broker`](../../../test-environments/rocketmq-multi-broker) to inspect three-Broker route and
+partitioning behavior. It contains independent masters, not a replication topology.
 
 `volume-init` is a one-shot initialization service. It creates log and store directories in Docker
 named volumes and gives them to the image's non-root `rocketmq` user. It exits before the NameServer
@@ -197,38 +204,53 @@ flowchart TB
     Host[Host machine]
     Remoting[Remoting application<br/>NamesrvAddr: localhost:9876]
     Grpc[gRPC application<br/>Endpoint: localhost:8081]
+    DashboardUi[Browser<br/>http://localhost:8082]
 
     subgraph Compose[test-environments/rocketmq Compose project]
         Init[volume-init<br/>one-shot permissions setup]
         NameServer[nameserver container<br/>port 9876]
 
         subgraph BrokerContainer[broker container]
+            Startup[Broker startup script]
             Broker[mqbroker<br/>port 10911]
             Proxy[mqproxy -pm cluster<br/>port 8080 remoting, port 8081 gRPC]
         end
+
+        Dashboard[rocketmq-dashboard<br/>port 8082]
 
         Volumes[(Docker named volumes<br/>logs and Broker store)]
     end
 
     Host --- Remoting
     Host --- Grpc
+    Host --- DashboardUi
     Init --> Volumes
     Init -->|completed successfully| NameServer
     NameServer -->|healthy| Broker
-    Broker -->|registers, then Proxy starts| Proxy
+    Broker -->|registers route| NameServer
+    NameServer -->|reports registration| Startup
+    Startup -->|executes after registration| Proxy
     Broker -->|writes logs and store| Volumes
 
     Remoting -->|query route| NameServer
     Remoting -->|direct Broker requests| Broker
     Grpc -->|gRPC| Proxy
-    Proxy -->|route and Broker operations| NameServer
-    Proxy --> Broker
+    DashboardUi -->|Dashboard :8082| Dashboard
+    Dashboard -->|admin route lookup| NameServer
+    Dashboard -->|Broker administration| Broker
+    Dashboard -->|RocketMQ 5 administration| Proxy
+    Proxy -->|route lookup and refresh| NameServer
+    Proxy -->|Broker operations| Broker
 ```
 
 The Broker and Proxy share one Compose service but run as distinct, ordered processes. The Broker
 registers with the NameServer first; the startup script confirms the registration before it starts
 `mqproxy -pm cluster`. This preserves the fixed Broker address the NameServer advertises to local
 Remoting clients while also providing the cluster-mode Proxy needed by LitePush.
+
+Dashboard is a separate container that shares the Broker network namespace. It can therefore use the same fixed
+`127.0.0.1:10911` route that host Remoting clients receive. It listens on `8082` instead of the Proxy's remoting
+port, and is intentionally bound only to the local host.
 
 Common local endpoints are:
 
@@ -237,6 +259,7 @@ Common local endpoints are:
 | Classic Remoting | `NamesrvAddr` | `localhost:9876`, followed by the `localhost:10911` Broker route returned by the NameServer. |
 | RocketMQ 5 gRPC | `Endpoint` | `localhost:8081`. |
 | Proxy remoting port | Not the entry point for this repository's classic Remoting client | `localhost:8080`; retained for the Proxy's remoting service. |
+| RocketMQ Dashboard | Browser | `http://localhost:8082`; a local management interface that can modify cluster resources. |
 
 The Compose `brokerIP1=127.0.0.1` and fixed Broker port are specifically for local host testing.
 Do not copy that configuration directly to a containerized production application or cross-host
@@ -258,7 +281,7 @@ checking whether RocketMQ is running:
 ## Related Reading
 
 - [Protocol boundaries and dependencies](protocol-boundaries.md)
-- [Dependency-injection profiles and lifetimes](dependency-injection-and-lifetimes.md)
+- [Dependency-injection client registrations and lifetimes](dependency-injection-and-lifetimes.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
 - [Local and integration testing](../testing/local-and-integration-testing.md)

@@ -31,6 +31,7 @@ internal sealed class PopConsumer(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // NameServer route discovery identifies Broker queues; each POP request targets one selected queue.
         var queues = await GetMessageQueuesAsync(stoppingToken).ConfigureAwait(false);
         var queueIndex = 0;
 
@@ -46,6 +47,7 @@ internal sealed class PopConsumer(
                 }
 
                 var queue = queues[queueIndex++ % queues.Count];
+                // The receipt covers the invisibility window; an unacknowledged message can be delivered again.
                 var result = await consumer.PopAsync(queue, cancellationToken: stoppingToken).ConfigureAwait(false);
 
                 foreach (var received in result.Messages)

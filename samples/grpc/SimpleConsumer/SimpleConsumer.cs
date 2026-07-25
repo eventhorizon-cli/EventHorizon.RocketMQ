@@ -36,6 +36,8 @@ internal sealed class SimpleConsumer(
             IReadOnlyList<GrpcMessageView> messages;
             try
             {
+                // ReceiveAsync long-polls the Proxy. Each result remains invisible for the configured duration
+                // unless it is acknowledged or forwarded to the DLQ.
                 messages = await consumer.ReceiveAsync(settings.BatchSize, cancellationToken: stoppingToken)
                     .ConfigureAwait(false);
             }
@@ -57,7 +59,7 @@ internal sealed class SimpleConsumer(
                 {
                     if (message.IsCorrupted)
                     {
-                        // Corrupted payloads cannot be processed safely, so transfer them instead of acknowledging them.
+                        // SimpleConsumer never auto-settles messages; explicitly forward unsafe payloads to the DLQ.
                         logger.LogWarning(
                             "Forwarding corrupted message {MessageId} to the dead-letter queue: {Reason}",
                             message.MessageId,
@@ -75,7 +77,8 @@ internal sealed class SimpleConsumer(
                         message.MessageId,
                         message.Topic,
                         Encoding.UTF8.GetString(message.Body));
-                    // The sample only logs messages; acknowledge only after durable application processing succeeds.
+                    // Acknowledgement is manual; production code should call AckAsync only after durable
+                    // processing succeeds.
                     await consumer.AckAsync(message, stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

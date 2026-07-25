@@ -212,7 +212,7 @@ public sealed class GrpcPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task NamedProfiles_IsolateTypedPushHandlersByRoleKey()
+    public async Task KeyedClientRegistrations_IsolateTypedPushHandlersByRoleKey()
     {
         var services = new ServiceCollection();
         services

@@ -66,6 +66,7 @@ services:
       - "127.0.0.1:10912:10912"
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8082:8082"
     volumes:
       - ./broker.conf:/home/rocketmq/rocketmq-5.5.0/conf/broker-dotnet.conf:ro
       - ./proxy.json:/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json:ro
@@ -84,6 +85,22 @@ services:
     stop_grace_period: 45s
     networks:
       - rocketmq
+
+  dashboard:
+    image: apacherocketmq/rocketmq-dashboard:2.1.0
+    network_mode: "service:broker"
+    environment:
+      NAMESRV_ADDR: "nameserver:9876"
+      JAVA_OPTS: "-Drocketmq.namesrv.addr=nameserver:9876 -Drocketmq.config.proxyAddr=127.0.0.1:8080"
+    depends_on:
+      broker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':1F92 ' /proc/net/tcp || grep -q ':1F92 ' /proc/net/tcp6"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
 networks:
   rocketmq:

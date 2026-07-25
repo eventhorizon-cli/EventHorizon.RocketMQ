@@ -29,8 +29,11 @@ internal static class GrpcRocketMQRegistration
                 descriptor.ImplementationInstance is GrpcRocketMQRoleRegistration registration &&
                 registration.RoleKey == roleKey))
         {
-            var name = builder.ServiceKey is null ? "the default profile" : $"profile '{builder.ServiceKey}'";
-            throw new InvalidOperationException($"A {roleKey.DisplayRole} is already registered for {name}.");
+            var registrationDescription = builder.RegistrationName is null
+                ? "the default client registration"
+                : $"registration name '{builder.RegistrationName}'";
+            throw new InvalidOperationException(
+                $"A {roleKey.DisplayRole} is already registered for {registrationDescription}.");
         }
 
         builder.Services.AddSingleton(new GrpcRocketMQRoleRegistration(roleKey));
@@ -57,20 +60,20 @@ internal static class GrpcRocketMQRegistration
         Func<IServiceProvider, TService> factory)
         where TService : class
     {
-        if (builder.ServiceKey is null)
+        if (builder.RegistrationName is null)
         {
             builder.Services.TryAddSingleton(factory);
             return;
         }
 
         builder.Services.TryAddKeyedSingleton<TService>(
-            builder.ServiceKey,
+            builder.RegistrationName,
             (provider, _) => factory(provider));
     }
 
-    internal static TService GetRoleService<TService>(IServiceProvider provider, string? serviceKey)
+    internal static TService GetRoleService<TService>(IServiceProvider provider, string? registrationName)
         where TService : notnull =>
-        serviceKey is null
+        registrationName is null
             ? provider.GetRequiredService<TService>()
-            : provider.GetRequiredKeyedService<TService>(serviceKey);
+            : provider.GetRequiredKeyedService<TService>(registrationName);
 }

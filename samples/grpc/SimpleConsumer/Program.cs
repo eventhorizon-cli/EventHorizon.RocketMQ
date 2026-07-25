@@ -40,6 +40,8 @@ builder.Services
     .Validate(static options => options.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
     .ValidateOnStart();
 
+// The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
+// Unlike Push consumers, SimpleConsumer leaves receiving, acknowledgement, and DLQ forwarding to the hosted worker.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcSimpleConsumer(options =>

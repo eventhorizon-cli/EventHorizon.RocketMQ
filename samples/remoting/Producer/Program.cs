@@ -24,10 +24,11 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
-// The audit route resolves this profile explicitly; it does not duplicate default sends.
-const string AuditProfile = "audit";
+// This registration name is also the .NET keyed-service key for the explicit audit route.
+const string AuditRegistrationName = "audit";
 
 var builder = WebApplication.CreateBuilder(args);
+// NamesrvAddr discovers routes; the producer then sends directly to advertised Broker endpoints.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
 var producerSection = builder.Configuration.GetRequiredSection("RocketMQ:Producer");
 var auditRemotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Remoting");
@@ -53,7 +54,7 @@ builder.Services.AddSwaggerGen(options =>
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingProducer(producerSection.Bind);
 builder.Services
-    .AddRocketMQRemoting(AuditProfile, auditRemotingSection.Bind)
+    .AddRocketMQRemoting(AuditRegistrationName, auditRemotingSection.Bind)
     .AddRemotingProducer(auditProducerSection.Bind);
 
 var app = builder.Build();
@@ -64,14 +65,18 @@ app.UseSwaggerUI();
 app.MapPost("/messages", SendMessageAsync)
     .WithName("SendRemotingMessage")
     .WithSummary("Send a message through the default Remoting producer.")
-    .WithDescription("Sends a message with the default producer profile. Request values override the Sample defaults.")
+    .WithDescription(
+        "Sends a message with the producer from the default client registration. " +
+        "Request values override the Sample defaults.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status502BadGateway);
 
-app.MapPost("/profiles/audit/messages", SendAuditMessageAsync)
+app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithName("SendAuditRemotingMessage")
     .WithSummary("Send a message through the keyed audit Remoting producer.")
-    .WithDescription("Sends a message with the keyed audit producer profile. Request values override the Sample defaults.")
+    .WithDescription(
+        "Sends a message with the producer registered under registration name 'audit'. " +
+        "Request values override the Sample defaults.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status502BadGateway);
 
@@ -139,7 +144,7 @@ static async Task<IResult> SendMessageAsync(
 
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
-    [FromKeyedServices(AuditProfile)] IRemotingProducer producer,
+    [FromKeyedServices(AuditRegistrationName)] IRemotingProducer producer,
     IOptions<ProducerSampleOptions> sampleOptions,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>

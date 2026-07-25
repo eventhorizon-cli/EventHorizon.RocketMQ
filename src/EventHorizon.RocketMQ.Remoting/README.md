@@ -1,23 +1,76 @@
 # EventHorizon.RocketMQ.Remoting
 
-[English](README.md) |
-[简体中文](README.zh-CN.md)
+[English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
+[简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
 
-> **[Read the repository overview and runnable samples first](../../README.md).** It contains the
-> cross-protocol feature matrix and package-selection guidance.
+`EventHorizon.RocketMQ.Remoting` is an unofficial Apache RocketMQ classic Remoting Project and NuGet Package for
+.NET 8 or later. It integrates with Microsoft dependency injection, options, logging, and Generic Host lifecycle
+management.
 
-`EventHorizon.RocketMQ.Remoting` is the classic NameServer/Broker protocol implementation for
-EventHorizon.RocketMQ. It targets .NET 8 or later and integrates with Microsoft dependency injection,
-options, logging, and Generic Host lifecycle management.
+The client connects to RocketMQ NameServer, then uses route data to discover Broker endpoints and connect directly to
+the selected Brokers. Use this package when an application needs the classic protocol. For the RocketMQ 5
+protobuf/gRPC API through a Proxy, use `EventHorizon.RocketMQ.Grpc` instead.
 
-Use this package when an application must connect directly to a RocketMQ NameServer and Brokers. For
-the RocketMQ 5 protobuf/gRPC API through a Proxy, use `EventHorizon.RocketMQ.Grpc` instead.
+> **[Read the repository overview](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.md) and
+> [runnable samples](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.md) first.**
+> The overview has the cross-protocol feature matrix and package-selection guidance; the samples demonstrate the
+> client roles in runnable applications.
+
+## Quick start
+
+### Install
+
+Configure the package source used by your environment, then install the Remoting package:
+
+```shell
+dotnet add package EventHorizon.RocketMQ.Remoting
+```
+
+`EventHorizon.RocketMQ.Shared` is referenced transitively and does not need to be installed separately.
+
+### Minimal registration and use
+
+Create a client registration through `AddRocketMQRemoting`, add a role with `AddRemotingProducer`, then inject its
+protocol-specific interface into an endpoint. The following ASP.NET Core Minimal API sends one message for each
+`POST /messages` request.
+
+```csharp
+using EventHorizon.RocketMQ.Producer;
+using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Producer;
+using Microsoft.AspNetCore.Builder;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
+{
+    options.NamesrvAddr = "nameserver-a:9876;nameserver-b:9876";
+});
+
+rocketMQ.AddRemotingProducer(options =>
+{
+    options.GroupName = "orders-producer";
+});
+
+var app = builder.Build();
+
+app.MapPost("/messages", async (IRemotingProducer producer, CancellationToken cancellationToken) =>
+{
+    return await producer.SendAsync(
+        new Message("orders", "hello"u8.ToArray()),
+        cancellationToken);
+});
+
+await app.RunAsync();
+```
+
+The default client registration resolves through normal parameter or constructor injection. Register a given role
+only once per client registration; a duplicate role registration for the same client registration fails during service registration.
 
 ## Supported features
 
-`✅` means this package implements the client API. A target RocketMQ NameServer and Broker must still
-support and enable the applicable server-side feature. `—` means the classic Remoting package does
-not expose that API.
+`✅` means this Project implements the client API. A target RocketMQ NameServer and Broker must still support and
+enable the applicable server-side feature.
 
 | Feature | Status | Conditions and notes |
 | --- | :---: | --- |
@@ -37,45 +90,8 @@ not expose that API.
 | `IRemotingPushConsumer` | ✅ | Supports clustering or broadcasting, runtime subscriptions, configurable initial offsets, concurrent or FIFO dispatch, retries, dead-letter handling, and Broker-triggered rebalance or offset reset. |
 | Queue-orderly Push consumption | ✅ | Uses optional Broker queue locks for ordered consumption; configure it only where the destination Broker supports the classic locking flow. |
 | Built-in socket transport | ✅ | Uses `System.IO.Pipelines` with optional TLS, multiple NameServer addresses, Broker failover, ACL signing, namespaces, and configurable frame limits. It does not depend on Bedrock Framework. |
-| Dependency injection, options, logging, Generic Host lifecycle, and named/keyed profiles | ✅ | Register a profile with `AddRocketMQRemoting`, then add the required roles. |
+| Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQRemoting`, then add the required roles. |
 | RocketMQ 5 Proxy gRPC and `SimpleConsumer` APIs | — | Use `EventHorizon.RocketMQ.Grpc` for the Proxy-backed protobuf/gRPC API. |
-
-## Installation
-
-Configure the package source used by your environment, then install the Remoting package:
-
-```shell
-dotnet add package EventHorizon.RocketMQ.Remoting --version 0.1.0-alpha.1
-```
-
-`EventHorizon.RocketMQ.Shared` is referenced transitively and does not need to be installed separately.
-
-## Basic registration
-
-Register each client role through `AddRocketMQRemoting`. A Generic Host starts and stops registered
-roles with the application.
-
-```csharp
-using Microsoft.Extensions.Hosting;
-using EventHorizon.RocketMQ.Remoting;
-
-var builder = Host.CreateApplicationBuilder(args);
-
-var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
-{
-    options.NamesrvAddr = "nameserver-a:9876;nameserver-b:9876";
-});
-
-rocketMQ.AddRemotingProducer(options =>
-{
-    options.GroupName = "orders-producer";
-});
-
-await builder.Build().RunAsync();
-```
-
-The default profile resolves through normal constructor injection. Register a given role only once
-per profile; a duplicate `(profile, role)` registration fails during service registration.
 
 ## Connection and security
 
@@ -305,7 +321,7 @@ var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancel
 ```
 
 For a runnable HTTP and Swagger interface, see the
-[Remoting Admin sample](../../samples/remoting/Admin/README.md).
+[Remoting Admin sample](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/Admin/README.md).
 
 ## PullConsumer
 
@@ -499,7 +515,7 @@ public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 Return `Success` to commit a message, `Retry` to request Broker redelivery, or `DeadLetter` to send
 it to the dead-letter queue. Runtime `SubscribeAsync` and `UnsubscribeAsync` calls update classic
 heartbeats and reconcile active queue receivers. The generic registration selects the handler lifetime
-for the current client profile: `Singleton` creates one handler per profile/role and must be thread-safe;
+for the current client registration: `Singleton` creates one handler per client registration/role and must be thread-safe;
 `Scoped` and `Transient` resolve a handler in a new async service scope for each handling attempt. The
 `MessageHandler` delegate remains available for small stateless callbacks, but cannot be combined with a
 typed handler.
@@ -560,10 +576,10 @@ Use a stable, instance-specific path when the default client identity changes be
 Broadcast mode has no group-owned retry or dead-letter queue, so `Retry` and `DeadLetter` outcomes
 are dropped and the local offset advances.
 
-## Named profiles and lifecycle
+## Keyed client registrations and lifecycle
 
-Use named profiles for multiple clusters or multiple instances of the same role. The profile name
-is the .NET keyed-service key.
+Use keyed client registrations for multiple clusters or multiple instances of the same role. The registration name
+(`registrationName`) is also used as the .NET keyed-service key.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -583,12 +599,12 @@ public sealed class AuditPublisher(
 }
 ```
 
-Each profile and role owns an independent transport and lifecycle. When resolving clients from a
+Each client registration and role owns an independent transport and lifecycle. When resolving clients from a
 standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and `StopAsync` explicitly.
 
 ## Compatibility and errors
 
-- This package talks directly to classic NameServer and Broker endpoints; it does not connect to a
+- This project talks directly to classic NameServer and Broker endpoints; it does not connect to a
   RocketMQ Proxy.
 - `IRemotingProducer` implements classic half-message transactions, delayed-message recall, and
   request-reply independently from the gRPC Producer APIs. Their wire contracts and server compatibility
@@ -600,7 +616,7 @@ standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and `S
 - POP uses classic `POP_MESSAGE`, acknowledgement, and visibility-change commands introduced for RocketMQ 5
   Brokers. It requires JSON command serialization because those request codes exceed the optional binary
   command-header format's signed 16-bit code field.
-- The bundled integration environment uses Apache RocketMQ 5.5.0. Capabilities such as SQL filters,
+- The repository's local Docker Compose environment uses Apache RocketMQ 5.5.0. Capabilities such as SQL filters,
   TLS, ACL, priority, and lite messages still depend on the target cluster configuration and server
   support.
 - `RemotingCommandException` reports a NameServer or Broker rejection and retains the raw

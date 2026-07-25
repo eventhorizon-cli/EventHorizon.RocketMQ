@@ -8,7 +8,7 @@ Mock”被误认为“能连接到 RocketMQ”。
 
 ## 背景
 
-经典 Remoting 的行为同时受 NameServer route、Broker 广告地址、wire frame、网络连接和 callback 影响；
+classic Remoting 的行为同时受 NameServer route、Broker 广告地址、wire frame、网络连接和 callback 影响；
 gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一层的本地替身都很难完整模拟另一个层。
 
 但把所有测试都放进 Docker 也不可取：测试会更慢、更脆弱，并把简单的错误变成环境问题。因此项目约定把
@@ -20,11 +20,11 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 
 | 位置 | 类型 | 责任 |
 | --- | --- | --- |
-| [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests) | 单元测试 | 消息、过滤、公共选项和公共异常的协议无关语义。 |
+| [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests) | 单元测试 | 消息、过滤、公共配置选项和公共异常的协议无关语义。 |
 | [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
 | [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
-| [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite 和死信路径。 |
-| [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务和撤回路径。 |
+| [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
+| [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
 | [`tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与共享环境，不引用任一生产协议项目。 |
 | [`tests/EventHorizon.RocketMQ.Benchmarks`](../../../tests/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
 
@@ -38,7 +38,7 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 单元测试应在没有 NameServer、Broker、Proxy 或容器运行时的环境中稳定执行。它们针对的是客户端可控的
 边界，例如：
 
-- options 验证、命名/键控 profile 与重复角色注册；
+- options 验证、默认客户端注册、keyed 客户端注册与重复角色注册；
 - message 编解码、frame 长度限制、ACL 签名和 response correlation；
 - route cache、重试、取消、连接故障和 handler 生命周期；
 - Consumer 对 `Success`、`Retry`、`DeadLetter` 的处理决策。
@@ -46,7 +46,7 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 这样失败信息能直接指向客户端逻辑。若测试需要真实 endpoint 才能成立，它应迁移到对应的 integration
 test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
 
-### 2. Integration fixture 启动完整最小集群
+### 2. Integration fixture 启动受控的 RocketMQ 集群
 
 共享
 [`RocketMQContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
@@ -57,16 +57,27 @@ test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
    │ 动态映射端口
    ├── NameServer 容器
    └── Broker + cluster-mode Proxy 容器
-            ├── 经典 Remoting Broker 端口
+            ├── classic Remoting Broker 端口
             └── gRPC Proxy 端口
 ```
 
-fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册，然后准备标准、事务、
-FIFO、延迟和 Lite parent topic 以及测试 group。端口由 Testcontainers 动态映射，测试不会依赖手工环境的
-固定端口。
+基础 fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册，然后准备标准、事务、
+FIFO、延迟和 Lite parent topic 以及测试 group。
+
+端口由 Testcontainers 动态映射，测试不会依赖手工环境的固定端口。
 
 Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注册到 NameServer，Proxy 再启动。这既能
-覆盖宿主机访问 Broker 的 route，又能覆盖 LitePush 所需的 cluster Proxy 路径。
+覆盖宿主机访问 Broker 的 route，又能覆盖 LitePush 所需的 cluster-mode Proxy 路径。
+
+多 Broker 覆盖使用两套协议隔离的 fixture：
+
+- Remoting fixture 启动 NameServer 和三个宿主机可达的 master Broker。测试断言 NameServer 返回
+  `broker-a`、`broker-b`、`broker-c` 的完整 route，并向每台 Broker 的指定队列发送消息。
+- gRPC fixture 在隔离 Docker network 中启动 NameServer、三个 master Broker 和 cluster-mode Proxy。测试通过 Proxy
+  发送消息，再查询每台 Broker 的 topic 状态，确认三台 Broker 都有实际写入。
+
+创建多 Broker topic 时，fixture 会逐台 Broker 执行 `mqadmin updateTopic -b` 并等待完整 route。不能假定
+`updateTopic -c DefaultCluster` 会自动把 topic 创建到每台 master Broker。
 
 ### 3. 手工 Compose 环境服务于探索，不服务于集成测试前置条件
 
@@ -78,7 +89,7 @@ Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注�
 - Broker：`localhost:10911`；
 - cluster-mode Proxy：gRPC 使用 `localhost:8081`。
 
-它的[使用说明](../../../test-environments/rocketmq/README.md)还解释了 `volume-init`、默认 Docker named
+它的[使用说明](../../../test-environments/rocketmq/README.zh-CN.md)还解释了 `volume-init`、默认 Docker named
 volume 与可选的宿主机目录持久化覆盖文件。该 Compose 环境不应成为 CI 或 `dotnet test` 的前置条件：
 集成测试总是使用自己的 Testcontainers fixture，避免共享 topic、端口和数据状态。
 

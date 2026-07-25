@@ -21,6 +21,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
+// NamesrvAddr discovers routes; this client then long-polls the assigned Brokers directly.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:PushConsumer");
 var sampleSection = builder.Configuration.GetRequiredSection("Sample");
@@ -39,6 +40,7 @@ builder.Services.AddOptions<PushConsumerSampleOptions>()
     .ValidateOnStart();
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
+// A scoped handler is resolved in a new async DI scope for each message delivery.
 rocketMQ.AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
 {
     consumerSection.Bind(options);

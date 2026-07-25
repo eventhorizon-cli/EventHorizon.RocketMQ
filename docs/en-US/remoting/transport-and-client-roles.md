@@ -28,8 +28,8 @@ Application
     -> classic frame serializer and Broker command
 ```
 
-The package does not reintroduce Bedrock Framework, does not use a gRPC Proxy as a substitute for a
-NameServer, and does not share a transport abstraction with the gRPC package.
+The project does not reintroduce Bedrock Framework, does not use a gRPC Proxy as a substitute for a
+NameServer, and does not share a transport abstraction with the gRPC project.
 
 ## How It Works
 
@@ -60,7 +60,7 @@ supports TLS when configured. The
 [`RemoteCommandSerializer`](../../../src/EventHorizon.RocketMQ.Remoting/Protocol/RemoteCommandSerializer.cs)
 owns the classic command frame encoding and decoding.
 
-This lets the package apply frame-size limits, cancellation, disposal, and request correlation in
+This lets the project apply frame-size limits, cancellation, disposal, and request correlation in
 one place without depending on Bedrock Framework.
 
 ### Roles
@@ -69,7 +69,7 @@ The Remoting builder offers roles with semantics that belong to classic RocketMQ
 
 | Role | Purpose |
 | --- | --- |
-| `IRemotingProducer` | Standard, FIFO, delayed, priority, Lite, transactional, selected-queue, batch, one-way, request-reply, and recall-capable Producer operations supported by this package. |
+| `IRemotingProducer` | Standard, FIFO, delayed, priority, Lite, transactional, selected-queue, batch, one-way, request-reply, and recall-capable Producer operations supported by this project. |
 | `IRemotingAdmin` | Read-only queue, offset, and stored-message inspection. |
 | `IRemotingPullConsumer` | Explicit route, queue, pull, offset, and commit control. |
 | `IRemotingLitePullConsumer` | Client-managed Lite Pull subscriptions, polling, and offset commits. |
@@ -114,7 +114,7 @@ network can be valid syntactically and still be unusable from the current networ
 
 ## Related Reading
 
-- [classic Remoting package guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md)
+- [classic Remoting project guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md)
 - [Remoting Admin sample](../../../samples/remoting/Admin/README.md)
 - [Remoting PullConsumer sample](../../../samples/remoting/PullConsumer/README.md)
 - [Protocol boundaries and dependencies](../architecture/protocol-boundaries.md)

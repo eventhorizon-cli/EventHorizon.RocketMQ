@@ -184,7 +184,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_TypedHandlersAreIsolatedByNamedProfile()
+    public async Task AddRemotingPushConsumer_TypedHandlersAreIsolatedByRegistrationName()
     {
         var services = new ServiceCollection();
         var tracker = new MessageHandlerTracker();

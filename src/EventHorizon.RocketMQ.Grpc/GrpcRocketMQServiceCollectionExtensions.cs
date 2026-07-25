@@ -20,16 +20,16 @@ using Microsoft.Extensions.Options;
 namespace EventHorizon.RocketMQ.Grpc;
 
 /// <summary>
-/// Provides dependency-injection registration methods for RocketMQ gRPC client profiles.
+/// Provides dependency-injection methods for registering RocketMQ gRPC clients.
 /// </summary>
 public static class GrpcRocketMQServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds the default RocketMQ gRPC client profile.
+    /// Registers the default RocketMQ gRPC client.
     /// </summary>
-    /// <param name="services">The service collection to which the profile is added.</param>
+    /// <param name="services">The service collection to which the client is registered.</param>
     /// <param name="configure">The delegate used to configure the gRPC client.</param>
-    /// <returns>A builder used to add producer and consumer roles to the profile.</returns>
+    /// <returns>A builder used to add producer and consumer roles to the client registration.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="services"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
@@ -39,32 +39,37 @@ public static class GrpcRocketMQServiceCollectionExtensions
         AddRocketMQGrpcCore(services, Options.DefaultName, null, configure);
 
     /// <summary>
-    /// Adds a named RocketMQ gRPC client profile. Roles added through the returned builder are
-    /// resolved with <c>GetRequiredKeyedService&lt;T&gt;(serviceKey)</c>.
+    /// Registers a RocketMQ gRPC client under the specified registration name.
+    /// Roles added through the returned builder are resolved as keyed services with
+    /// <c>GetRequiredKeyedService&lt;T&gt;(registrationName)</c>.
     /// </summary>
-    /// <param name="services">The service collection to which the profile is added.</param>
-    /// <param name="serviceKey">The key used to register and resolve services for the profile.</param>
+    /// <param name="services">The service collection to which the client is registered.</param>
+    /// <param name="registrationName">
+    /// The name that identifies the client registration, its named options, and its keyed services.
+    /// </param>
     /// <param name="configure">The delegate used to configure the gRPC client.</param>
-    /// <returns>A builder used to add producer and consumer roles to the named profile.</returns>
+    /// <returns>A builder used to add producer and consumer roles to the keyed client registration.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="services"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
-    /// <exception cref="ArgumentException"><paramref name="serviceKey"/> is empty or consists only of white-space characters.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="registrationName"/> is empty or consists only of white-space characters.
+    /// </exception>
     public static GrpcRocketMQBuilder AddRocketMQGrpc(
         this IServiceCollection services,
-        string serviceKey,
+        string registrationName,
         Action<GrpcClientOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
-        ArgumentException.ThrowIfNullOrWhiteSpace(serviceKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(registrationName);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddRocketMQGrpcCore(services, serviceKey, serviceKey, configure);
+        return AddRocketMQGrpcCore(services, registrationName, registrationName, configure);
     }
 
     private static GrpcRocketMQBuilder AddRocketMQGrpcCore(
         IServiceCollection services,
         string optionsName,
-        string? serviceKey,
+        string? registrationName,
         Action<GrpcClientOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -87,6 +92,6 @@ public static class GrpcRocketMQServiceCollectionExtensions
                 "Heartbeat interval must be positive.");
 
         services.TryAddSingleton(TimeProvider.System);
-        return new GrpcRocketMQBuilder(services, optionsName, serviceKey);
+        return new GrpcRocketMQBuilder(services, optionsName, registrationName);
     }
 }

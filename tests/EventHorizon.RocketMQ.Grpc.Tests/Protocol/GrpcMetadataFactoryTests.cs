@@ -1,0 +1,73 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System.Security.Cryptography;
+using System.Text;
+using EventHorizon.RocketMQ.Grpc.Protocol;
+using EventHorizon.RocketMQ.Grpc.Protocol.Route;
+using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
+using Grpc.Core;
+using Microsoft.Extensions.Options;
+using Xunit;
+
+namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol;
+
+public sealed class GrpcMetadataFactoryTests
+{
+    [Fact]
+    public void Create_UsesOfficialProtocolAndUtf8SignatureFormat()
+    {
+        var options = Options.Create(new GrpcClientOptions
+        {
+            ClientIP = "127.0.0.1",
+            InstanceName = "metadata-test",
+            AccessKey = "access-key",
+            AccessSecret = "secret-\u5bc6\u94a5"
+        });
+        var factory = new GrpcMetadataFactory(options, "producer");
+
+        var metadata = factory.Create();
+        var timestamp = Value(metadata, "x-mq-date-time");
+        using var hmac = new HMACSHA1(Encoding.UTF8.GetBytes(options.Value.AccessSecret!));
+        var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(timestamp)))
+            .ToLowerInvariant();
+        var clientId = Value(metadata, "x-mq-client-id");
+
+        Assert.Equal("v2", Value(metadata, "x-mq-protocol"));
+        Assert.Contains("@producer@", clientId, StringComparison.Ordinal);
+        Assert.Equal(
+            $"MQv2-HMAC-SHA1 Credential=access-key//Rocketmq, SignedHeaders=x-mq-date-time, Signature={signature}",
+            Value(metadata, "authorization"));
+    }
+
+    [Fact]
+    public void ClientId_IsStablePerFactoryAndUniqueAcrossLogicalClients()
+    {
+        var options = Options.Create(new GrpcClientOptions
+        {
+            ClientIP = "127.0.0.1",
+            InstanceName = "metadata-test"
+        });
+        var producer = new GrpcMetadataFactory(options, "producer");
+        var consumer = new GrpcMetadataFactory(options, "consumer");
+        var producerClientId = Value(producer.Create(), "x-mq-client-id");
+
+        Assert.Equal(producerClientId, Value(producer.Create(), "x-mq-client-id"));
+        Assert.NotEqual(producerClientId, Value(consumer.Create(), "x-mq-client-id"));
+    }
+
+    private static string Value(Metadata metadata, string key) =>
+        metadata.Single(entry => string.Equals(entry.Key, key, StringComparison.Ordinal)).Value;
+}

@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <LangVersion>12.0</LangVersion>
+        <PackageId>EventHorizon.RocketMQ.Remoting</PackageId>
+        <Authors>EventHorizon contributors</Authors>
+        <Description>Dependency-injection-first .NET client for Apache RocketMQ classic remoting.</Description>
+        <PackageTags>rocketmq;messaging;remoting;dotnet</PackageTags>
+        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/eventhorizon-cli/EventHorizon.RocketMQ</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>0.1.0-alpha.1</Version>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="K4os.Compression.LZ4.Streams" Version="1.3.8" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
+        <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+        <PackageReference Include="System.IO.Pipelines" Version="10.0.10" />
+        <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../EventHorizon.RocketMQ.Shared/EventHorizon.RocketMQ.Shared.csproj" />
+        <None Update="README.md" Pack="true" PackagePath="/" />
+        <None Update="README.zh-CN.md" Pack="true" PackagePath="/" />
+        <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+    </ItemGroup>
+
+</Project>

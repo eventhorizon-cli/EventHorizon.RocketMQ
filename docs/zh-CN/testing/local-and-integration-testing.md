@@ -1,0 +1,134 @@
+# 测试边界：快速单元测试与真实 RocketMQ 环境
+
+[English](../../en-US/testing/local-and-integration-testing.md) | [简体中文](local-and-integration-testing.md)
+
+RocketMQ 客户端的正确性分为两层。序列化、重试决策、生命周期和 DI 可以在进程内确定性验证；协议互操作、
+Broker 路由、Proxy 语义和真实的长轮询则必须与实际服务端一起验证。本仓库把两层测试分开，避免“能跑完
+Mock”被误认为“能连接到 RocketMQ”。
+
+## 背景
+
+经典 Remoting 的行为同时受 NameServer route、Broker 广告地址、wire frame、网络连接和 callback 影响；
+gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一层的本地替身都很难完整模拟另一个层。
+
+但把所有测试都放进 Docker 也不可取：测试会更慢、更脆弱，并把简单的错误变成环境问题。因此项目约定把
+纯客户端行为留在 unit test，把 Docker 只用于验证真实部署边界。
+
+## 决策
+
+测试项目与生产项目按协议一一对应：
+
+| 位置 | 类型 | 责任 |
+| --- | --- | --- |
+| [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests) | 单元测试 | 消息、过滤、公共选项和公共异常的协议无关语义。 |
+| [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
+| [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
+| [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite 和死信路径。 |
+| [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务和撤回路径。 |
+| [`tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与共享环境，不引用任一生产协议项目。 |
+| [`tests/EventHorizon.RocketMQ.Benchmarks`](../../../tests/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
+
+单元测试优先使用 `MockBehavior.Strict` 的 Moq，以明确可替换协作者的交互。对于流式 framing、竞争、
+时序或有状态协议协作，保留小型专用 fake 比堆叠 Mock 更清晰时可以例外。
+
+## 如何工作
+
+### 1. 单元测试不依赖网络或 Docker
+
+单元测试应在没有 NameServer、Broker、Proxy 或容器运行时的环境中稳定执行。它们针对的是客户端可控的
+边界，例如：
+
+- options 验证、命名/键控 profile 与重复角色注册；
+- message 编解码、frame 长度限制、ACL 签名和 response correlation；
+- route cache、重试、取消、连接故障和 handler 生命周期；
+- Consumer 对 `Success`、`Retry`、`DeadLetter` 的处理决策。
+
+这样失败信息能直接指向客户端逻辑。若测试需要真实 endpoint 才能成立，它应迁移到对应的 integration
+test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
+
+### 2. Integration fixture 启动完整最小集群
+
+共享
+[`RocketMQContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
+使用 Testcontainers 和 `apache/rocketmq:5.5.0`：
+
+```text
+测试进程
+   │ 动态映射端口
+   ├── NameServer 容器
+   └── Broker + cluster-mode Proxy 容器
+            ├── 经典 Remoting Broker 端口
+            └── gRPC Proxy 端口
+```
+
+fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册，然后准备标准、事务、
+FIFO、延迟和 Lite parent topic 以及测试 group。端口由 Testcontainers 动态映射，测试不会依赖手工环境的
+固定端口。
+
+Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注册到 NameServer，Proxy 再启动。这既能
+覆盖宿主机访问 Broker 的 route，又能覆盖 LitePush 所需的 cluster Proxy 路径。
+
+### 3. 手工 Compose 环境服务于探索，不服务于集成测试前置条件
+
+`test-environments` 集中存放自包含的手工 Compose 环境。其中的
+[`rocketmq`](../../../test-environments/rocketmq) 是供开发者运行 sample、检查日志或手工复现问题的 RocketMQ 5.5.0
+环境。它默认提供：
+
+- NameServer：`localhost:9876`；
+- Broker：`localhost:10911`；
+- cluster-mode Proxy：gRPC 使用 `localhost:8081`。
+
+它的[使用说明](../../../test-environments/rocketmq/README.md)还解释了 `volume-init`、默认 Docker named
+volume 与可选的宿主机目录持久化覆盖文件。该 Compose 环境不应成为 CI 或 `dotnet test` 的前置条件：
+集成测试总是使用自己的 Testcontainers fixture，避免共享 topic、端口和数据状态。
+
+### 4. 验证顺序反映失败成本
+
+修改 C# 后，先格式化和构建，再运行最窄的受影响 unit test；最后运行完整的匹配 unit test 项目。标准命令
+在仓库根目录执行：
+
+```shell
+dotnet format EventHorizon.RocketMQ.sln
+dotnet restore EventHorizon.RocketMQ.sln
+dotnet build EventHorizon.RocketMQ.sln --no-restore
+
+dotnet test tests/EventHorizon.RocketMQ.Shared.Tests/EventHorizon.RocketMQ.Shared.Tests.csproj --no-restore
+dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
+dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
+```
+
+涉及 Broker、NameServer、Proxy、wire interoperability 或实际协议行为时，再运行匹配的 integration test：
+
+```shell
+dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
+dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
+```
+
+Docker 不可用时，应报告没有运行哪一个 integration test 以及原因，不能用 unit test 的成功替代它。
+
+### 5. 测试矩阵也表达支持边界
+
+集成测试只覆盖仓库真正公开且可由目标服务端运行的路径。gRPC 的 Simple、Push 和 LitePush 在匹配的
+Proxy/Broker 配置下覆盖；已移除的 gRPC PullConsumer 没有 sample 或 integration test，因为它不是当前
+可提供的 public role。显式 queue/offset Pull 的真实互操作覆盖属于 Remoting integration tests。
+
+同样，手工 Compose 环境的初始化文档会列出 Lite、topic 类型、group 和 Proxy 前提。测试失败时先区分
+客户端回归、服务端 feature 未开启、服务端版本不兼容和 Docker/network 环境问题，能显著缩短定位时间。
+
+## 取舍与约束
+
+**集成测试更慢，但不能省。** Testcontainers 需要 Docker、镜像和可用的容器网络；它会比 unit test 慢，
+却能发现 Mock 无法代表的 route、broker advertised address、Proxy RPC 和 Broker 行为差异。
+
+**Docker 环境是受控基线，不是任意生产集群的证明。** 当前 fixture 与手工环境使用 RocketMQ 5.5.0。生产
+部署仍应在实际版本、TLS、ACL、拓扑与 topic 配置上做验收测试。
+
+**数据隔离是刻意设计。** Testcontainers 通过每个 fixture 的网络和动态端口隔离测试；Compose 使用持久卷以
+便于手工检查。不要把两者混用，否则会引入难以复现的 offset、topic 和消费者组状态。
+
+## 延伸阅读
+
+- [协议边界](../architecture/protocol-boundaries.md)
+- [依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)
+- [gRPC 消费模型](../grpc/consumer-model.md)
+- [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)

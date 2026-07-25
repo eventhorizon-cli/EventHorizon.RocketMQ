@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <LangVersion>12.0</LangVersion>
+        <PackageId>EventHorizon.RocketMQ.Grpc</PackageId>
+        <Authors>EventHorizon contributors</Authors>
+        <Description>Dependency-injection-first .NET client for Apache RocketMQ 5 gRPC.</Description>
+        <PackageTags>rocketmq;messaging;grpc;dotnet</PackageTags>
+        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/eventhorizon-cli/EventHorizon.RocketMQ</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>0.1.0-alpha.1</Version>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+        <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+        <PackageReference Include="Grpc.Tools" Version="2.82.0">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../EventHorizon.RocketMQ.Shared/EventHorizon.RocketMQ.Shared.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Protobuf Include="Protocol/Protos/apache/rocketmq/v2/definition.proto"
+                  ProtoRoot="Protocol/Protos"
+                  GrpcServices="Client"
+                  Access="Internal" />
+        <Protobuf Include="Protocol/Protos/apache/rocketmq/v2/service.proto"
+                  ProtoRoot="Protocol/Protos"
+                  GrpcServices="Client"
+                  Access="Internal" />
+        <None Update="README.md" Pack="true" PackagePath="/" />
+        <None Update="README.zh-CN.md" Pack="true" PackagePath="/" />
+        <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+    </ItemGroup>
+
+</Project>

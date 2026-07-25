@@ -1,0 +1,66 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System.Net;
+using System.Text;
+using EventHorizon.RocketMQ.Remoting.Protocol;
+using EventHorizon.RocketMQ.Remoting.Protocol.Route;
+using Microsoft.Extensions.Options;
+using Moq;
+using Xunit;
+
+namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol.Route;
+
+public sealed class NameServerTests
+{
+    [Fact]
+    public async Task GetTopicRouteInfoAsync_FailsOverAcrossConfiguredNameServers()
+    {
+        var requests = new List<RemotingCommand>();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<EndPoint, RemotingCommand, TimeSpan, CancellationToken>((_, request, _, _) =>
+            {
+                requests.Add(request);
+                return requests.Count == 1
+                    ? Task.FromException<RemotingCommand>(new IOException("NameServer is unavailable."))
+                    : Task.FromResult(new RemotingCommand
+                    {
+                        Code = ResponseCodes.ResSuccess,
+                        Body = Encoding.UTF8.GetBytes("{\"brokerDatas\":[],\"queueDatas\":[]}")
+                    });
+            });
+        var nameServer = new NameServer(remoting.Object, Options.Create(new RemotingClientOptions
+        {
+            NamesrvAddr = "127.0.0.1:19876;127.0.0.1:29876"
+        }));
+
+        var route = await nameServer.GetTopicRouteInfoAsync(
+            "orders",
+            TimeSpan.FromSeconds(1),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Empty(route.BrokerDatas);
+        Assert.Empty(route.QueueDatas);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(2, requests.Select(static request => request.Opaque).Distinct().Count());
+        remoting.VerifyAll();
+    }
+}

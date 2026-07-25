@@ -1,0 +1,1903 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System.Collections.Concurrent;
+using System.Text;
+using System.Threading.Channels;
+using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Exceptions;
+using EventHorizon.RocketMQ.Remoting.Protocol;
+using EventHorizon.RocketMQ.Remoting.Protocol.Route;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
+
+internal sealed class RemotingPushConsumer : IRemotingPushConsumer
+{
+    private const int ReadPermission = 1 << 2;
+    private static readonly TimeSpan MaximumRebalanceInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan MaximumBrokerLockLiveTime = TimeSpan.FromSeconds(30);
+
+    private readonly RemotingPushConsumerOptions _options;
+    private readonly Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>> _messageHandler;
+    private readonly RemotingClientOptions _clientOptions;
+    private readonly IRemotingConsumerEngine _consumerEngine;
+    private readonly ITopicRouteService _routes;
+    private readonly IRemotingClient _remotingClient;
+    private readonly TimeProvider _timeProvider;
+    private readonly ILogger _logger;
+    private readonly string _clientId;
+    private readonly IDisposable? _consumerIdsChangedRegistration;
+    private readonly IDisposable? _resetConsumerOffsetRegistration;
+    private readonly BroadcastOffsetStore? _broadcastOffsetStore;
+    private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
+    private readonly ConcurrentDictionary<ResetQueueKey, long> _resetBoundaries = new();
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private RunState? _run;
+    private int _disposed;
+
+    public RemotingPushConsumer(
+        IOptions<RemotingPushConsumerOptions> options,
+        IOptions<RemotingClientOptions> clientOptions,
+        IRemotingConsumerEngine consumerEngine,
+        ITopicRouteService routes,
+        IRemotingClient remotingClient,
+        TimeProvider timeProvider,
+        ILoggerFactory? loggerFactory = null,
+        Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null)
+    {
+        _options = options.Value;
+        _messageHandler = messageHandler ?? _options.MessageHandler ??
+            throw new ArgumentException("A message handler is required.", nameof(options));
+        _clientOptions = clientOptions.Value;
+        _consumerEngine = consumerEngine;
+        _routes = routes;
+        _remotingClient = remotingClient;
+        _timeProvider = timeProvider;
+        _clientId = _clientOptions.BuildRemotingClientId();
+        _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
+            _options.Subscriptions,
+            StringComparer.Ordinal);
+        if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+        {
+            _broadcastOffsetStore = new BroadcastOffsetStore(
+                _options.LocalOffsetStorePath,
+                _clientId,
+                LegacyNamespace.Wrap(_clientOptions.Namespace, _options.GroupName));
+        }
+
+        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<RemotingPushConsumer>();
+        if (remotingClient is IRemotingRequestHandlerRegistry requestHandlers)
+        {
+            _consumerIdsChangedRegistration = requestHandlers.RegisterRequestHandler(
+                RequestCode.NotifyConsumerIdsChanged,
+                HandleConsumerIdsChangedAsync);
+            try
+            {
+                _resetConsumerOffsetRegistration = requestHandlers.RegisterRequestHandler(
+                    RequestCode.ResetConsumerOffset,
+                    HandleResetConsumerOffsetAsync);
+            }
+            catch
+            {
+                _consumerIdsChangedRegistration.Dispose();
+                throw;
+            }
+        }
+    }
+
+    public async ValueTask StartAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_run is not null)
+            {
+                return;
+            }
+
+            await _consumerEngine.StartAsync(cancellationToken).ConfigureAwait(false);
+            var run = new RunState(
+                CreateDeliveryChannel(),
+                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                _options.MaxConcurrency);
+            _run = run;
+            try
+            {
+                run.Workers = Enumerable.Range(0, _options.MaxConcurrency)
+                    .Select(_ => ProcessAsync(run))
+                    .ToArray();
+                await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false);
+                run.Coordinator = CoordinateAsync(run);
+            }
+            catch
+            {
+                _run = null;
+                await ShutdownRunAsync(run).ConfigureAwait(false);
+                throw;
+            }
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    public async ValueTask StopAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var run = _run;
+            if (run is null)
+            {
+                return;
+            }
+
+            _run = null;
+            await ShutdownRunAsync(run).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    public async Task SubscribeAsync(
+        string topic,
+        FilterExpression? expression = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        var filter = expression ?? FilterExpression.All;
+
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            _subscriptions[topic] = filter;
+            _consumerEngine.SetSubscription(topic, filter);
+            var run = _run;
+            if (run is not null)
+            {
+                run.BumpSubscriptionVersion();
+                await ApplySubscriptionChangeAsync(run, topic, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    public async Task UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            _subscriptions.TryRemove(topic, out _);
+            RemoveResetBoundaries(topic);
+            _consumerEngine.RemoveSubscription(topic);
+            var run = _run;
+            if (run is not null)
+            {
+                run.BumpSubscriptionVersion();
+                await ApplySubscriptionChangeAsync(run, topic, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _resetConsumerOffsetRegistration?.Dispose();
+        _consumerIdsChangedRegistration?.Dispose();
+        await StopAsync().ConfigureAwait(false);
+        await _consumerEngine.DisposeAsync().ConfigureAwait(false);
+    }
+
+    private async ValueTask<RemotingRequestResult> HandleConsumerIdsChangedAsync(RemotingRequestContext context)
+    {
+        if (!context.Request.ExtFields.TryGetValue("consumerGroup", out var consumerGroup) ||
+            consumerGroup is not string group ||
+            !string.Equals(group, GetConsumerGroup(), StringComparison.Ordinal))
+        {
+            return RemotingRequestResult.NotHandled;
+        }
+
+        await _lifecycle.WaitAsync(context.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_run is { } run)
+            {
+                SignalRebalance(run);
+            }
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+
+        return RemotingRequestResult.NoResponse;
+    }
+
+    private async ValueTask<RemotingRequestResult> HandleResetConsumerOffsetAsync(RemotingRequestContext context)
+    {
+        if (!context.Request.ExtFields.TryGetValue("group", out var groupValue) ||
+            groupValue is not string group ||
+            !string.Equals(group, GetConsumerGroup(), StringComparison.Ordinal) ||
+            !context.Request.ExtFields.TryGetValue("topic", out var topicValue) ||
+            topicValue is not string wireTopic)
+        {
+            return RemotingRequestResult.NotHandled;
+        }
+
+        var logicalTopic = LegacyNamespace.WithoutNamespace(_clientOptions.Namespace, wireTopic);
+        if (!string.Equals(GetWireTopic(logicalTopic), wireTopic, StringComparison.Ordinal) ||
+            !_subscriptions.ContainsKey(logicalTopic))
+        {
+            return RemotingRequestResult.NotHandled;
+        }
+
+        var offsets = LegacyResetOffsetDecoder.Decode(context.Request.Body);
+        if (offsets.Any(offset => !string.Equals(offset.Topic, wireTopic, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException(
+                $"The reset-offset body contains a queue outside the requested topic '{wireTopic}'.");
+        }
+
+        await _lifecycle.WaitAsync(context.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_subscriptions.ContainsKey(logicalTopic))
+            {
+                return RemotingRequestResult.NotHandled;
+            }
+
+            if (offsets.Count == 0)
+            {
+                return RemotingRequestResult.NoResponse;
+            }
+
+            if (_run is { } run)
+            {
+                await ResetConsumerOffsetsAsync(
+                    run,
+                    logicalTopic,
+                    offsets,
+                    context.CancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                SetResetBoundaries(logicalTopic, offsets);
+            }
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+
+        return RemotingRequestResult.NoResponse;
+    }
+
+    private async Task ResetConsumerOffsetsAsync(
+        RunState run,
+        string logicalTopic,
+        IReadOnlyList<LegacyResetOffset> offsets,
+        CancellationToken cancellationToken)
+    {
+        var desiredOffsets = offsets.ToDictionary(
+            static offset => (offset.BrokerName, offset.QueueId),
+            static offset => offset.Offset);
+        await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var removed = new List<ResetReceiver>();
+        try
+        {
+            foreach (var entry in run.Receivers)
+            {
+                if (!string.Equals(entry.Key.Topic, logicalTopic, StringComparison.Ordinal) ||
+                    !desiredOffsets.TryGetValue((entry.Key.BrokerName, entry.Key.QueueId), out var offset) ||
+                    !run.Receivers.TryRemove(entry.Key, out var receiver))
+                {
+                    continue;
+                }
+
+                receiver.Stopping.Cancel();
+                removed.Add(new ResetReceiver(receiver, offset));
+            }
+
+            foreach (var reset in removed)
+            {
+                try
+                {
+                    await reset.Receiver.Task.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Legacy receiver failed while resetting {Topic}/{BrokerName}/{QueueId}",
+                        reset.Receiver.Queue.Topic,
+                        reset.Receiver.Queue.BrokerName,
+                        reset.Receiver.Queue.QueueId);
+                }
+            }
+
+            SetResetBoundaries(logicalTopic, offsets);
+
+            if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+            {
+                foreach (var offset in offsets)
+                {
+                    var key = new ResetQueueKey(logicalTopic, offset.BrokerName, offset.QueueId);
+                    await _broadcastOffsetStore!.UpdateAsync(
+                        logicalTopic,
+                        offset.BrokerName,
+                        offset.QueueId,
+                        offset.Offset,
+                        cancellationToken).ConfigureAwait(false);
+                    TryRemoveResetBoundary(key, offset.Offset);
+                }
+            }
+            else
+            {
+                foreach (var reset in removed)
+                {
+                    await PersistOffsetAndClearResetBoundaryAsync(
+                        reset.Receiver.Queue,
+                        reset.Offset,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            foreach (var reset in removed)
+            {
+                reset.Receiver.Dispose();
+            }
+
+            if (offsets.Count > 0)
+            {
+                SignalRebalance(run);
+            }
+
+            run.CoordinationGate.Release();
+        }
+    }
+
+    private Channel<Delivery> CreateDeliveryChannel() =>
+        Channel.CreateBounded<Delivery>(new BoundedChannelOptions(_options.MaxCachedMessages)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = _options.MaxConcurrency == 1,
+            SingleWriter = false
+        });
+
+    private async Task CoordinateAsync(RunState run)
+    {
+        var interval = GetRebalanceInterval();
+        while (!run.Stopping.IsCancellationRequested)
+        {
+            try
+            {
+                await run.RebalanceSignal.WaitAsync(interval, run.Stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (run.Stopping.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                await CoordinateOnceAsync(run, run.Stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Legacy consumer coordination failed; retrying");
+            }
+        }
+    }
+
+    private async Task CoordinateOnceAsync(RunState run, CancellationToken cancellationToken)
+    {
+        await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await CoordinateOnceCoreAsync(run, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            run.CoordinationGate.Release();
+        }
+    }
+
+    private async Task ApplySubscriptionChangeAsync(
+        RunState run,
+        string topic,
+        CancellationToken cancellationToken)
+    {
+        await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ReconcileTopicAsync(
+                run,
+                topic,
+                Array.Empty<RemotingPullMessageQueue>(),
+                cancellationToken).ConfigureAwait(false);
+            await CoordinateOnceCoreAsync(run, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            run.CoordinationGate.Release();
+        }
+    }
+
+    private async Task CoordinateOnceCoreAsync(RunState run, CancellationToken cancellationToken)
+    {
+        var retryTopic = GetRetryTopic();
+        var topics = (_options.ConsumerMode == ConsumerMode.Broadcasting
+                ? _subscriptions.Keys
+                : _subscriptions.Keys.Append(retryTopic))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static topic => topic, StringComparer.Ordinal)
+            .ToArray();
+        var snapshots = new List<TopicSnapshot>(topics.Length);
+        foreach (var topic in topics)
+        {
+            try
+            {
+                var route = await _routes.GetAsync(
+                    GetWireTopic(topic),
+                    forceRefresh: true,
+                    cancellationToken).ConfigureAwait(false);
+                var queues = BuildQueues(topic, route);
+                snapshots.Add(new TopicSnapshot(topic, queues));
+                foreach (var broker in route.BrokerDatas)
+                {
+                    foreach (var address in broker.BrokerAddrs.Values)
+                    {
+                        run.KnownBrokers[address] = new BrokerEndpoint(broker.BrokerName, address);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                if (topic == retryTopic)
+                {
+                    _logger.LogDebug(exception, "Legacy retry topic {RetryTopic} is not available yet", retryTopic);
+                }
+                else
+                {
+                    _logger.LogWarning(exception, "Unable to refresh legacy route for topic {Topic}", topic);
+                }
+            }
+        }
+
+        await SendHeartbeatsAsync(run, run.KnownBrokers.Values, cancellationToken).ConfigureAwait(false);
+        if (UsesBrokerQueueLocks)
+        {
+            await RenewQueueLocksAsync(run, cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var snapshot in snapshots)
+        {
+            if (snapshot.Queues.Count == 0)
+            {
+                await ReconcileTopicAsync(
+                    run,
+                    snapshot.Topic,
+                    Array.Empty<RemotingPullMessageQueue>(),
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+            {
+                await ReconcileTopicAsync(run, snapshot.Topic, snapshot.Queues, cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
+
+            IReadOnlyList<string> consumerIds;
+            try
+            {
+                consumerIds = await GetConsumerIdsAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to discover consumers for legacy group {GroupName} and topic {Topic}",
+                    _options.GroupName,
+                    snapshot.Topic);
+                continue;
+            }
+
+            if (!consumerIds.Contains(_clientId, StringComparer.Ordinal))
+            {
+                _logger.LogWarning(
+                    "Broker membership for legacy group {GroupName} does not contain client {ClientId}",
+                    _options.GroupName,
+                    _clientId);
+                await ReconcileTopicAsync(
+                    run,
+                    snapshot.Topic,
+                    Array.Empty<RemotingPullMessageQueue>(),
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var assigned = LegacyConsumerProtocol.Allocate(
+                snapshot.Queues,
+                consumerIds,
+                _clientId);
+            await ReconcileTopicAsync(run, snapshot.Topic, assigned, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SendHeartbeatsAsync(
+        RunState run,
+        IEnumerable<BrokerEndpoint> brokers,
+        CancellationToken cancellationToken)
+    {
+        var subscriptions = _subscriptions.ToDictionary(
+            static entry => entry.Key,
+            static entry => entry.Value,
+            StringComparer.Ordinal);
+        if (_options.ConsumerMode == ConsumerMode.Clustering)
+        {
+            subscriptions[GetRetryTopic()] = FilterExpression.All;
+        }
+
+        var wireSubscriptions = subscriptions.ToDictionary(
+            entry => GetWireTopic(entry.Key),
+            static entry => entry.Value,
+            StringComparer.Ordinal);
+        var body = LegacyConsumerProtocol.EncodeHeartbeat(
+            _clientId,
+            GetConsumerGroup(),
+            wireSubscriptions,
+            run.SubscriptionVersion,
+            _options.ConsumerMode,
+            _options.InitialPosition,
+            _clientOptions.UnitMode);
+        foreach (var broker in brokers.DistinctBy(static broker => broker.Address, StringComparer.Ordinal))
+        {
+            try
+            {
+                var response = await _remotingClient.InvokeAsync(
+                    EndpointParser.Parse(broker.Address),
+                    new RemotingCommand(RequestCode.HeartBeat, new HeartbeatRequestHeader()) { Body = body },
+                    _clientOptions.RequestTimeout,
+                    cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response, "send heartbeat");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to send legacy consumer heartbeat to broker {BrokerName} at {BrokerAddress}",
+                    broker.BrokerName,
+                    broker.Address);
+            }
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> GetConsumerIdsAsync(
+        TopicSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        var queue = snapshot.Queues[0];
+        var response = await _remotingClient.InvokeAsync(
+            EndpointParser.Parse(queue.BrokerAddress),
+            new RemotingCommand(RequestCode.GetConsumerListByGroup, new GetConsumerListByGroupRequestHeader
+            {
+                ConsumerGroup = GetConsumerGroup(),
+                Bname = queue.BrokerName
+            }),
+            _clientOptions.RequestTimeout,
+            cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response, "query consumer list");
+        return LegacyConsumerProtocol.DecodeConsumerIds(response.Body);
+    }
+
+    private async Task ReconcileTopicAsync(
+        RunState run,
+        string topic,
+        IReadOnlyList<RemotingPullMessageQueue> desiredQueues,
+        CancellationToken cancellationToken)
+    {
+        var desired = desiredQueues.ToDictionary(QueueKey.Create);
+        var removed = new List<QueueReceiver>();
+        foreach (var entry in run.Receivers)
+        {
+            if (entry.Key.Topic == topic && !desired.ContainsKey(entry.Key) &&
+                run.Receivers.TryRemove(entry.Key, out var receiver))
+            {
+                receiver.Stopping.Cancel();
+                removed.Add(receiver);
+            }
+        }
+
+        try
+        {
+            await AwaitReceiversAsync(removed).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (UsesBrokerQueueLocks && removed.Count > 0)
+            {
+                await UnlockQueuesAsync(
+                    removed.Select(static receiver => receiver.Queue),
+                    oneway: true,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            foreach (var receiver in removed)
+            {
+                receiver.Dispose();
+            }
+        }
+
+        var additions = desired
+            .Where(entry => !run.Receivers.ContainsKey(entry.Key))
+            .ToArray();
+        var queueLockResult = UsesBrokerQueueLocks
+            ? await LockQueuesAsync(additions.Select(static entry => entry.Value), cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        foreach (var entry in additions)
+        {
+            if (queueLockResult is not null && !queueLockResult.LockedQueues.Contains(entry.Value))
+            {
+                continue;
+            }
+
+            var receiver = new QueueReceiver(entry.Value, run.Stopping.Token);
+            if (UsesBrokerQueueLocks)
+            {
+                receiver.MarkBrokerLockAcquired(_timeProvider.GetUtcNow());
+            }
+
+            if (!run.Receivers.TryAdd(entry.Key, receiver))
+            {
+                receiver.Dispose();
+                continue;
+            }
+
+            receiver.Task = _options.ConsumeOrderly
+                ? PollOrderlyAsync(run, receiver)
+                : PollAsync(run, receiver);
+        }
+    }
+
+    private bool UsesBrokerQueueLocks =>
+        _options.ConsumeOrderly && _options.ConsumerMode == ConsumerMode.Clustering;
+
+    private async Task RenewQueueLocksAsync(RunState run, CancellationToken cancellationToken)
+    {
+        var receivers = run.Receivers.Values.ToArray();
+        if (receivers.Length == 0)
+        {
+            return;
+        }
+
+        var queueLockResult = await LockQueuesAsync(
+            receivers.Select(static receiver => receiver.Queue),
+            cancellationToken).ConfigureAwait(false);
+        var timestamp = _timeProvider.GetUtcNow();
+        foreach (var receiver in receivers)
+        {
+            if (!queueLockResult.RefreshedQueues.Contains(receiver.Queue))
+            {
+                continue;
+            }
+
+            if (queueLockResult.LockedQueues.Contains(receiver.Queue))
+            {
+                receiver.MarkBrokerLockAcquired(timestamp);
+                continue;
+            }
+
+            if (receiver.HasValidBrokerLock(_timeProvider, MaximumBrokerLockLiveTime))
+            {
+                _logger.LogWarning(
+                    "Legacy orderly consumer lost the Broker queue lock for {Topic}/{BrokerName}/{QueueId}",
+                    receiver.Queue.Topic,
+                    receiver.Queue.BrokerName,
+                    receiver.Queue.QueueId);
+            }
+
+            receiver.MarkBrokerLockLost();
+        }
+    }
+
+    private async Task<QueueLockResult> LockQueuesAsync(
+        IEnumerable<RemotingPullMessageQueue> queues,
+        CancellationToken cancellationToken)
+    {
+        var candidates = queues.Distinct().ToArray();
+        var result = new QueueLockResult();
+        foreach (var broker in candidates.GroupBy(static queue => new QueueBrokerKey(
+                     queue.BrokerName,
+                     queue.BrokerAddress)))
+        {
+            var queuesByReference = broker.ToDictionary(
+                queue => CreateQueueLockReference(queue),
+                static queue => queue);
+            var request = new RemotingCommand(RequestCode.LockBatchMq, new LockBatchMqRequestHeader())
+            {
+                Body = Encoding.UTF8.GetBytes(new QueueLockRequestBody
+                {
+                    ConsumerGroup = GetConsumerGroup(),
+                    ClientId = _clientId,
+                    MqSet = queuesByReference.Keys.ToArray()
+                }.ToJson())
+            };
+            try
+            {
+                var response = await _remotingClient.InvokeAsync(
+                    EndpointParser.Parse(broker.Key.Address),
+                    request,
+                    _clientOptions.RequestTimeout,
+                    cancellationToken).ConfigureAwait(false);
+                if (response.Code != ResponseCodes.ResSuccess)
+                {
+                    _logger.LogWarning(
+                        "Broker {BrokerName} rejected the orderly queue-lock request: {ResponseCode} {Remark}",
+                        broker.Key.Name,
+                        response.Code,
+                        response.Remark);
+                    continue;
+                }
+
+                var responseBody = response.Body is { Length: > 0 }
+                    ? Encoding.UTF8.GetString(response.Body).FromJson<QueueLockResponseBody>()
+                    : null;
+                if (responseBody is null)
+                {
+                    _logger.LogWarning(
+                        "Broker {BrokerName} returned an empty orderly queue-lock response",
+                        broker.Key.Name);
+                    continue;
+                }
+
+                result.RefreshedQueues.UnionWith(broker);
+                foreach (var queueReference in responseBody.LockOKMQSet ?? [])
+                {
+                    if (queuesByReference.TryGetValue(queueReference, out var queue))
+                    {
+                        result.LockedQueues.Add(queue);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to acquire orderly queue locks from Broker {BrokerName} at {BrokerAddress}",
+                    broker.Key.Name,
+                    broker.Key.Address);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task UnlockQueuesAsync(
+        IEnumerable<RemotingPullMessageQueue> queues,
+        bool oneway,
+        CancellationToken cancellationToken)
+    {
+        var candidates = queues.Distinct().ToArray();
+        foreach (var broker in candidates.GroupBy(static queue => new QueueBrokerKey(
+                     queue.BrokerName,
+                     queue.BrokerAddress)))
+        {
+            var request = new RemotingCommand(RequestCode.UnlockBatchMq, new UnlockBatchMqRequestHeader())
+            {
+                Body = Encoding.UTF8.GetBytes(new QueueLockRequestBody
+                {
+                    ConsumerGroup = GetConsumerGroup(),
+                    ClientId = _clientId,
+                    MqSet = broker.Select(CreateQueueLockReference).ToArray()
+                }.ToJson())
+            };
+            try
+            {
+                if (oneway)
+                {
+                    await _remotingClient.InvokeOnewayAsync(
+                        EndpointParser.Parse(broker.Key.Address),
+                        request,
+                        _clientOptions.RequestTimeout,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var response = await _remotingClient.InvokeAsync(
+                        EndpointParser.Parse(broker.Key.Address),
+                        request,
+                        _clientOptions.RequestTimeout,
+                        cancellationToken).ConfigureAwait(false);
+                    EnsureSuccess(response, "unlock orderly message queues");
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to release orderly queue locks at Broker {BrokerName} at {BrokerAddress}",
+                    broker.Key.Name,
+                    broker.Key.Address);
+            }
+        }
+    }
+
+    private QueueLockReference CreateQueueLockReference(RemotingPullMessageQueue queue) => new(
+        GetWireTopic(queue.Topic),
+        queue.BrokerName,
+        queue.QueueId);
+
+    private async Task PollAsync(RunState run, QueueReceiver receiver)
+    {
+        var queue = receiver.Queue;
+        var cancellationToken = receiver.Stopping.Token;
+        var offset = await InitializeOffsetAsync(run, queue, cancellationToken).ConfigureAwait(false);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var result = await _consumerEngine.PullAsync(queue, offset, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                if (result.Status == RemotingPullStatus.OffsetIllegal)
+                {
+                    offset = result.NextOffset;
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                if (result.Messages.Count == 0)
+                {
+                    var hasResetBoundary = _resetBoundaries.ContainsKey(ResetQueueKey.Create(queue));
+                    if (hasResetBoundary ||
+                        (_options.ConsumerMode == ConsumerMode.Broadcasting && result.NextOffset != offset))
+                    {
+                        await PersistOffsetAndClearResetBoundaryAsync(
+                            queue,
+                            result.NextOffset,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    offset = result.NextOffset;
+                    continue;
+                }
+
+                var pending = result.Messages
+                    .Select(message => new Delivery(message, cancellationToken))
+                    .ToArray();
+                foreach (var delivery in pending)
+                {
+                    run.ReserveFifoOrder(delivery);
+                    try
+                    {
+                        await run.Deliveries.Writer.WriteAsync(delivery, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        run.CompleteFifoOrder(delivery);
+                        throw;
+                    }
+                }
+
+                var outcomes = await Task.WhenAll(pending.Select(static delivery => delivery.Completion.Task))
+                    .WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+                {
+                    for (var index = 0; index < outcomes.Length; index++)
+                    {
+                        if (outcomes[index] != ConsumeResult.Success)
+                        {
+                            _logger.LogWarning(
+                                "Broadcast consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
+                                pending[index].Message.MessageId,
+                                outcomes[index]);
+                        }
+                    }
+                }
+                else
+                {
+                    for (var index = 0; index < outcomes.Length; index++)
+                    {
+                        var outcome = outcomes[index];
+                        if (outcome == ConsumeResult.Success)
+                        {
+                            continue;
+                        }
+
+                        var message = pending[index].Message;
+                        var deadLetter = outcome == ConsumeResult.DeadLetter ||
+                                         message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
+                        var retryOffset = deadLetter
+                            ? null
+                            : await PrepareRetryOffsetAsync(run, queue, cancellationToken).ConfigureAwait(false);
+                        await _consumerEngine.SendBackAsync(
+                            queue,
+                            message,
+                            deadLetter ? -1 : GetDelayLevel(_options.RetryDelay),
+                            _options.MaxDeliveryAttempts,
+                            cancellationToken).ConfigureAwait(false);
+                        if (!deadLetter)
+                        {
+                            if (retryOffset is { } initialization)
+                            {
+                                run.RetryBoundaries[QueueKey.Create(initialization.Queue)] = initialization.Offset;
+                                await PersistRetryOffsetAsync(initialization, CancellationToken.None).ConfigureAwait(false);
+                            }
+
+                            SignalRebalance(run);
+                        }
+                    }
+                }
+
+                offset = result.NextOffset;
+                await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Legacy pull failed for {Topic}/{BrokerName}/{QueueId}; retrying",
+                    queue.Topic,
+                    queue.BrokerName,
+                    queue.QueueId);
+                await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task PollOrderlyAsync(RunState run, QueueReceiver receiver)
+    {
+        var queue = receiver.Queue;
+        var cancellationToken = receiver.Stopping.Token;
+        var offset = await InitializeOffsetAsync(run, queue, cancellationToken).ConfigureAwait(false);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (UsesBrokerQueueLocks)
+                {
+                    await receiver.WaitForBrokerLockAsync(
+                        _timeProvider,
+                        MaximumBrokerLockLiveTime,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                var result = await _consumerEngine.PullAsync(queue, offset, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                if (!HasValidBrokerQueueLock(receiver))
+                {
+                    continue;
+                }
+
+                if (result.Status == RemotingPullStatus.OffsetIllegal)
+                {
+                    offset = result.NextOffset;
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                if (result.Messages.Count == 0)
+                {
+                    var hasResetBoundary = _resetBoundaries.ContainsKey(ResetQueueKey.Create(queue));
+                    if (hasResetBoundary ||
+                        (_options.ConsumerMode == ConsumerMode.Broadcasting && result.NextOffset != offset))
+                    {
+                        await PersistOffsetAndClearResetBoundaryAsync(
+                            queue,
+                            result.NextOffset,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    offset = result.NextOffset;
+                    continue;
+                }
+
+                var completed = true;
+                foreach (var message in result.Messages.OrderBy(static message => message.QueueOffset))
+                {
+                    var outcome = await HandleOrderlyMessageAsync(
+                        run,
+                        receiver,
+                        message,
+                        cancellationToken).ConfigureAwait(false);
+                    if (outcome == OrderlyDeliveryOutcome.LeaseLost)
+                    {
+                        completed = false;
+                        break;
+                    }
+
+                    if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+                    {
+                        if (outcome != OrderlyDeliveryOutcome.Success)
+                        {
+                            _logger.LogWarning(
+                                "Broadcast orderly consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
+                                message.MessageId,
+                                outcome);
+                        }
+                    }
+                    else if (outcome == OrderlyDeliveryOutcome.DeadLetter)
+                    {
+                        await _consumerEngine.SendBackAsync(
+                            queue,
+                            message,
+                            delayLevel: -1,
+                            maxReconsumeTimes: _options.MaxDeliveryAttempts,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (!HasValidBrokerQueueLock(receiver))
+                    {
+                        completed = false;
+                        break;
+                    }
+
+                    offset = checked(message.QueueOffset + 1);
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                if (!completed)
+                {
+                    continue;
+                }
+
+                if (result.NextOffset > offset)
+                {
+                    offset = result.NextOffset;
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Legacy orderly pull failed for {Topic}/{BrokerName}/{QueueId}; retrying",
+                    queue.Topic,
+                    queue.BrokerName,
+                    queue.QueueId);
+                await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private bool HasValidBrokerQueueLock(QueueReceiver receiver) =>
+        !UsesBrokerQueueLocks || receiver.HasValidBrokerLock(_timeProvider, MaximumBrokerLockLiveTime);
+
+    private async ValueTask<OrderlyDeliveryOutcome> HandleOrderlyMessageAsync(
+        RunState run,
+        QueueReceiver receiver,
+        RemotingMessageView message,
+        CancellationToken cancellationToken)
+    {
+        var attempt = message.DeliveryAttempt;
+        while (true)
+        {
+            if (!HasValidBrokerQueueLock(receiver))
+            {
+                return OrderlyDeliveryOutcome.LeaseLost;
+            }
+
+            ConsumeResult result;
+            await run.OrderlyConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "Legacy orderly message handler failed for message {MessageId}",
+                    message.MessageId);
+                result = ConsumeResult.Retry;
+            }
+            finally
+            {
+                run.OrderlyConcurrency.Release();
+            }
+
+            if (!HasValidBrokerQueueLock(receiver))
+            {
+                return OrderlyDeliveryOutcome.LeaseLost;
+            }
+
+            switch (result)
+            {
+                case ConsumeResult.Success:
+                    return OrderlyDeliveryOutcome.Success;
+                case ConsumeResult.DeadLetter:
+                    return OrderlyDeliveryOutcome.DeadLetter;
+                case ConsumeResult.Retry when _options.ConsumerMode == ConsumerMode.Broadcasting:
+                    return OrderlyDeliveryOutcome.Retry;
+                case ConsumeResult.Retry when attempt >= _options.MaxDeliveryAttempts:
+                    return OrderlyDeliveryOutcome.DeadLetter;
+                case ConsumeResult.Retry:
+                    attempt++;
+                    await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported ordered consume result '{result}'.");
+            }
+        }
+    }
+
+    private async Task<long> InitializeOffsetAsync(
+        RunState run,
+        RemotingPullMessageQueue queue,
+        CancellationToken cancellationToken)
+    {
+        if (_resetBoundaries.TryGetValue(ResetQueueKey.Create(queue), out var resetOffset))
+        {
+            return resetOffset;
+        }
+
+        while (true)
+        {
+            try
+            {
+                if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+                {
+                    var localOffset = await _broadcastOffsetStore!.ReadAsync(queue, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (localOffset.HasValue)
+                    {
+                        return localOffset.Value;
+                    }
+
+                    var initialBroadcastOffset = await QueryInitialOffsetAsync(queue, cancellationToken)
+                        .ConfigureAwait(false);
+                    await _broadcastOffsetStore.UpdateAsync(queue, initialBroadcastOffset, cancellationToken)
+                        .ConfigureAwait(false);
+                    return initialBroadcastOffset;
+                }
+
+                var committed = await _consumerEngine.GetOffsetAsync(queue, cancellationToken).ConfigureAwait(false);
+                if (committed >= 0)
+                {
+                    return committed;
+                }
+
+                long initial;
+                if (queue.Topic == GetRetryTopic())
+                {
+                    initial = run.RetryBoundaries.TryGetValue(QueueKey.Create(queue), out var retryBoundary)
+                        ? retryBoundary
+                        : 0;
+                }
+                else
+                {
+                    initial = await QueryInitialOffsetAsync(queue, cancellationToken).ConfigureAwait(false);
+                }
+
+                await _consumerEngine.UpdateOffsetAsync(queue, initial, cancellationToken).ConfigureAwait(false);
+                return initial;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogDebug(
+                    exception,
+                    "Legacy queue {Topic}/{BrokerName}/{QueueId} is not available yet",
+                    queue.Topic,
+                    queue.BrokerName,
+                    queue.QueueId);
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private Task<long> QueryInitialOffsetAsync(
+        RemotingPullMessageQueue queue,
+        CancellationToken cancellationToken)
+    {
+        var policy = _options.InitialPosition switch
+        {
+            ConsumeFromPosition.Beginning => QueryOffsetPolicy.Beginning,
+            ConsumeFromPosition.End => QueryOffsetPolicy.End,
+            ConsumeFromPosition.Timestamp => QueryOffsetPolicy.Timestamp,
+            _ => throw new InvalidOperationException(
+                $"Unsupported initial consume position '{_options.InitialPosition}'.")
+        };
+        return _consumerEngine.QueryOffsetAsync(
+            queue,
+            policy,
+            _options.InitialPosition == ConsumeFromPosition.Timestamp ? _options.ConsumeTimestamp : null,
+            cancellationToken);
+    }
+
+    private Task PersistOffsetAsync(
+        RemotingPullMessageQueue queue,
+        long offset,
+        CancellationToken cancellationToken) =>
+        _options.ConsumerMode == ConsumerMode.Broadcasting
+            ? _broadcastOffsetStore!.UpdateAsync(queue, offset, cancellationToken)
+            : _consumerEngine.UpdateOffsetAsync(queue, offset, cancellationToken);
+
+    private async Task PersistOffsetAndClearResetBoundaryAsync(
+        RemotingPullMessageQueue queue,
+        long offset,
+        CancellationToken cancellationToken)
+    {
+        var key = ResetQueueKey.Create(queue);
+        var hasResetBoundary = _resetBoundaries.TryGetValue(key, out var resetBoundary);
+        await PersistOffsetAsync(queue, offset, cancellationToken).ConfigureAwait(false);
+        if (hasResetBoundary)
+        {
+            TryRemoveResetBoundary(key, resetBoundary);
+        }
+    }
+
+    private bool TryRemoveResetBoundary(ResetQueueKey key, long expectedOffset) =>
+        ((ICollection<KeyValuePair<ResetQueueKey, long>>)_resetBoundaries).Remove(
+            new KeyValuePair<ResetQueueKey, long>(key, expectedOffset));
+
+    private void SetResetBoundaries(string logicalTopic, IEnumerable<LegacyResetOffset> offsets)
+    {
+        foreach (var offset in offsets)
+        {
+            _resetBoundaries[new ResetQueueKey(logicalTopic, offset.BrokerName, offset.QueueId)] = offset.Offset;
+        }
+    }
+
+    private void RemoveResetBoundaries(string logicalTopic)
+    {
+        foreach (var entry in _resetBoundaries)
+        {
+            if (string.Equals(entry.Key.Topic, logicalTopic, StringComparison.Ordinal))
+            {
+                ((ICollection<KeyValuePair<ResetQueueKey, long>>)_resetBoundaries).Remove(entry);
+            }
+        }
+    }
+
+    private async Task<RetryOffsetInitialization?> PrepareRetryOffsetAsync(
+        RunState run,
+        RemotingPullMessageQueue sourceQueue,
+        CancellationToken cancellationToken)
+    {
+        var retryQueue = CreateRetryQueue(sourceQueue);
+        if (run.Receivers.ContainsKey(QueueKey.Create(retryQueue)))
+        {
+            return null;
+        }
+
+        try
+        {
+            var committed = await _consumerEngine.GetOffsetAsync(retryQueue, cancellationToken).ConfigureAwait(false);
+            if (committed >= 0)
+            {
+                return null;
+            }
+
+            var end = await _consumerEngine.QueryOffsetAsync(
+                retryQueue,
+                QueryOffsetPolicy.End,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new RetryOffsetInitialization(retryQueue, end);
+        }
+        catch (RemotingCommandException exception) when (exception.ResponseCode == ResponseCodes.ResTopicNotExist)
+        {
+            return new RetryOffsetInitialization(retryQueue, 0);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+    }
+
+    private async Task PersistRetryOffsetAsync(
+        RetryOffsetInitialization initialization,
+        CancellationToken cancellationToken)
+    {
+        var committed = await _consumerEngine.GetOffsetAsync(initialization.Queue, cancellationToken)
+            .ConfigureAwait(false);
+        if (committed < 0)
+        {
+            await _consumerEngine.UpdateOffsetAsync(
+                initialization.Queue,
+                initialization.Offset,
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ProcessAsync(RunState run)
+    {
+        try
+        {
+            await foreach (var delivery in run.Deliveries.Reader.ReadAllAsync(run.Stopping.Token).ConfigureAwait(false))
+            {
+                try
+                {
+                    if (delivery.QueueCancellation.IsCancellationRequested)
+                    {
+                        delivery.Completion.TrySetCanceled(delivery.QueueCancellation);
+                        continue;
+                    }
+
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                        run.Stopping.Token,
+                        delivery.QueueCancellation);
+                    try
+                    {
+                        if (delivery.FifoOrder is { } order)
+                        {
+                            await order.Predecessor.WaitAsync(linked.Token).ConfigureAwait(false);
+                        }
+
+                        var result = await HandleMessageAsync(delivery, linked.Token).ConfigureAwait(false);
+                        delivery.Completion.TrySetResult(result);
+                    }
+                    catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                    {
+                        delivery.Completion.TrySetCanceled(linked.Token);
+                        if (run.Stopping.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogError(
+                            exception,
+                            "Legacy message handler failed for message {MessageId}",
+                            delivery.Message.MessageId);
+                        delivery.Completion.TrySetResult(ConsumeResult.Retry);
+                    }
+                }
+                finally
+                {
+                    run.CompleteFifoOrder(delivery);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async ValueTask<ConsumeResult> HandleMessageAsync(
+        Delivery delivery,
+        CancellationToken cancellationToken)
+    {
+        var attempt = delivery.Message.DeliveryAttempt;
+        while (true)
+        {
+            ConsumeResult result;
+            try
+            {
+                result = await _messageHandler(delivery.Message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "Legacy message handler failed for message {MessageId}",
+                    delivery.Message.MessageId);
+                result = ConsumeResult.Retry;
+            }
+
+            if (_options.ConsumerMode == ConsumerMode.Broadcasting ||
+                delivery.FifoOrder is null || result != ConsumeResult.Retry)
+            {
+                return result;
+            }
+
+            if (attempt >= _options.MaxDeliveryAttempts)
+            {
+                return ConsumeResult.DeadLetter;
+            }
+
+            attempt++;
+            await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ShutdownRunAsync(RunState run)
+    {
+        run.Stopping.Cancel();
+        SignalRebalance(run);
+        run.Deliveries.Writer.TryComplete();
+        await AwaitTaskAsync(run.Coordinator).ConfigureAwait(false);
+
+        var receivers = run.Receivers.Values.ToArray();
+        foreach (var receiver in receivers)
+        {
+            receiver.Stopping.Cancel();
+        }
+
+        await AwaitReceiversAsync(receivers).ConfigureAwait(false);
+        await AwaitTasksAsync(run.Workers).ConfigureAwait(false);
+        if (UsesBrokerQueueLocks && receivers.Length > 0)
+        {
+            await UnlockQueuesAsync(
+                receivers.Select(static receiver => receiver.Queue),
+                oneway: false,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await UnregisterAsync(run).ConfigureAwait(false);
+        try
+        {
+            if (_broadcastOffsetStore is not null)
+            {
+                await _broadcastOffsetStore.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await _consumerEngine.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+            foreach (var receiver in receivers)
+            {
+                receiver.Dispose();
+            }
+
+            run.Dispose();
+        }
+    }
+
+    private async Task UnregisterAsync(RunState run)
+    {
+        foreach (var broker in run.KnownBrokers.Values.DistinctBy(static broker => broker.Address, StringComparer.Ordinal))
+        {
+            try
+            {
+                var response = await _remotingClient.InvokeAsync(
+                    EndpointParser.Parse(broker.Address),
+                    new RemotingCommand(RequestCode.UnregisterClient, new UnregisterClientRequestHeader
+                    {
+                        ClientID = _clientId,
+                        ConsumerGroup = GetConsumerGroup(),
+                        Bname = broker.BrokerName
+                    }),
+                    _clientOptions.RequestTimeout,
+                    CancellationToken.None).ConfigureAwait(false);
+                EnsureSuccess(response, "unregister consumer");
+            }
+            catch (Exception exception)
+            {
+                _logger.LogDebug(
+                    exception,
+                    "Unable to unregister legacy consumer from broker {BrokerName} at {BrokerAddress}",
+                    broker.BrokerName,
+                    broker.Address);
+            }
+        }
+    }
+
+    private static IReadOnlyList<RemotingPullMessageQueue> BuildQueues(string topic, TopicRouteData route)
+    {
+        var queues = new List<RemotingPullMessageQueue>();
+        foreach (var queueData in route.QueueDatas
+                     .Where(static queue => (queue.Perm & ReadPermission) == ReadPermission)
+                     .OrderBy(static queue => queue.BrokerName, StringComparer.Ordinal))
+        {
+            var broker = route.BrokerDatas.FirstOrDefault(value => value.BrokerName == queueData.BrokerName);
+            if (broker is null || broker.BrokerAddrs.Count == 0)
+            {
+                continue;
+            }
+
+            var address = broker.BrokerAddrs.TryGetValue(0, out var master)
+                ? master
+                : broker.BrokerAddrs.OrderBy(static entry => entry.Key).First().Value;
+            for (var queueId = 0; queueId < queueData.ReadQueueNums; queueId++)
+            {
+                queues.Add(new RemotingPullMessageQueue(topic, queueId, queueData.BrokerName, address));
+            }
+        }
+
+        return queues;
+    }
+
+    private TimeSpan GetRebalanceInterval()
+    {
+        var configured = new[] { _clientOptions.PollNameServerInterval, _clientOptions.HeartbeatBrokerInterval }
+            .Where(static value => value > TimeSpan.Zero)
+            .DefaultIfEmpty(MaximumRebalanceInterval)
+            .Min();
+        return configured < MaximumRebalanceInterval ? configured : MaximumRebalanceInterval;
+    }
+
+    private string GetRetryTopic() => $"%RETRY%{_options.GroupName}";
+
+    private string GetConsumerGroup() => LegacyNamespace.Wrap(_clientOptions.Namespace, _options.GroupName);
+
+    private string GetWireTopic(string topic) => LegacyNamespace.Wrap(_clientOptions.Namespace, topic);
+
+    private RemotingPullMessageQueue CreateRetryQueue(RemotingPullMessageQueue sourceQueue) => new(
+        GetRetryTopic(),
+        0,
+        sourceQueue.BrokerName,
+        sourceQueue.BrokerAddress);
+
+    private static void SignalRebalance(RunState run)
+    {
+        try
+        {
+            run.RebalanceSignal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+        }
+    }
+
+    private static void EnsureSuccess(RemotingCommand response, string operation)
+    {
+        if (response.Code != ResponseCodes.ResSuccess)
+        {
+            throw new RemotingCommandException(
+                response.Code,
+                response.Remark ?? $"Broker rejected the {operation} request.");
+        }
+    }
+
+    private static async Task AwaitReceiversAsync(IEnumerable<QueueReceiver> receivers) =>
+        await AwaitTasksAsync(receivers.Select(static receiver => receiver.Task)).ConfigureAwait(false);
+
+    private static async Task AwaitTasksAsync(IEnumerable<Task> tasks)
+    {
+        foreach (var task in tasks)
+        {
+            await AwaitTaskAsync(task).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task AwaitTaskAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static int GetDelayLevel(TimeSpan delay)
+    {
+        ReadOnlySpan<long> delayTicks =
+        [
+            TimeSpan.TicksPerSecond,
+            TimeSpan.TicksPerSecond * 5,
+            TimeSpan.TicksPerSecond * 10,
+            TimeSpan.TicksPerSecond * 30,
+            TimeSpan.TicksPerMinute,
+            TimeSpan.TicksPerMinute * 2,
+            TimeSpan.TicksPerMinute * 3,
+            TimeSpan.TicksPerMinute * 4,
+            TimeSpan.TicksPerMinute * 5,
+            TimeSpan.TicksPerMinute * 6,
+            TimeSpan.TicksPerMinute * 7,
+            TimeSpan.TicksPerMinute * 8,
+            TimeSpan.TicksPerMinute * 9,
+            TimeSpan.TicksPerMinute * 10,
+            TimeSpan.TicksPerMinute * 20,
+            TimeSpan.TicksPerMinute * 30,
+            TimeSpan.TicksPerHour,
+            TimeSpan.TicksPerHour * 2
+        ];
+        for (var index = 0; index < delayTicks.Length; index++)
+        {
+            if (delay.Ticks <= delayTicks[index])
+            {
+                return index + 1;
+            }
+        }
+
+        return delayTicks.Length;
+    }
+
+    private sealed class RunState : IDisposable
+    {
+        public RunState(Channel<Delivery> deliveries, long subscriptionVersion, int maxConcurrency)
+        {
+            Deliveries = deliveries;
+            _subscriptionVersion = subscriptionVersion;
+            OrderlyConcurrency = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+        }
+
+        public Channel<Delivery> Deliveries { get; }
+        public long SubscriptionVersion => Interlocked.Read(ref _subscriptionVersion);
+        public CancellationTokenSource Stopping { get; } = new();
+        public SemaphoreSlim RebalanceSignal { get; } = new(0, 1);
+        public SemaphoreSlim CoordinationGate { get; } = new(1, 1);
+        public SemaphoreSlim OrderlyConcurrency { get; }
+        public ConcurrentDictionary<QueueKey, QueueReceiver> Receivers { get; } = new();
+        public ConcurrentDictionary<QueueKey, long> RetryBoundaries { get; } = new();
+        public ConcurrentDictionary<string, BrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
+        public Task[] Workers { get; set; } = [];
+        public Task Coordinator { get; set; } = Task.CompletedTask;
+
+        private object FifoGate { get; } = new();
+        private Dictionary<string, Task> FifoTails { get; } = new(StringComparer.Ordinal);
+        private long _subscriptionVersion;
+
+        public void BumpSubscriptionVersion() => Interlocked.Increment(ref _subscriptionVersion);
+
+        public void ReserveFifoOrder(Delivery delivery)
+        {
+            if (string.IsNullOrEmpty(delivery.Message.MessageGroup))
+            {
+                return;
+            }
+
+            var key = $"{delivery.Message.Topic}\0{delivery.Message.MessageGroup}";
+            lock (FifoGate)
+            {
+                var predecessor = FifoTails.TryGetValue(key, out var tail) ? tail : Task.CompletedTask;
+                delivery.FifoOrder = new FifoOrder(key, predecessor);
+                FifoTails[key] = delivery.FifoOrder.Completion.Task;
+            }
+        }
+
+        public void CompleteFifoOrder(Delivery delivery)
+        {
+            if (delivery.FifoOrder is not { } order)
+            {
+                return;
+            }
+
+            order.Completion.TrySetResult();
+            lock (FifoGate)
+            {
+                if (FifoTails.TryGetValue(order.Key, out var tail) &&
+                    ReferenceEquals(tail, order.Completion.Task))
+                {
+                    FifoTails.Remove(order.Key);
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (FifoGate)
+            {
+                FifoTails.Clear();
+            }
+
+            RebalanceSignal.Dispose();
+            CoordinationGate.Dispose();
+            OrderlyConcurrency.Dispose();
+            Stopping.Dispose();
+        }
+    }
+
+    private sealed class QueueReceiver : IDisposable
+    {
+        private readonly SemaphoreSlim _brokerLockAvailable = new(0, 1);
+        private long _brokerLockTimestamp;
+        private int _brokerLockHeld;
+
+        public QueueReceiver(RemotingPullMessageQueue queue, CancellationToken stopping)
+        {
+            Queue = queue;
+            Stopping = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+        }
+
+        public RemotingPullMessageQueue Queue { get; }
+        public CancellationTokenSource Stopping { get; }
+        public Task Task { get; set; } = Task.CompletedTask;
+
+        public void MarkBrokerLockAcquired(DateTimeOffset timestamp)
+        {
+            Interlocked.Exchange(ref _brokerLockTimestamp, timestamp.ToUnixTimeMilliseconds());
+            Interlocked.Exchange(ref _brokerLockHeld, 1);
+            try
+            {
+                _brokerLockAvailable.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+            }
+        }
+
+        public void MarkBrokerLockLost() => Interlocked.Exchange(ref _brokerLockHeld, 0);
+
+        public bool HasValidBrokerLock(TimeProvider timeProvider, TimeSpan maximumLifetime)
+        {
+            if (Volatile.Read(ref _brokerLockHeld) == 0)
+            {
+                return false;
+            }
+
+            var lockTimestamp = Interlocked.Read(ref _brokerLockTimestamp);
+            return timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - lockTimestamp <= maximumLifetime.TotalMilliseconds;
+        }
+
+        public async Task WaitForBrokerLockAsync(
+            TimeProvider timeProvider,
+            TimeSpan maximumLifetime,
+            CancellationToken cancellationToken)
+        {
+            while (!HasValidBrokerLock(timeProvider, maximumLifetime))
+            {
+                await _brokerLockAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        public void Dispose()
+        {
+            _brokerLockAvailable.Dispose();
+            Stopping.Dispose();
+        }
+    }
+
+    private sealed class Delivery
+    {
+        public Delivery(RemotingMessageView message, CancellationToken queueCancellation)
+        {
+            Message = message;
+            QueueCancellation = queueCancellation;
+            Completion = new TaskCompletionSource<ConsumeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public RemotingMessageView Message { get; }
+        public CancellationToken QueueCancellation { get; }
+        public TaskCompletionSource<ConsumeResult> Completion { get; }
+        public FifoOrder? FifoOrder { get; set; }
+    }
+
+    private sealed class FifoOrder
+    {
+        public FifoOrder(string key, Task predecessor)
+        {
+            Key = key;
+            Predecessor = predecessor;
+            Completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public string Key { get; }
+        public Task Predecessor { get; }
+        public TaskCompletionSource Completion { get; }
+    }
+
+    private readonly record struct QueueKey(string Topic, string BrokerName, int QueueId, string BrokerAddress)
+    {
+        public static QueueKey Create(RemotingPullMessageQueue queue) =>
+            new(queue.Topic, queue.BrokerName, queue.QueueId, queue.BrokerAddress);
+    }
+
+    private readonly record struct ResetQueueKey(string Topic, string BrokerName, int QueueId)
+    {
+        public static ResetQueueKey Create(RemotingPullMessageQueue queue) =>
+            new(queue.Topic, queue.BrokerName, queue.QueueId);
+    }
+
+    private sealed record TopicSnapshot(string Topic, IReadOnlyList<RemotingPullMessageQueue> Queues);
+    private sealed record BrokerEndpoint(string BrokerName, string Address);
+    private sealed record RetryOffsetInitialization(RemotingPullMessageQueue Queue, long Offset);
+    private sealed record ResetReceiver(QueueReceiver Receiver, long Offset);
+    private sealed record QueueBrokerKey(string Name, string Address);
+    private sealed record QueueLockReference(string Topic, string BrokerName, int QueueId);
+
+    private sealed class QueueLockRequestBody
+    {
+        public string ConsumerGroup { get; init; } = string.Empty;
+        public string ClientId { get; init; } = string.Empty;
+        public bool OnlyThisBroker { get; init; }
+        public QueueLockReference[] MqSet { get; init; } = [];
+    }
+
+    private sealed class QueueLockResponseBody
+    {
+        public QueueLockReference[]? LockOKMQSet { get; init; }
+    }
+
+    private sealed class QueueLockResult
+    {
+        public HashSet<RemotingPullMessageQueue> LockedQueues { get; } = [];
+        public HashSet<RemotingPullMessageQueue> RefreshedQueues { get; } = [];
+    }
+
+    private enum OrderlyDeliveryOutcome
+    {
+        Success,
+        Retry,
+        DeadLetter,
+        LeaseLost
+    }
+}

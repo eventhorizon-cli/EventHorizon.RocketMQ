@@ -1,0 +1,36 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using EventHorizon.RocketMQ.Remoting.Protocol;
+
+namespace EventHorizon.RocketMQ.Remoting.Producer;
+
+internal sealed class SendMessageRequestHeader : CommandCustomHeader
+{
+    public string ProducerGroup { get; init; } = string.Empty;
+    public string Topic { get; init; } = string.Empty;
+    public int QueueId { get; init; }
+    public int SysFlag { get; init; }
+    public long BornTimestamp { get; init; }
+    public int Flag { get; init; }
+    public string Properties { get; init; } = string.Empty;
+    public int ReconsumeTimes { get; init; }
+    public bool UnitMode { get; init; }
+    public int MaxReconsumeTimes { get; init; }
+    public bool Batch { get; init; }
+    public string DefaultTopic { get; init; } = "TBW102";
+    public int DefaultTopicQueueNums { get; init; }
+    public string Bname { get; init; } = string.Empty;
+}

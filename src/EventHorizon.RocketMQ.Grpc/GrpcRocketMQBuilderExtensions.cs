@@ -1,0 +1,510 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.Push;
+using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
+using EventHorizon.RocketMQ.Grpc.Producer;
+using EventHorizon.RocketMQ.Grpc.Protocol;
+using EventHorizon.RocketMQ.Grpc.Protocol.Route;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Proto = Apache.Rocketmq.V2;
+
+namespace EventHorizon.RocketMQ.Grpc;
+
+/// <summary>
+/// Provides methods for adding producer and consumer roles to a RocketMQ gRPC client profile.
+/// </summary>
+public static class GrpcRocketMQBuilderExtensions
+{
+    /// <summary>
+    /// Adds a gRPC producer role with default producer options.
+    /// </summary>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="builder"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">A producer is already registered for the profile.</exception>
+    public static GrpcRocketMQBuilder AddGrpcProducer(this GrpcRocketMQBuilder builder) =>
+        AddGrpcProducer(builder, static _ => { });
+
+    /// <summary>
+    /// Adds a configured gRPC producer role.
+    /// </summary>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="configure">The delegate used to configure the producer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A producer is already registered for the profile.</exception>
+    public static GrpcRocketMQBuilder AddGrpcProducer(
+        this GrpcRocketMQBuilder builder,
+        Action<GrpcProducerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+        var roleKey = GrpcRocketMQRegistration.RegisterRole(builder, GrpcRocketMQRole.Producer);
+        RegisterGrpcTransportServices(builder.Services, roleKey);
+
+        builder.Services.AddOptions<GrpcProducerOptions>(builder.OptionsName)
+            .Configure(configure)
+            .Validate(static options => options.MaxMessageSize > 0, "Maximum message size must be positive.")
+            .Validate(static options => options.SendMsgTimeout > TimeSpan.Zero, "Send timeout must be positive.")
+            .Validate(
+                static options => options.Topics.All(static topic => !string.IsNullOrWhiteSpace(topic)),
+                "Publishing topics cannot be blank.")
+            .Validate(
+                static options => options.MaxConcurrentTransactionChecks > 0,
+                "Maximum concurrent transaction checks must be positive.");
+        GrpcRocketMQRegistration.AddRoleSingleton<IGrpcProducer>(
+            builder,
+            provider => CreateGrpcProducer(provider, roleKey));
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            ActivatorUtilities.CreateInstance<GrpcProducerHostedService>(
+                provider,
+                GrpcRocketMQRegistration.GetRoleService<IGrpcProducer>(provider, builder.ServiceKey)));
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds a configured gRPC simple-consumer role.
+    /// </summary>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="configure">The delegate used to configure the simple consumer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A simple consumer is already registered for the profile.</exception>
+    public static GrpcRocketMQBuilder AddGrpcSimpleConsumer(
+        this GrpcRocketMQBuilder builder,
+        Action<GrpcSimpleConsumerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+        var roleKey = GrpcRocketMQRegistration.RegisterRole(builder, GrpcRocketMQRole.SimpleConsumer);
+        RegisterGrpcTransportServices(builder.Services, roleKey);
+
+        builder.Services.AddOptions<GrpcSimpleConsumerOptions>(builder.OptionsName)
+            .Configure(configure)
+            .Validate(
+                static options => !string.IsNullOrWhiteSpace(options.GroupName),
+                "Consumer group name is required.")
+            .Validate(static options => options.AwaitDuration > TimeSpan.Zero, "Await duration must be positive.")
+            .Validate(
+                static options => options.InvisibleDuration > TimeSpan.Zero,
+                "Invisible duration must be positive.");
+        GrpcRocketMQRegistration.AddRoleSingleton<IGrpcSimpleConsumer>(
+            builder,
+            provider => CreateGrpcSimpleConsumer(provider, roleKey));
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            ActivatorUtilities.CreateInstance<GrpcSimpleConsumerHostedService>(
+                provider,
+                GrpcRocketMQRegistration.GetRoleService<IGrpcSimpleConsumer>(provider, builder.ServiceKey)));
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds a configured gRPC push-consumer role that receives messages through client-initiated long polling.
+    /// </summary>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="configure">The delegate used to configure the push consumer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A push consumer is already registered for the profile.</exception>
+    public static GrpcRocketMQBuilder AddGrpcPushConsumer(
+        this GrpcRocketMQBuilder builder,
+        Action<GrpcPushConsumerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        return AddGrpcPushConsumerCore(builder, configure, null, null);
+    }
+
+    /// <summary>
+    /// Adds a configured gRPC push-consumer role with a dependency-injected message handler.
+    /// </summary>
+    /// <typeparam name="TMessageHandler">The type that processes received messages.</typeparam>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="handlerLifetime">The dependency-injection lifetime used for the message handler.</param>
+    /// <param name="configure">The delegate used to configure the push consumer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A push consumer is already registered for the profile.</exception>
+    public static GrpcRocketMQBuilder AddGrpcPushConsumer<TMessageHandler>(
+        this GrpcRocketMQBuilder builder,
+        ServiceLifetime handlerLifetime,
+        Action<GrpcPushConsumerOptions> configure)
+        where TMessageHandler : class, IGrpcPushMessageHandler
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+        ValidateMessageHandlerLifetime(handlerLifetime);
+
+        return AddGrpcPushConsumerCore(
+            builder,
+            configure,
+            (services, roleKey) =>
+                GrpcPushMessageHandlerFactory.Register<TMessageHandler>(services, roleKey, handlerLifetime),
+            handlerLifetime);
+    }
+
+    /// <summary>
+    /// Adds a configured gRPC Lite Push consumer role that dispatches messages from LiteTopics under a bind topic.
+    /// </summary>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="configure">The delegate used to configure the Lite Push consumer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// A Lite Push consumer is already registered for the profile.
+    /// </exception>
+    public static GrpcRocketMQBuilder AddGrpcLitePushConsumer(
+        this GrpcRocketMQBuilder builder,
+        Action<GrpcLitePushConsumerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        return AddGrpcLitePushConsumerCore(builder, configure, null, null);
+    }
+
+    /// <summary>
+    /// Adds a configured gRPC Lite Push consumer role with a dependency-injected message handler.
+    /// </summary>
+    /// <typeparam name="TMessageHandler">The type that processes received messages.</typeparam>
+    /// <param name="builder">The gRPC client profile builder.</param>
+    /// <param name="handlerLifetime">The dependency-injection lifetime used for the message handler.</param>
+    /// <param name="configure">The delegate used to configure the Lite Push consumer.</param>
+    /// <returns>The same builder so that additional roles can be configured.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="builder"/> or <paramref name="configure"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// A Lite Push consumer is already registered for the profile.
+    /// </exception>
+    public static GrpcRocketMQBuilder AddGrpcLitePushConsumer<TMessageHandler>(
+        this GrpcRocketMQBuilder builder,
+        ServiceLifetime handlerLifetime,
+        Action<GrpcLitePushConsumerOptions> configure)
+        where TMessageHandler : class, IGrpcPushMessageHandler
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+        ValidateMessageHandlerLifetime(handlerLifetime);
+
+        return AddGrpcLitePushConsumerCore(
+            builder,
+            configure,
+            (services, roleKey) =>
+                GrpcPushMessageHandlerFactory.Register<TMessageHandler>(services, roleKey, handlerLifetime),
+            handlerLifetime);
+    }
+
+    private static GrpcRocketMQBuilder AddGrpcPushConsumerCore(
+        GrpcRocketMQBuilder builder,
+        Action<GrpcPushConsumerOptions> configure,
+        Action<IServiceCollection, GrpcRocketMQRoleKey>? registerMessageHandler,
+        ServiceLifetime? handlerLifetime)
+    {
+        var roleKey = GrpcRocketMQRegistration.RegisterRole(builder, GrpcRocketMQRole.PushConsumer);
+        RegisterGrpcTransportServices(builder.Services, roleKey);
+        registerMessageHandler?.Invoke(builder.Services, roleKey);
+
+        var options = builder.Services.AddOptions<GrpcPushConsumerOptions>(builder.OptionsName)
+            .Configure(configure)
+            .Validate(
+                static value => !string.IsNullOrWhiteSpace(value.GroupName),
+                "Consumer group name is required.")
+            .Validate(static value => value.MaxConcurrency > 0, "Maximum concurrency must be positive.")
+            .Validate(static value => value.BatchSize > 0, "Batch size must be positive.")
+            .Validate(static value => value.MaxCachedMessages > 0, "Maximum cached message count must be positive.")
+            .Validate(
+                static value => value.MaxCachedMessageBytes > 0,
+                "Maximum cached message bytes must be positive.")
+            .Validate(static value => value.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
+            .Validate(
+                static value => value.InvisibleDuration > TimeSpan.Zero,
+                "Invisible duration must be positive.")
+            .Validate(
+                static value => value.LongPollingTimeout > TimeSpan.Zero,
+                "Long polling timeout must be positive.")
+            .Validate(static value => value.RetryDelay > TimeSpan.Zero, "Retry delay must be positive.");
+        if (handlerLifetime.HasValue)
+        {
+            options.Validate(
+                static value => value.MessageHandler is null,
+                "MessageHandler cannot be configured when a typed message handler is registered.");
+        }
+        else
+        {
+            options.Validate(static value => value.MessageHandler is not null, "A message handler is required.");
+        }
+
+        GrpcRocketMQRegistration.AddRoleSingleton<IGrpcPushConsumer>(
+            builder,
+            provider => CreateGrpcPushConsumer(provider, roleKey, handlerLifetime));
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            ActivatorUtilities.CreateInstance<GrpcPushConsumerHostedService>(
+                provider,
+                GrpcRocketMQRegistration.GetRoleService<IGrpcPushConsumer>(provider, builder.ServiceKey)));
+        return builder;
+    }
+
+    private static GrpcRocketMQBuilder AddGrpcLitePushConsumerCore(
+        GrpcRocketMQBuilder builder,
+        Action<GrpcLitePushConsumerOptions> configure,
+        Action<IServiceCollection, GrpcRocketMQRoleKey>? registerMessageHandler,
+        ServiceLifetime? handlerLifetime)
+    {
+        var roleKey = GrpcRocketMQRegistration.RegisterRole(builder, GrpcRocketMQRole.LitePushConsumer);
+        RegisterGrpcTransportServices(builder.Services, roleKey);
+        registerMessageHandler?.Invoke(builder.Services, roleKey);
+
+        var options = builder.Services.AddOptions<GrpcLitePushConsumerOptions>(builder.OptionsName)
+            .Configure(configure)
+            .Validate(
+                static value => !string.IsNullOrWhiteSpace(value.GroupName),
+                "Consumer group name is required.")
+            .Validate(static value => !string.IsNullOrWhiteSpace(value.BindTopic), "Bind topic is required.")
+            .Validate(
+                static value => value.Subscriptions.Count == 0,
+                "Lite Push consumers use BindTopic and cannot use standard topic subscriptions.")
+            .Validate(
+                static value => value.LiteTopics.All(static topic => !string.IsNullOrWhiteSpace(topic)),
+                "LiteTopic names cannot be blank.")
+            .Validate(static value => value.MaxConcurrency > 0, "Maximum concurrency must be positive.")
+            .Validate(static value => value.BatchSize > 0, "Batch size must be positive.")
+            .Validate(static value => value.MaxCachedMessages > 0, "Maximum cached message count must be positive.")
+            .Validate(
+                static value => value.MaxCachedMessageBytes > 0,
+                "Maximum cached message bytes must be positive.")
+            .Validate(static value => value.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
+            .Validate(
+                static value => value.InvisibleDuration > TimeSpan.Zero,
+                "Invisible duration must be positive.")
+            .Validate(
+                static value => value.LongPollingTimeout > TimeSpan.Zero,
+                "Long polling timeout must be positive.")
+            .Validate(static value => value.RetryDelay > TimeSpan.Zero, "Retry delay must be positive.")
+            .Validate(
+                static value => value.SubscriptionSyncInterval > TimeSpan.Zero,
+                "Lite subscription sync interval must be positive.");
+        if (handlerLifetime.HasValue)
+        {
+            options.Validate(
+                static value => value.MessageHandler is null,
+                "MessageHandler cannot be configured when a typed message handler is registered.");
+        }
+        else
+        {
+            options.Validate(static value => value.MessageHandler is not null, "A message handler is required.");
+        }
+
+        GrpcRocketMQRegistration.AddRoleSingleton<IGrpcLitePushConsumer>(
+            builder,
+            provider => CreateGrpcLitePushConsumer(provider, roleKey, handlerLifetime));
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            ActivatorUtilities.CreateInstance<GrpcLitePushConsumerHostedService>(
+                provider,
+                GrpcRocketMQRegistration.GetRoleService<IGrpcLitePushConsumer>(provider, builder.ServiceKey)));
+        return builder;
+    }
+
+    private static void ValidateMessageHandlerLifetime(ServiceLifetime handlerLifetime)
+    {
+        if (!Enum.IsDefined(handlerLifetime))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(handlerLifetime),
+                handlerLifetime,
+                "Unsupported message handler lifetime.");
+        }
+    }
+
+    private static IGrpcProducer CreateGrpcProducer(IServiceProvider provider, GrpcRocketMQRoleKey roleKey)
+    {
+        return ActivatorUtilities.CreateInstance<GrpcProducer>(
+            provider,
+            GrpcRocketMQRegistration.GetNamedOptions<GrpcProducerOptions>(provider, roleKey.OptionsName),
+            GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+            provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey),
+            provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey));
+    }
+
+    private static IGrpcSimpleConsumer CreateGrpcSimpleConsumer(
+        IServiceProvider provider,
+        GrpcRocketMQRoleKey roleKey)
+    {
+        var options = GrpcRocketMQRegistration.GetNamedOptions<GrpcSimpleConsumerOptions>(
+            provider,
+            roleKey.OptionsName);
+        var engine = CreateGrpcReceiveConsumerEngine(
+            provider,
+            roleKey,
+            options.Value.GroupName,
+            options.Value.Subscriptions,
+            Proto.ClientType.SimpleConsumer,
+            options.Value.AwaitDuration);
+        return ActivatorUtilities.CreateInstance<GrpcSimpleConsumer>(provider, options, engine);
+    }
+
+    private static IGrpcPushConsumer CreateGrpcPushConsumer(
+        IServiceProvider provider,
+        GrpcRocketMQRoleKey roleKey,
+        ServiceLifetime? handlerLifetime)
+    {
+        var options = GrpcRocketMQRegistration.GetNamedOptions<GrpcPushConsumerOptions>(
+            provider,
+            roleKey.OptionsName);
+        var engine = CreateGrpcReceiveConsumerEngine(
+            provider,
+            roleKey,
+            options.Value.GroupName,
+            options.Value.Subscriptions,
+            Proto.ClientType.PushConsumer,
+            options.Value.LongPollingTimeout);
+        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        if (handlerLifetime is not { } lifetime)
+        {
+            return ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, options, engine, loggerFactory);
+        }
+
+        return ActivatorUtilities.CreateInstance<GrpcPushConsumer>(
+            provider,
+            options,
+            engine,
+            loggerFactory,
+            GrpcPushMessageHandlerFactory.Create(provider, roleKey, lifetime));
+    }
+
+    private static IGrpcLitePushConsumer CreateGrpcLitePushConsumer(
+        IServiceProvider provider,
+        GrpcRocketMQRoleKey roleKey,
+        ServiceLifetime? handlerLifetime)
+    {
+        var options = GrpcRocketMQRegistration.GetNamedOptions<GrpcLitePushConsumerOptions>(
+            provider,
+            roleKey.OptionsName);
+        var clientOptions = GrpcRocketMQRegistration.GetClientOptions(provider, roleKey);
+        var client = provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey);
+        var routes = provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey);
+        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        var subscriptions = new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
+        {
+            [options.Value.BindTopic] = FilterExpression.All
+        };
+        var manager = ActivatorUtilities.CreateInstance<GrpcLiteSubscriptionManager>(
+            provider,
+            options,
+            clientOptions,
+            client,
+            routes,
+            loggerFactory);
+        var engine = CreateGrpcReceiveConsumerEngine(
+            provider,
+            roleKey,
+            options.Value.GroupName,
+            subscriptions,
+            Proto.ClientType.LitePushConsumer,
+            options.Value.LongPollingTimeout,
+            manager.HandleTelemetryCommandAsync);
+        var pushOptions = Options.Create<GrpcPushConsumerOptions>(options.Value);
+        var dispatcher = handlerLifetime is not { } lifetime
+            ? ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, pushOptions, engine, loggerFactory)
+            : ActivatorUtilities.CreateInstance<GrpcPushConsumer>(
+                provider,
+                pushOptions,
+                engine,
+                loggerFactory,
+                GrpcPushMessageHandlerFactory.Create(provider, roleKey, lifetime));
+        return ActivatorUtilities.CreateInstance<GrpcLitePushConsumer>(provider, dispatcher, manager);
+    }
+
+    private static IGrpcReceiveConsumerEngine CreateGrpcReceiveConsumerEngine(
+        IServiceProvider provider,
+        GrpcRocketMQRoleKey roleKey,
+        string groupName,
+        IReadOnlyDictionary<string, FilterExpression> subscriptions,
+        Proto.ClientType clientType,
+        TimeSpan longPollingTimeout,
+        Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? telemetryHandler = null)
+    {
+        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        if (telemetryHandler is null)
+        {
+            return ActivatorUtilities.CreateInstance<GrpcReceiveConsumerEngine>(
+                provider,
+                provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey),
+                provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey),
+                GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+                groupName,
+                subscriptions,
+                clientType,
+                longPollingTimeout,
+                loggerFactory);
+        }
+
+        return ActivatorUtilities.CreateInstance<GrpcReceiveConsumerEngine>(
+            provider,
+            provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey),
+            provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey),
+            GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+            groupName,
+            subscriptions,
+            clientType,
+            longPollingTimeout,
+            loggerFactory,
+            telemetryHandler);
+    }
+
+    private static void RegisterGrpcTransportServices(
+        IServiceCollection services,
+        GrpcRocketMQRoleKey roleKey)
+    {
+        services.AddKeyedSingleton<GrpcMetadataFactory>(roleKey, (provider, _) =>
+            new GrpcMetadataFactory(
+                GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+                roleKey.LogicalClientName));
+        services.AddKeyedSingleton<IRocketMQGrpcClient>(roleKey, (provider, _) =>
+            new RocketMQGrpcClient(
+                GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+                provider.GetRequiredKeyedService<GrpcMetadataFactory>(roleKey)));
+        services.AddKeyedSingleton<IGrpcRouteService>(roleKey, (provider, _) =>
+            new GrpcRouteService(
+                provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey),
+                GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
+                provider.GetRequiredService<TimeProvider>()));
+    }
+}

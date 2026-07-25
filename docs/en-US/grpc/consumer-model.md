@@ -1,0 +1,128 @@
+# gRPC Consumer Model
+
+[English](consumer-model.md) | [Simplified Chinese](../../zh-CN/grpc/consumer-model.md)
+
+## Context
+
+The RocketMQ 5 client protocol is protobuf/gRPC, but the client does not connect directly to a
+NameServer or Broker. It connects to a RocketMQ Proxy, which mediates route queries, receive calls,
+acknowledgements, telemetry, and other protocol operations. Consequently, a client API is only
+usable when the target Proxy implements the corresponding RPC behavior.
+
+The important distinction is between the application model and the TCP direction. A type named
+"PushConsumer" describes automatic application dispatch. It does not mean the Broker establishes a
+server-initiated push connection to the application.
+
+## Decision
+
+The gRPC package exposes the consumer models that the supported Proxy path can perform:
+
+| API | Application controls | Receive model |
+| --- | --- | --- |
+| `IGrpcSimpleConsumer` | Receive timing, acknowledgement, invisible duration, dead-letter forwarding, and subscriptions | The caller invokes `ReceiveAsync`. |
+| `IGrpcPushConsumer` | Subscription and handler configuration; the client manages dispatch and completion | Assignment queries plus repeated `ReceiveMessage` long polls. |
+| `IGrpcLitePushConsumer` | LiteTopic subscriptions under a configured bind topic | The same client-initiated long-poll dispatcher, with Lite subscription synchronization. |
+
+There is deliberately no public `IGrpcPullConsumer` in this repository. The checked-in service
+definition declares `PullMessage`, `GetOffset`, `UpdateOffset`, and `QueryOffset`, but the internal
+[gRPC client abstraction](../../../src/EventHorizon.RocketMQ.Grpc/Protocol/IRocketMQGrpcClient.cs)
+does not call them and the package exposes no API around them. The Apache Proxy used by the supplied
+RocketMQ 5.5.0 environment does not provide the complete Pull and offset behavior needed by a
+classic Pull consumer.
+
+That distinction is intentional: a protobuf declaration is a contract shape, not proof that a
+target Proxy implements it. The declarations remain in the checked-in
+[service proto](../../../src/EventHorizon.RocketMQ.Grpc/Protocol/Protos/apache/rocketmq/v2/service.proto)
+because they are part of the upstream wire definition. They do not make gRPC Pull a supported
+client feature.
+
+## How It Works
+
+### Connection, metadata, and routes
+
+`GrpcClientOptions.Endpoint` is a Proxy endpoint list. The internal
+[`RocketMQGrpcClient`](../../../src/EventHorizon.RocketMQ.Grpc/Protocol/RocketMQGrpcClient.cs)
+opens gRPC channels for Proxy endpoints and applies metadata and request deadlines. The
+[`GrpcRouteService`](../../../src/EventHorizon.RocketMQ.Grpc/Protocol/Route/GrpcRouteService.cs)
+queries routes through that client and caches them for the configured route-cache duration.
+
+The result is a Proxy-backed flow:
+
+```text
+Application -> gRPC role -> RocketMQ Proxy -> route / receive / completion operations -> Broker
+```
+
+The application must configure Proxy-reachable `Endpoint` values. A NameServer address is not a
+gRPC endpoint and is not a substitute for a Proxy.
+
+### SimpleConsumer
+
+SimpleConsumer is the explicit-control model. After it starts and has at least one subscription,
+`ReceiveAsync` selects a subscription and assignment, issues a long-poll receive request, and gives
+the returned `GrpcMessageView` values to the application. The application decides when to call
+`AckAsync`, whether to extend invisibility, and when to forward a failed message to the dead-letter
+queue.
+
+This is often the right model when application code needs to control batching, commit timing, or
+retry boundaries. It is not classic queue Pull: it uses the gRPC receive and acknowledgement
+semantics provided by the Proxy.
+
+### PushConsumer
+
+PushConsumer automates the same family of operations:
+
+```text
+subscriptions
+    -> assignment query
+    -> ReceiveMessage long poll
+    -> bounded client dispatch queue
+    -> concurrent or FIFO message handler
+    -> acknowledgement, retry, dead-letter action, or invisibility renewal
+```
+
+The implementation in
+[`GrpcPushConsumer`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushConsumer.cs)
+starts the receive engine, coordinates assignment loops, applies bounded cached-message limits, and
+dispatches work according to the configured concurrency and FIFO settings. It is client-initiated
+long polling from end to end. Calling it protocol-level Broker push would give the wrong operational
+model.
+
+### LitePushConsumer
+
+LitePush wraps the automatic dispatcher with a
+[`GrpcLiteSubscriptionManager`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Lite/GrpcLiteSubscriptionManager.cs).
+It receives LiteTopic messages under one configured bind topic and synchronizes the Lite
+subscriptions with the Proxy.
+
+LitePush requires more than a reachable Proxy:
+
+- The Broker must support and enable Lite message behavior.
+- The configured consumer group must use the correct bind topic.
+- The target Proxy must implement `SyncLiteSubscription`.
+
+The local Compose environment starts a cluster-mode Proxy specifically for this path. Its detailed
+requirements are documented in the [LitePush sample](../../../samples/grpc/LitePushConsumer/README.md)
+and [local environment guide](../../../test-environments/rocketmq/README.md).
+
+## Trade-offs and Constraints
+
+- gRPC consumer capability depends on Proxy behavior as well as client code. Test against the exact
+  Proxy deployment used in production.
+- Push reduces application orchestration but does not remove acknowledgement, invisibility, retry,
+  dead-letter, concurrency, or FIFO decisions. Those remain operational choices.
+- SimpleConsumer exposes explicit control but requires the caller to make completion and failure
+  decisions for every delivered message.
+- The lack of a public gRPC Pull API is deliberate. Use `IGrpcSimpleConsumer` or
+  `IGrpcPushConsumer` when their semantics fit, or use the classic
+  [`IRemotingPullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/IRemotingPullConsumer.cs)
+  when a classic queue-and-offset Pull model is required.
+- gRPC Push and LitePush are not interchangeable with Remoting Push. They use different route,
+  assignment, server, and compatibility paths even though both perform long polling internally.
+
+## Related Reading
+
+- [gRPC package guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md)
+- [gRPC SimpleConsumer sample](../../../samples/grpc/SimpleConsumer/README.md)
+- [gRPC PushConsumer sample](../../../samples/grpc/PushConsumer/README.md)
+- [Protocol boundaries and dependencies](../architecture/protocol-boundaries.md)
+- [Dependency-injection profiles and lifetimes](../architecture/dependency-injection-and-lifetimes.md)

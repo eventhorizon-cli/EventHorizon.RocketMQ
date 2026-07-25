@@ -1,0 +1,95 @@
+name: rocketmq-dotnet
+
+x-rocketmq-image: &rocketmq-image apache/rocketmq:5.5.0
+
+services:
+  volume-init:
+    image: *rocketmq-image
+    user: "0:0"
+    network_mode: none
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /volumes/nameserver/rocketmqlogs /volumes/broker-logs/rocketmqlogs /volumes/broker-store &&
+        chown -R 3000:3000 /volumes/nameserver /volumes/broker-logs /volumes/broker-store
+    volumes:
+      - nameserver-logs:/volumes/nameserver
+      - broker-logs:/volumes/broker-logs
+      - broker-store:/volumes/broker-store
+
+  nameserver:
+    image: *rocketmq-image
+    command: ["sh", "mqnamesrv"]
+    environment:
+      JAVA_OPT_EXT: "-Duser.home=/home/rocketmq -Xms256m -Xmx256m"
+    ports:
+      - "127.0.0.1:9876:9876"
+    volumes:
+      - nameserver-logs:/home/rocketmq/logs
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2694 ' /proc/net/tcp || grep -q ':2694 ' /proc/net/tcp6"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    stop_grace_period: 30s
+    networks:
+      - rocketmq
+
+  broker:
+    image: *rocketmq-image
+    command:
+      - sh
+      - -c
+      - |
+        sh /home/rocketmq/rocketmq-5.5.0/bin/mqbroker -c /home/rocketmq/rocketmq-5.5.0/conf/broker-dotnet.conf &
+        for attempt in $(seq 1 60); do
+          if sh /home/rocketmq/rocketmq-5.5.0/bin/mqadmin clusterList -n nameserver:9876 2>/dev/null | grep -q broker-a; then
+            exec sh /home/rocketmq/rocketmq-5.5.0/bin/mqproxy -pm cluster -n nameserver:9876 -pc /home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json
+          fi
+          sleep 1
+        done
+        exit 1
+    environment:
+      NAMESRV_ADDR: "nameserver:9876"
+      JAVA_OPT_EXT: "-Duser.home=/home/rocketmq -Xms512m -Xmx512m"
+    depends_on:
+      nameserver:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:10909:10909"
+      - "127.0.0.1:10911:10911"
+      - "127.0.0.1:10912:10912"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./broker.conf:/home/rocketmq/rocketmq-5.5.0/conf/broker-dotnet.conf:ro
+      - ./proxy.json:/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json:ro
+      - broker-store:/home/rocketmq/store
+      - broker-logs:/home/rocketmq/logs
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          (grep -q ':2A9F ' /proc/net/tcp || grep -q ':2A9F ' /proc/net/tcp6) &&
+          (grep -q ':1F91 ' /proc/net/tcp || grep -q ':1F91 ' /proc/net/tcp6)
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
+    stop_grace_period: 45s
+    networks:
+      - rocketmq
+
+networks:
+  rocketmq:
+    driver: bridge
+
+volumes:
+  nameserver-logs:
+  broker-logs:
+  broker-store:

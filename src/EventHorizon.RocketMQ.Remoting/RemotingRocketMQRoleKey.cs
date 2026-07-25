@@ -1,0 +1,48 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"). You may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+namespace EventHorizon.RocketMQ.Remoting;
+
+internal readonly record struct RemotingRocketMQRoleKey(string OptionsName, RemotingRocketMQRole Role)
+{
+    public string LogicalClientName =>
+        $"{Normalize(string.IsNullOrEmpty(OptionsName) ? "default" : OptionsName)}-{RoleToken}";
+
+    public string DisplayRole => Role switch
+    {
+        RemotingRocketMQRole.Admin => "remoting administrator",
+        RemotingRocketMQRole.Producer => "remoting producer",
+        RemotingRocketMQRole.PullConsumer => "remoting pull consumer",
+        RemotingRocketMQRole.LitePullConsumer => "remoting lite pull consumer",
+        RemotingRocketMQRole.PushConsumer => "remoting push consumer",
+        RemotingRocketMQRole.PopConsumer => "remoting POP consumer",
+        _ => Role.ToString()
+    };
+
+    private string RoleToken => Role switch
+    {
+        RemotingRocketMQRole.Admin => "remoting-admin",
+        RemotingRocketMQRole.Producer => "remoting-producer",
+        RemotingRocketMQRole.PullConsumer => "remoting-pull-consumer",
+        RemotingRocketMQRole.LitePullConsumer => "remoting-lite-pull-consumer",
+        RemotingRocketMQRole.PushConsumer => "remoting-push-consumer",
+        RemotingRocketMQRole.PopConsumer => "remoting-pop-consumer",
+        _ => Role.ToString().ToLowerInvariant()
+    };
+
+    private static string Normalize(string value) =>
+        new(value.Select(static character =>
+            char.IsLetterOrDigit(character) || character is '-' or '_' or '.' ? character : '-').ToArray());
+}

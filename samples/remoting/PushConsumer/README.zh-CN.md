@@ -21,10 +21,11 @@
 | 固定 topic | `eventhorizon-test-topic` | 共享订阅的普通 topic。 |
 | `Sample:Filter` | `*` | 订阅过滤条件。 |
 
-handler 接收 `IReadOnlyList<RemotingMessageView>`，记录列表中的每条消息，并为整个列表返回一个
-`ConsumeResult`。示例保留 `ConsumeMessageBatchSize` 的默认值 `1`；可通过配置增大它，以合并来自同一个
-Broker 物理队列、且不带 `MessageGroup` 的并发消息。泛型注册会在每次批量处理尝试中创建 scoped DI scope，
-因此 handler 可以注入 `ILogger<PushConsumerMessageHandler>`。
+handler 接收 `IReadOnlyList<RemotingMessageView>` 和 `RemotingPushConsumeContext`，记录列表中的每条消息，并为
+整个列表返回一个 `ConsumeResult`。本示例保持 `AckIndex` 的默认值，因此返回 `Success` 会确认整个批次。示例保留
+`ConsumeMessageBatchSize` 的默认值 `1`；可通过配置增大它，以合并来自同一个 Broker 物理队列、且不带
+`MessageGroup` 的并发消息。泛型注册会在每次批量处理尝试中创建 scoped DI scope，因此 handler 可以注入
+`ILogger<PushConsumerMessageHandler>`。
 
 ## Broker 和网络前置条件
 
@@ -55,10 +56,14 @@ dotnet run --project samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples
 
 - 虽然名称中带有 Push，但它不是 Broker 向应用进行协议级推送。客户端负责队列分配，并反复发起长轮询拉取请求，
   然后将收到的消息分发给 handler。
-- 一个 handler 结果会应用于其列表中的每条消息。短暂失败时应返回 retry 结果；Broker 的重试和死信行为以 consumer
-  group 为基础，因此 handler 必须幂等并能容忍重复投递。
+- 对于并发、非 FIFO 批次，可返回 `Success` 并将 `context.AckIndex` 设为最后一条已接受消息的从零开始索引，以确认
+  连续前缀并只重试其后的尾部消息。默认值 `int.MaxValue` 确认每条消息；未接受任何消息时使用 `-1`。`Retry` 和
+  `DeadLetter` 会忽略 `AckIndex` 并应用到整个批次，因此 handler 必须幂等并能容忍重复投递。
+- `context.DelayLevelWhenNextConsume` 初始为由 `RetryDelay` 映射的延迟级别。将其设为 `0` 可让 Broker 选择重试延迟，
+  设为正的 RocketMQ 延迟级别可请求该级别，设为负值会将需要重试的消息直接发送到死信队列。广播模式没有 Broker 重试或
+  死信流程，因此未确认的尾部消息会被跳过。
 - 带 `MessageGroup` 的 FIFO 消息和 `ConsumeOrderly` 分发始终收到只包含一条消息的列表，即使
-  `ConsumeMessageBatchSize` 大于 `1` 也是如此。
+  `ConsumeMessageBatchSize` 大于 `1` 也是如此；这些路径不使用部分批量确认。
 - 对于并发集群、非 FIFO 投递，`ConsumeTimeout` 到期后会取消 handler token 并请求 Broker 重新投递。它不能强制
   停止忽略取消信号的应用代码；其延迟返回的结果会被忽略，并可能与重新投递的调用重叠，因此 handler 必须响应该 token，
   并保持幂等。FIFO 和顺序投递为保持顺序保证而不会应用此机制。

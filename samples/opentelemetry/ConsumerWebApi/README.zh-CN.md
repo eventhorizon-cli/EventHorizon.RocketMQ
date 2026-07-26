@@ -31,6 +31,13 @@ ASPNETCORE_URLS=http://127.0.0.1:5242 \
 [Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry) 中观察 `process`
 operation duration；该示例为此配置了亚秒级 duration bucket。
 
+Remoting handler 会收到消息列表和 `RemotingPushConsumeContext`。本示例返回 `Success` 时不修改 `AckIndex`，因此会确认
+每个完整批次。并发、非 FIFO handler 也可以返回 `Success`，同时将 `AckIndex` 设为最后一条已接受消息的从零开始索引，以确认
+其前缀并重试其后的尾部消息；`-1` 表示一条也不确认。`Retry` 和 `DeadLetter` 始终应用到整个批次。对于要重试的消息，
+`DelayLevelWhenNextConsume` 初始为 `RetryDelay`，可设为 `0` 使用 Broker 策略、设为正的 RocketMQ 延迟级别，或设为负值
+直接进入死信队列。广播模式没有 Broker 重试/死信流程，因此未确认的尾部消息会被跳过。FIFO `MessageGroup` 和
+`ConsumeOrderly` 投递均为单消息路径，不使用部分批量确认。
+
 ## 路由
 
 | 方法 | 路由 | 成功响应 |

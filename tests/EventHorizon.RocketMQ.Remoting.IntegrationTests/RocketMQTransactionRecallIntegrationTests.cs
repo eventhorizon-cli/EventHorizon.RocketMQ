@@ -63,7 +63,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests
                 options.GroupName = $"remoting-transaction-consumer-{suffix}";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQContainerFixture.TransactionTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _) =>
+                options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
@@ -120,7 +120,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests
                 options.GroupName = $"remoting-recall-consumer-{suffix}";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQContainerFixture.DelayTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _) =>
+                options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))

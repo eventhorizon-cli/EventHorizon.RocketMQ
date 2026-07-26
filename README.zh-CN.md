@@ -68,7 +68,7 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 | PullConsumer | ✅ | 可显式指定队列和位点，并支持 Tag 或 SQL 过滤。 |
 | LitePullConsumer | ✅ | 由客户端完成轮询、队列分配、seek、暂停/恢复和提交；目前仅支持集群消费。 |
 | POPConsumer | ✅ | 可显式选择队列、使用 receipt 确认消息并续期不可见时长；仅适用于普通 topic。 |
-| PushConsumer | ✅ | 支持集群或广播模式、并发批量回调或单消息 FIFO 分发、运行时订阅、重试和死信处理。 |
+| PushConsumer | ✅ | 支持集群或广播模式、可部分确认前缀的并发批量回调或单消息 FIFO 分发、运行时订阅、重试和死信处理。 |
 | Microsoft DI、Options、日志、Generic Host 生命周期，以及默认或 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 注册。 |
 | OpenTelemetry tracing 和 metrics | ✅ | 使用 `AddRocketMQRemotingInstrumentation` 注册；SDK processor 和 exporter 由应用选择。 |
 

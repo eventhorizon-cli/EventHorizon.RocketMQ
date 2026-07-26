@@ -99,7 +99,7 @@ enable the applicable server-side feature.
 | `IRemotingPullConsumer` | ✅ | Supports explicit queues and offsets plus tag or SQL filtering. SQL filtering requires the target Broker's filter configuration. |
 | `IRemotingLitePullConsumer` | ✅ | Supports clustered automatic or manual assignment, client-maintained positions, commits, pause, resume, and seek. It currently supports clustered consumption only. |
 | `IRemotingPopConsumer` | ✅ | Supports manually selected physical queues, receipt acknowledgement, and invisibility renewal for normal-topic POP messages; the Broker must support POP. |
-| `IRemotingPushConsumer` | ✅ | Supports clustering or broadcasting, runtime subscriptions, configurable initial offsets, concurrent batch callbacks or singleton FIFO dispatch, retries, dead-letter handling, and Broker-triggered rebalance or offset reset. |
+| `IRemotingPushConsumer` | ✅ | Supports clustering or broadcasting, runtime subscriptions, configurable initial offsets, concurrent batch callbacks with partial prefix acknowledgement or singleton FIFO dispatch, retries, dead-letter handling, and Broker-triggered rebalance or offset reset. |
 | Queue-orderly Push consumption | ✅ | Uses optional Broker queue locks for ordered consumption; configure it only where the destination Broker supports the classic locking flow. |
 | Built-in socket transport | ✅ | Uses `System.IO.Pipelines` with optional TLS, multiple NameServer addresses, Broker failover, ACL signing, namespaces, and configurable frame limits. It does not depend on Bedrock Framework. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQRemoting`, then add the required roles. |
@@ -542,6 +542,7 @@ public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 {
     public ValueTask<ConsumeResult> HandleAsync(
         IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext context,
         CancellationToken cancellationToken)
     {
         foreach (var message in messages)
@@ -566,13 +567,24 @@ application code that ignores cancellation; its late result is ignored and can o
 handlers must honor the token and remain idempotent. FIFO and orderly delivery are excluded to preserve their ordering
 guarantees.
 
-Return `Success` to commit every message in a batch, `Retry` to request Broker redelivery for every message in the
-batch, or `DeadLetter` to send every message in the batch to the dead-letter queue. Runtime `SubscribeAsync` and
-`UnsubscribeAsync` calls update classic heartbeats and reconcile active queue receivers. The generic registration selects the handler lifetime
-for the current client registration: `Singleton` creates one handler per client registration/role and must be thread-safe;
-`Scoped` and `Transient` resolve a handler in a new async service scope for each batch handling attempt. The
-`MessageHandler` delegate has the same list-based signature and remains available for small stateless callbacks, but cannot be combined with a
-typed handler.
+The handler also receives a `RemotingPushConsumeContext`. Returning `Success` commits the complete batch by default.
+For a concurrent non-FIFO batch, set `context.AckIndex` to the zero-based index of the last successfully processed
+message, then return `Success`: the client commits that contiguous prefix and sends only the remaining tail for
+Broker retry. `AckIndex` defaults to `int.MaxValue` (all messages) and accepts `-1` when no message was processed.
+Returning `Retry` or `DeadLetter` ignores `AckIndex` and applies to every message in the batch.
+
+`context.DelayLevelWhenNextConsume` controls messages that will be retried. It starts with the Broker delay level
+mapped from `RetryDelay`; set it to `0` to let the Broker choose its retry policy, a positive RocketMQ delay level to
+request that level, or a negative value to send those messages directly to the dead-letter queue. Broadcasting has no
+Broker retry or dead-letter flow, so an unacknowledged batch tail is skipped while the local offset advances.
+`MessageGroup` FIFO and `ConsumeOrderly` paths always receive singleton lists and do not use partial batch
+confirmation.
+
+Runtime `SubscribeAsync` and `UnsubscribeAsync` calls update classic heartbeats and reconcile active queue receivers.
+The generic registration selects the handler lifetime for the current client registration: `Singleton` creates one
+handler per client registration/role and must be thread-safe; `Scoped` and `Transient` resolve a handler in a new
+async service scope for each batch handling attempt. The `MessageHandler` delegate has the same list-and-context
+signature and remains available for small stateless callbacks, but cannot be combined with a typed handler.
 
 ### Queue-orderly consumption
 

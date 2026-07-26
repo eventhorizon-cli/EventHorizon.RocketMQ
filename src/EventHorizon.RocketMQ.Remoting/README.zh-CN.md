@@ -93,7 +93,7 @@ await app.RunAsync();
 | `IRemotingPullConsumer` | ✅ | 支持显式队列和位点，以及 tag 或 SQL 过滤。SQL 过滤要求目标 Broker 配置过滤能力。 |
 | `IRemotingLitePullConsumer` | ✅ | 支持订阅后的自动分配，或通过 `AssignAsync` 手动分配；客户端维护位点、提交、暂停、恢复和 seek。目前仅支持集群消费。 |
 | `IRemotingPopConsumer` | ✅ | 支持手动选择物理队列、receipt 确认以及普通 topic POP 消息的可见期续租；Broker 必须支持 POP。 |
-| `IRemotingPushConsumer` | ✅ | 支持集群或广播消费、运行时订阅、可配置起始位点、并发批量回调或单消息 FIFO 分发、重试、死信处理，以及 Broker 触发的重平衡或位点重置。 |
+| `IRemotingPushConsumer` | ✅ | 支持集群或广播消费、运行时订阅、可配置起始位点、可部分确认前缀的并发批量回调或单消息 FIFO 分发、重试、死信处理，以及 Broker 触发的重平衡或位点重置。 |
 | 队列有序 Push 消费 | ✅ | 使用可选的 Broker 队列锁实现有序消费；仅在目标 Broker 支持经典锁定流程时配置。 |
 | 内置 Socket 传输 | ✅ | 基于 `System.IO.Pipelines`，支持可选 TLS、多个 NameServer 地址、Broker 故障转移、ACL 签名、命名空间和可配置帧限制；不依赖 Bedrock Framework。 |
 | 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 创建客户端注册，再添加所需角色。 |
@@ -517,6 +517,7 @@ public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 {
     public ValueTask<ConsumeResult> HandleAsync(
         IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext context,
         CancellationToken cancellationToken)
     {
         foreach (var message in messages)
@@ -538,11 +539,20 @@ handler 调用收到的最大消息数，默认值为 1。并发分发只会将�
 整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。
 延迟返回的结果会被忽略，并可能与重新投递的调用重叠。FIFO 和顺序投递为保持顺序保证而不会应用此机制。
 
-返回 `Success` 会提交一批中的每条消息，返回 `Retry` 会为一批中的每条消息请求 Broker 重新投递，返回
-`DeadLetter` 会将一批中的每条消息发送到死信队列。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。
-泛型注册会为当前客户端注册选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，
-且必须线程安全；`Scoped` 和 `Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。
-`MessageHandler` 委托使用相同的列表签名，仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
+handler 还会收到 `RemotingPushConsumeContext`。默认返回 `Success` 会提交整个批次。对于并发、非 FIFO 批次，可将
+`context.AckIndex` 设为最后一条成功处理消息的从零开始索引，再返回 `Success`：客户端会提交这个连续前缀，并仅将其后的
+尾部消息交由 Broker 重试。`AckIndex` 默认是 `int.MaxValue`（全部消息），当尚未处理任何消息时可设为 `-1`。返回
+`Retry` 或 `DeadLetter` 时会忽略 `AckIndex`，并将结果应用到批次中的每条消息。
+
+`context.DelayLevelWhenNextConsume` 控制将要重试的消息。它初始为由 `RetryDelay` 映射得到的 Broker 延迟级别；可设为
+`0` 以让 Broker 选择重试策略，设为正的 RocketMQ 延迟级别以请求该级别，或设为负值以将这些消息直接发送到死信队列。
+广播模式没有 Broker 重试或死信流程，因此未确认的批次尾部会被跳过，同时推进本地位点。`MessageGroup` FIFO 与
+`ConsumeOrderly` 路径始终收到单消息列表，不使用部分批量确认。
+
+运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。泛型注册会为当前客户端注册选择
+handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，且必须线程安全；`Scoped` 和
+`Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。`MessageHandler` 委托使用相同的
+列表和 context 签名，仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
 
 ### 队列有序消费
 

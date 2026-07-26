@@ -46,7 +46,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
                 options.GroupName = "remoting-trace-propagation-consumer-it";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _) =>
+                options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (Encoding.UTF8.GetString(message.Body) == body)

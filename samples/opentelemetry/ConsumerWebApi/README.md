@@ -33,6 +33,15 @@ makes the `process` operation duration easy to inspect in the bundled
 [Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry), which
 uses sub-second duration buckets for this sample.
 
+The Remoting handler receives its message list and a `RemotingPushConsumeContext`. This sample returns `Success`
+without changing `AckIndex`, so it confirms each complete batch. A concurrent non-FIFO handler can instead return
+`Success` with `AckIndex` set to the zero-based index of the last accepted message to confirm its prefix and retry the
+remaining tail; `-1` confirms none. `Retry` and `DeadLetter` always apply to the whole batch. For retried messages,
+`DelayLevelWhenNextConsume` starts from `RetryDelay` and can be set to `0` for Broker policy, a positive RocketMQ
+delay level, or a negative value for direct dead-lettering. Broadcasting has no Broker retry/dead-letter flow, so an
+unacknowledged tail is skipped. FIFO `MessageGroup` and `ConsumeOrderly` deliveries are singleton paths and do not
+use partial batch confirmation.
+
 ## Routes
 
 | Method | Route | Success response |

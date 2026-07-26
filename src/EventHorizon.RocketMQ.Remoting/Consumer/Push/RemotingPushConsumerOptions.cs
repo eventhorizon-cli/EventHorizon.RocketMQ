@@ -124,10 +124,11 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// </summary>
     /// <remarks>
     /// This delegate is invoked directly. Use the generic <c>AddRemotingPushConsumer&lt;TMessageHandler&gt;</c>
-    /// overload to use a dependency-injected handler with an explicit lifetime. The returned outcome applies to
-    /// every message in the batch.
+    /// overload to use a dependency-injected handler with an explicit lifetime. When it returns
+    /// <see cref="ConsumeResult.Success"/>, use the supplied <see cref="RemotingPushConsumeContext"/> for a
+    /// concurrent non-FIFO batch to acknowledge a prefix and retry its remaining messages.
     /// </remarks>
-    public Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler
+    public Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler
     {
         get;
         set;

@@ -34,7 +34,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     private static readonly TimeSpan MaximumBrokerLockLiveTime = TimeSpan.FromSeconds(30);
 
     private readonly RemotingPushConsumerOptions _options;
-    private readonly Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>
+    private readonly Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>
         _messageHandler;
     private readonly RemotingClientOptions _clientOptions;
     private readonly IRemotingConsumerEngine _consumerEngine;
@@ -61,7 +61,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
         ILogger<RemotingPushConsumer> logger,
-        Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
+        Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
         IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
@@ -997,12 +997,12 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 {
                     for (var index = 0; index < outcomes.Length; index++)
                     {
-                        if (outcomes[index] != ConsumeResult.Success)
+                        if (outcomes[index].Result != ConsumeResult.Success)
                         {
                             _logger.LogWarning(
                                 "Broadcast consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
                                 pending[index].Message.MessageId,
-                                outcomes[index]);
+                                outcomes[index].Result);
                         }
                     }
                 }
@@ -1011,13 +1011,14 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     for (var index = 0; index < outcomes.Length; index++)
                     {
                         var outcome = outcomes[index];
-                        if (outcome == ConsumeResult.Success)
+                        if (outcome.Result == ConsumeResult.Success)
                         {
                             continue;
                         }
 
                         var message = pending[index].Message;
-                        var deadLetter = outcome == ConsumeResult.DeadLetter ||
+                        var deadLetter = outcome.Result == ConsumeResult.DeadLetter ||
+                                         outcome.DelayLevelWhenNextConsume < 0 ||
                                          message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
                         var retryOffset = deadLetter
                             ? null
@@ -1025,7 +1026,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         await _consumerEngine.SendBackAsync(
                             queue,
                             message,
-                            deadLetter ? -1 : GetDelayLevel(_options.RetryDelay),
+                            deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
                             _options.MaxDeliveryAttempts,
                             cancellationToken).ConfigureAwait(false);
                         if (!deadLetter)
@@ -1240,7 +1241,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             await run.OrderlyConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                result = await InvokeMessageHandlerAsync(new[] { message }, cancellationToken).ConfigureAwait(false);
+                result = (await InvokeMessageHandlerAsync(new[] { message }, cancellationToken).ConfigureAwait(false))
+                    .Result;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1502,9 +1504,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         var result = UsesConcurrentTimeoutRecovery(batch)
                             ? await InvokeConcurrentDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false)
                             : await HandleDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false);
-                        foreach (var delivery in batch.Deliveries)
+                        for (var index = 0; index < batch.Deliveries.Count; index++)
                         {
-                            delivery.Completion.TrySetResult(result);
+                            batch.Deliveries[index].Completion.TrySetResult(result.GetOutcome(index));
                         }
                     }
                     catch (OperationCanceledException) when (linked.IsCancellationRequested)
@@ -1527,7 +1529,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                             batch.Deliveries.Count);
                         foreach (var delivery in batch.Deliveries)
                         {
-                            delivery.Completion.TrySetResult(ConsumeResult.Retry);
+                            delivery.Completion.TrySetResult(
+                                MessageConsumeResult.Retry(GetDelayLevel(_options.RetryDelay)));
                         }
                     }
                 }
@@ -1545,13 +1548,14 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private async ValueTask<ConsumeResult> HandleDeliveryBatchAsync(
+    private async ValueTask<BatchDeliveryResult> HandleDeliveryBatchAsync(
         DeliveryBatch batch,
         CancellationToken cancellationToken)
     {
         if (batch.Deliveries.Count == 1)
         {
-            return await HandleMessageAsync(batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
+            var outcome = await HandleMessageAsync(batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
+            return BatchDeliveryResult.All(outcome.Result, 1, outcome.DelayLevelWhenNextConsume);
         }
 
         return await InvokeMessageHandlerAsync(
@@ -1559,19 +1563,22 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<ConsumeResult> HandleMessageAsync(
+    private async ValueTask<MessageConsumeResult> HandleMessageAsync(
         Delivery delivery,
         CancellationToken cancellationToken)
     {
         var attempt = delivery.Message.DeliveryAttempt;
         while (true)
         {
-            ConsumeResult result;
+            MessageConsumeResult outcome;
             try
             {
-                result = await InvokeMessageHandlerAsync(
+                var batchResult = await InvokeMessageHandlerAsync(
                     new[] { delivery.Message },
                     cancellationToken).ConfigureAwait(false);
+                outcome = delivery.FifoOrder is null
+                    ? batchResult.GetOutcome(0)
+                    : new MessageConsumeResult(batchResult.Result, batchResult.DelayLevelWhenNextConsume);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1583,18 +1590,18 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     exception,
                     "Legacy message handler failed for message {MessageId}",
                     delivery.Message.MessageId);
-                result = ConsumeResult.Retry;
+                outcome = MessageConsumeResult.Retry(GetDelayLevel(_options.RetryDelay));
             }
 
             if (_options.ConsumerMode == ConsumerMode.Broadcasting ||
-                delivery.FifoOrder is null || result != ConsumeResult.Retry)
+                delivery.FifoOrder is null || outcome.Result != ConsumeResult.Retry)
             {
-                return result;
+                return outcome;
             }
 
             if (attempt >= _options.MaxDeliveryAttempts)
             {
-                return ConsumeResult.DeadLetter;
+                return new MessageConsumeResult(ConsumeResult.DeadLetter, outcome.DelayLevelWhenNextConsume);
             }
 
             attempt++;
@@ -1602,13 +1609,17 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private ValueTask<ConsumeResult> InvokeMessageHandlerAsync(
+    private ValueTask<BatchDeliveryResult> InvokeMessageHandlerAsync(
         IReadOnlyList<RemotingMessageView> messages,
-        CancellationToken cancellationToken) =>
-        InvokeTrackedMessageHandlerAsync(
+        CancellationToken cancellationToken)
+    {
+        var context = CreateConsumeContext();
+        return InvokeTrackedMessageHandlerAsync(
             messages,
+            context,
             cancellationToken,
             StartMessageHandlerTelemetry(messages));
+    }
 
     private MessageHandlerTelemetry StartMessageHandlerTelemetry(IReadOnlyList<RemotingMessageView> messages) =>
         new(_telemetry.StartProcessBatch(
@@ -1616,16 +1627,22 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             _options.GroupName,
             messages));
 
-    private async ValueTask<ConsumeResult> InvokeTrackedMessageHandlerAsync(
+    private async ValueTask<BatchDeliveryResult> InvokeTrackedMessageHandlerAsync(
         IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext context,
         CancellationToken cancellationToken,
         MessageHandlerTelemetry telemetry)
     {
         try
         {
-            var result = await _messageHandler(messages, cancellationToken).ConfigureAwait(false);
-            telemetry.Complete(result == ConsumeResult.Success, result.ToString());
-            return result;
+            var result = await _messageHandler(messages, context, cancellationToken).ConfigureAwait(false);
+            var batchResult = BatchDeliveryResult.Create(
+                result,
+                context.AckIndex,
+                context.DelayLevelWhenNextConsume,
+                messages.Count);
+            telemetry.Complete(batchResult.IsFullySuccessful, batchResult.TelemetryOutcome);
+            return batchResult;
         }
         catch (Exception exception)
         {
@@ -1634,11 +1651,16 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
+    private RemotingPushConsumeContext CreateConsumeContext() => new()
+    {
+        DelayLevelWhenNextConsume = GetDelayLevel(_options.RetryDelay)
+    };
+
     private bool UsesConcurrentTimeoutRecovery(DeliveryBatch batch) =>
         _options.ConsumerMode == ConsumerMode.Clustering &&
         batch.Deliveries.All(static delivery => delivery.FifoOrder is null);
 
-    private async ValueTask<ConsumeResult> InvokeConcurrentDeliveryBatchAsync(
+    private async ValueTask<BatchDeliveryResult> InvokeConcurrentDeliveryBatchAsync(
         DeliveryBatch batch,
         CancellationToken cancellationToken)
     {
@@ -1648,8 +1670,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         {
             var activeHandlerCancellation = handlerCancellation;
             var messages = batch.Deliveries.Select(static delivery => delivery.Message).ToArray();
+            var context = CreateConsumeContext();
             var telemetry = StartMessageHandlerTelemetry(messages);
-            var handler = InvokeTrackedMessageHandlerAsync(messages, activeHandlerCancellation.Token, telemetry);
+            var handler = InvokeTrackedMessageHandlerAsync(
+                messages,
+                context,
+                activeHandlerCancellation.Token,
+                telemetry);
             if (handler.IsCompletedSuccessfully)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1691,7 +1718,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 "Legacy message handler exceeded the configured consume timeout of {ConsumeTimeout} for a batch containing {MessageCount} messages; cancellation was requested and the batch will be retried",
                 _options.ConsumeTimeout,
                 batch.Deliveries.Count);
-            return ConsumeResult.Retry;
+            return BatchDeliveryResult.Retry(batch.Deliveries.Count, GetDelayLevel(_options.RetryDelay));
         }
         finally
         {
@@ -1700,7 +1727,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     }
 
     private async Task ObserveTimedOutDeliveryBatchAsync(
-        Task<ConsumeResult> handlerTask,
+        Task<BatchDeliveryResult> handlerTask,
         CancellationTokenSource handlerCancellation,
         int messageCount)
     {
@@ -2157,18 +2184,74 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
+    private readonly record struct MessageConsumeResult(ConsumeResult Result, int DelayLevelWhenNextConsume)
+    {
+        public static MessageConsumeResult Retry(int delayLevelWhenNextConsume) =>
+            new(ConsumeResult.Retry, delayLevelWhenNextConsume);
+    }
+
+    private readonly record struct BatchDeliveryResult(
+        ConsumeResult Result,
+        int AcknowledgedCount,
+        int DelayLevelWhenNextConsume,
+        int MessageCount)
+    {
+        public bool IsFullySuccessful => Result == ConsumeResult.Success && AcknowledgedCount == MessageCount;
+
+        public string TelemetryOutcome =>
+            Result == ConsumeResult.Success && !IsFullySuccessful ? "partial_success" : Result.ToString();
+
+        public static BatchDeliveryResult Create(
+            ConsumeResult result,
+            int acknowledgementIndex,
+            int delayLevelWhenNextConsume,
+            int messageCount)
+        {
+            if (messageCount <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(messageCount), messageCount, "Message count must be positive.");
+            }
+
+            var acknowledgedCount = result == ConsumeResult.Success
+                ? Math.Min(acknowledgementIndex, messageCount - 1) + 1
+                : 0;
+            return new BatchDeliveryResult(result, acknowledgedCount, delayLevelWhenNextConsume, messageCount);
+        }
+
+        public static BatchDeliveryResult All(
+            ConsumeResult result,
+            int messageCount,
+            int delayLevelWhenNextConsume) =>
+            new(result, result == ConsumeResult.Success ? messageCount : 0, delayLevelWhenNextConsume, messageCount);
+
+        public static BatchDeliveryResult Retry(int messageCount, int delayLevelWhenNextConsume) =>
+            new(ConsumeResult.Retry, 0, delayLevelWhenNextConsume, messageCount);
+
+        public MessageConsumeResult GetOutcome(int index)
+        {
+            if ((uint)index >= (uint)MessageCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index), index, "Message index is outside the batch.");
+            }
+
+            return new MessageConsumeResult(
+                Result == ConsumeResult.Success && index >= AcknowledgedCount ? ConsumeResult.Retry : Result,
+                DelayLevelWhenNextConsume);
+        }
+    }
+
     private sealed class Delivery
     {
         public Delivery(RemotingMessageView message, CancellationToken queueCancellation)
         {
             Message = message;
             QueueCancellation = queueCancellation;
-            Completion = new TaskCompletionSource<ConsumeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Completion = new TaskCompletionSource<MessageConsumeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         public RemotingMessageView Message { get; }
         public CancellationToken QueueCancellation { get; }
-        public TaskCompletionSource<ConsumeResult> Completion { get; }
+        public TaskCompletionSource<MessageConsumeResult> Completion { get; }
         public FifoOrder? FifoOrder { get; set; }
     }
 

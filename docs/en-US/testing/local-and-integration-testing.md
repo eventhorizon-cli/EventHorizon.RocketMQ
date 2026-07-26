@@ -46,7 +46,7 @@ protocol Projects:
 - [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests)
 
 They validate isolated behavior such as serialization, route caching, client lifecycle, handler
-lifetimes, and public contracts without depending on a Broker. The compatibility tests compile
+lifetimes, batch-prefix acknowledgement, and public contracts without depending on a Broker. The compatibility tests compile
 against both protocol Projects to verify both public APIs, namespace separation, and dual-Package
 consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior

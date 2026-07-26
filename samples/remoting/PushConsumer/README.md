@@ -22,8 +22,9 @@ offset handling.
 | Fixed topic | `eventhorizon-test-topic` | Shared subscribed normal topic. |
 | `Sample:Filter` | `*` | Subscription filter. |
 
-The handler receives an `IReadOnlyList<RemotingMessageView>`, logs every message in the list, and returns one
-`ConsumeResult` for the complete list. The sample keeps `ConsumeMessageBatchSize` at its default of `1`; set it in
+The handler receives an `IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`, logs every message in
+the list, and returns one `ConsumeResult` for the complete list. This sample leaves `AckIndex` at its default, so a
+`Success` confirms the complete batch. It keeps `ConsumeMessageBatchSize` at its default of `1`; set it in
 configuration to batch concurrent non-`MessageGroup` messages from the same Broker physical queue. The typed
 registration lets the handler receive its `ILogger<PushConsumerMessageHandler>` from the application service provider
 with a scoped lifetime per batch handling attempt.
@@ -58,10 +59,16 @@ Remoting Producer sample or another producer after startup.
 
 - Despite its name, this is not a protocol-level Broker push to the application. The client owns queue assignment
   and repeatedly issues long-poll pull requests, then dispatches received messages to the handler.
-- A handler outcome applies to every message in its list. Return a retry result for a transient failure; Broker retry
-  and dead-letter behavior is consumer-group based, so handlers must be idempotent and tolerate redelivery.
+- For a concurrent non-FIFO batch, return `Success` and set `context.AckIndex` to the zero-based index of the last
+  accepted message to confirm its contiguous prefix and retry only the remaining tail. The default `int.MaxValue`
+  confirms every message; use `-1` when no message was accepted. `Retry` and `DeadLetter` ignore `AckIndex` and
+  apply to the whole batch, so handlers must be idempotent and tolerate redelivery.
+- `context.DelayLevelWhenNextConsume` starts with the delay level mapped from `RetryDelay`. Set it to `0` to let the
+  Broker choose the retry delay, a positive RocketMQ delay level to request that level, or a negative value to send
+  messages that will be retried directly to the dead-letter queue. In broadcasting mode, an unacknowledged tail is
+  skipped because there is no Broker retry or dead-letter flow.
 - `MessageGroup` FIFO messages and `ConsumeOrderly` dispatch always receive singleton lists, even when
-  `ConsumeMessageBatchSize` is greater than `1`.
+  `ConsumeMessageBatchSize` is greater than `1`; these paths do not use partial batch confirmation.
 - For concurrent clustered non-FIFO delivery, `ConsumeTimeout` cancels the handler token and requests Broker
   redelivery when a batch runs too long. It cannot forcibly stop application code that ignores cancellation; its
   late result is ignored and can overlap a redelivered invocation, so handlers must honor the token and remain

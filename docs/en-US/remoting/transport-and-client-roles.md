@@ -82,11 +82,18 @@ Push is still driven by classic pull/long-poll behavior internally; it is not id
 gRPC Push implementation and should not be treated as a common transport-neutral role.
 
 Remoting Push has one batch-oriented handler API: `IRemotingPushMessageHandler.HandleAsync` receives an
-`IReadOnlyList<RemotingMessageView>`. `BatchSize` limits how many messages one long poll requests from the Broker;
-`ConsumeMessageBatchSize` independently limits how many messages one handler invocation receives and defaults to
-`1`. Concurrent non-`MessageGroup` messages from the same Broker physical queue can be grouped and those batches
-can run in parallel up to `MaxConcurrency`. `MessageGroup` FIFO deliveries and `ConsumeOrderly` deliveries remain
-singleton and serialized. One `ConsumeResult` applies to every message in its batch.
+`IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`. `BatchSize` limits how many messages one
+long poll requests from the Broker; `ConsumeMessageBatchSize` independently limits how many messages one handler
+invocation receives and defaults to `1`. Concurrent non-`MessageGroup` messages from the same Broker physical queue
+can be grouped and those batches can run in parallel up to `MaxConcurrency`. `MessageGroup` FIFO deliveries and
+`ConsumeOrderly` deliveries remain singleton and serialized.
+
+`Success` normally confirms the complete batch. A concurrent non-FIFO handler can set `AckIndex` to the zero-based
+index of the final accepted message before returning `Success`; the client confirms that contiguous prefix and retries
+only its tail. `Retry` and `DeadLetter` apply to every message regardless of `AckIndex`. The context also exposes
+`DelayLevelWhenNextConsume` for the unacknowledged tail: `0` delegates retry timing to the Broker, a positive value
+selects a RocketMQ delay level, and a negative value requests direct dead-lettering. Broadcasting does not have a
+Broker retry or dead-letter path, so an unacknowledged tail is skipped.
 
 `ConsumeTimeout` defaults to 15 minutes and applies only to concurrent clustered non-FIFO batches. When it elapses,
 the client cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate

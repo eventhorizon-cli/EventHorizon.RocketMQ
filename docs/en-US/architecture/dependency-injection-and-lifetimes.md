@@ -101,9 +101,11 @@ and [Remoting handler factory](../../../src/EventHorizon.RocketMQ.Remoting/Consu
 Use the typed overload when a handler needs DI. The `MessageHandler` option is a direct delegate and
 does not create an application DI scope for the caller. gRPC Push and LitePush invoke their handlers for each
 message. Remoting Push invokes its one `IRemotingPushMessageHandler` API with an
-`IReadOnlyList<RemotingMessageView>` for each batch; its `ConsumeMessageBatchSize` defaults to `1`, so existing
-settings retain singleton delivery unless configured otherwise. The direct Remoting `MessageHandler` delegate uses
-the same list-based contract.
+`IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext` for each batch; its
+`ConsumeMessageBatchSize` defaults to `1`, so existing settings retain singleton delivery unless configured
+otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
+contiguous prefix and retry its tail; `Retry` and `DeadLetter` remain whole-batch outcomes. The direct Remoting
+`MessageHandler` delegate uses the same list-and-context contract.
 
 For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token, stops client-side
 invisibility renewal, and requests retry when the configured limit elapses. The dispatcher ignores a late result and

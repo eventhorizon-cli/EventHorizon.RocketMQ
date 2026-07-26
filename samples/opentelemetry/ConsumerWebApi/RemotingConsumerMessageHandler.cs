@@ -25,6 +25,7 @@ internal sealed class RemotingConsumerMessageHandler(
 {
     public async ValueTask<ConsumeResult> HandleAsync(
         IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext context,
         CancellationToken cancellationToken)
     {
         foreach (var message in messages)

@@ -80,11 +80,17 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
   可跨消息、跨队列复用的 token。
 - **Push**：客户端仍以拉取/长轮询为基础，但加上经典 group、心跳、Broker 回调、重平衡和可选队列锁的
   兼容流程。它支持 cluster/broadcast、并发批量或 FIFO 分发，以及队列有序消费所需的经典锁定行为。
-  唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>`。
-  `BatchSize` 限制单次长轮询向 Broker 请求的消息数；`ConsumeMessageBatchSize` 独立限制单次 handler
-  调用收到的消息数，默认值为 `1`。来自同一个 Broker 物理队列、且不带 `MessageGroup` 的并发消息可以合并为
-一批，多个批次可在 `MaxConcurrency` 范围内并行处理；带 `MessageGroup` 的 FIFO 投递和 `ConsumeOrderly`
-投递保持单消息、串行处理。一项 `ConsumeResult` 会应用于该批中的每条消息。
+  唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>` 和
+  `RemotingPushConsumeContext`。`BatchSize` 限制单次长轮询向 Broker 请求的消息数；`ConsumeMessageBatchSize`
+  独立限制单次 handler 调用收到的消息数，默认值为 `1`。来自同一个 Broker 物理队列、且不带 `MessageGroup`
+  的并发消息可以合并为一批，多个批次可在 `MaxConcurrency` 范围内并行处理；带 `MessageGroup` 的 FIFO 投递和
+  `ConsumeOrderly` 投递保持单消息、串行处理。
+
+  `Success` 默认确认整个批次。并发、非 FIFO handler 可以在返回 `Success` 前把 `AckIndex` 设为最后一条已接受
+  消息的从零开始索引；客户端会确认这个连续前缀，并只重试尾部消息。无论 `AckIndex` 为何，`Retry` 和
+  `DeadLetter` 都会应用到批次中的每条消息。context 还提供 `DelayLevelWhenNextConsume`，用于未确认的尾部：
+  `0` 交由 Broker 决定重试时间，正值选择 RocketMQ 延迟级别，负值请求直接进入死信队列。广播模式没有 Broker
+  重试或死信路径，因此未确认的尾部消息会被跳过。
 
 `ConsumeTimeout` 默认值为 15 分钟，仅适用于并发集群、非 FIFO 批次。超时后，客户端会取消 handler token，并为
 整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。

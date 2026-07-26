@@ -41,7 +41,7 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 - options 验证、默认客户端注册、keyed 客户端注册与重复角色注册；
 - message 编解码、frame 长度限制、ACL 签名和 response correlation；
 - route cache、重试、取消、连接故障和 handler 生命周期；
-- Consumer 对 `Success`、`Retry`、`DeadLetter` 的处理决策。
+- Consumer 对 `Success`、部分批量确认、`Retry`、`DeadLetter` 的处理决策。
 
 这样失败信息能直接指向客户端逻辑。若测试需要真实 endpoint 才能成立，它应迁移到对应的 integration
 test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。

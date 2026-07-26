@@ -56,7 +56,7 @@ public sealed class RocketMQRequestReplyIntegrationTests
                 options.GroupName = $"request-reply-consumer-{suffix}";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = async (messages, token) =>
+                options.MessageHandler = async (messages, _, token) =>
                 {
                     var message = Assert.Single(messages);
                     if (!string.Equals(Encoding.UTF8.GetString(message.Body), requestBody, StringComparison.Ordinal))

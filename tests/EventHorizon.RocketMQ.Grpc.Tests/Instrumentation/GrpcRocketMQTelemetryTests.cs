@@ -164,6 +164,42 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
+    public void StartReceive_LinksProducerContexts()
+    {
+        using var listener = CreateActivityListener();
+        using var provider = CreateServiceProvider();
+        var telemetry = CreateTelemetry(provider);
+        var traceId = ActivityTraceId.CreateRandom();
+        var spanId = ActivitySpanId.CreateRandom();
+        var messageProperties = new IReadOnlyDictionary<string, string>[]
+        {
+            new Dictionary<string, string>
+            {
+                ["traceparent"] = $"00-{traceId}-{spanId}-01"
+            },
+            new Dictionary<string, string>
+            {
+                ["traceparent"] = "invalid"
+            }
+        };
+
+        using var receive = telemetry.StartReceive(
+            "orders",
+            "orders-consumer",
+            2,
+            null,
+            DateTimeOffset.UtcNow,
+            Stopwatch.GetTimestamp(),
+            messageProperties: messageProperties);
+        var receiveActivity = Assert.IsType<Activity>(receive.Activity);
+        receive.Complete();
+
+        var link = Assert.Single(receiveActivity.Links);
+        Assert.Equal(traceId, link.Context.TraceId);
+        Assert.Equal(spanId, link.Context.SpanId);
+    }
+
+    [Fact]
     public void StartProcess_UsesProducerContextAsParentWithoutReceiveContext()
     {
         using var listener = CreateActivityListener();

@@ -15,12 +15,14 @@
 
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Logging;
@@ -846,6 +848,91 @@ public sealed class RemotingPushConsumerTests
         {
             File.Delete(offsetPath);
         }
+    }
+
+    [Theory]
+    [InlineData(ConsumeResult.Retry)]
+    [InlineData(ConsumeResult.DeadLetter)]
+    public async Task UnsuccessfulHandlerResult_RecordsFailedProcessTelemetry(ConsumeResult result)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var offsetPath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            $"rocketmq-broadcast-telemetry-{Guid.NewGuid():N}.json");
+        var receiveOperation = new Mock<IRemotingRocketMQTelemetryOperation>(MockBehavior.Strict);
+        receiveOperation.SetupGet(value => value.Activity).Returns((Activity?)null);
+        receiveOperation.Setup(value => value.Complete());
+        receiveOperation.Setup(value => value.Dispose());
+        var processCompleted = new TaskCompletionSource<(bool Success, string? Outcome)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var processOperation = new Mock<IRemotingRocketMQTelemetryOperation>(MockBehavior.Strict);
+        processOperation
+            .Setup(value => value.Complete(It.IsAny<bool>(), It.IsAny<string?>()))
+            .Callback<bool, string?>((success, outcome) => processCompleted.TrySetResult((success, outcome)));
+        processOperation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IRemotingRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartReceive(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<ActivityContext?>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<long>(),
+                It.IsAny<int?>(),
+                It.IsAny<bool>(),
+                It.IsAny<IEnumerable<IReadOnlyDictionary<string, string>>?>()))
+            .Returns(receiveOperation.Object);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Returns(processOperation.Object);
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@telemetry-test")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "telemetry-message", null, 0, 1_000), 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = CreateBroadcastOptions(
+            offsetPath,
+            (_, _) => ValueTask.FromResult(result));
+        try
+        {
+            await using var consumer = CreateRemotingPushConsumer(
+                options,
+                CreateRouteServiceMock().Object,
+                remoting,
+                "telemetry-test",
+                telemetry.Object);
+            await consumer.StartAsync(cancellationToken);
+            var processOutcome = await processCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            Assert.False(processOutcome.Success);
+            Assert.Equal(result.ToString(), processOutcome.Outcome);
+            await consumer.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            File.Delete(offsetPath);
+        }
+
+        telemetry.VerifyAll();
+        receiveOperation.VerifyAll();
+        processOperation.VerifyAll();
     }
 
     [Fact]
@@ -1740,7 +1827,8 @@ public sealed class RemotingPushConsumerTests
         RemotingPushConsumerOptions options,
         ITopicRouteService routes,
         IRemotingClient remoting,
-        string instanceName) => CreateRemotingPushConsumer(
+        string instanceName,
+        IRemotingRocketMQTelemetry? telemetry = null) => CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
             {
@@ -1752,7 +1840,8 @@ public sealed class RemotingPushConsumerTests
             routes,
             remoting,
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance);
+            NullLogger<RemotingPushConsumer>.Instance,
+            telemetry);
 
     private static RemotingPushConsumer CreateRemotingPushConsumer(
         IOptions<RemotingPushConsumerOptions> options,
@@ -1760,7 +1849,8 @@ public sealed class RemotingPushConsumerTests
         ITopicRouteService routes,
         IRemotingClient remoting,
         TimeProvider timeProvider,
-        ILogger<RemotingPushConsumer> logger)
+        ILogger<RemotingPushConsumer> logger,
+        IRemotingRocketMQTelemetry? telemetry = null)
     {
         var consumerEngine = CreateRemotingConsumerEngine(
             options.Value,
@@ -1770,7 +1860,8 @@ public sealed class RemotingPushConsumerTests
             clientOptions,
             routes,
             remoting,
-            timeProvider);
+            timeProvider,
+            telemetry);
         return new RemotingPushConsumer(
             options,
             clientOptions,
@@ -1778,7 +1869,8 @@ public sealed class RemotingPushConsumerTests
             routes,
             remoting,
             timeProvider,
-            logger);
+            logger,
+            telemetry: telemetry);
     }
 
     private static RemotingConsumerEngine CreateRemotingConsumerEngine(
@@ -1789,7 +1881,8 @@ public sealed class RemotingPushConsumerTests
         IOptions<RemotingClientOptions> clientOptions,
         ITopicRouteService routes,
         IRemotingClient remoting,
-        TimeProvider timeProvider) =>
+        TimeProvider timeProvider,
+        IRemotingRocketMQTelemetry? telemetry = null) =>
         new(
             new RemotingConsumerSettings(
                 options.GroupName,
@@ -1800,7 +1893,8 @@ public sealed class RemotingPushConsumerTests
             clientOptions,
             routes,
             remoting,
-            timeProvider);
+            timeProvider,
+            telemetry);
 
     private static Mock<ITopicRouteService> CreateRouteServiceMock(
         int queueCount = 1,

@@ -763,7 +763,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             try
             {
                 result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
-                telemetry.Complete(true, result.ToString());
+                telemetry.Complete(result == ConsumeResult.Success, result.ToString());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

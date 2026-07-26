@@ -154,7 +154,8 @@ internal sealed class RemotingPopConsumer : IRemotingPopConsumer
                 startTime,
                 startTimestamp,
                 queue.QueueId,
-                createActivity: result.Messages.Count > 0);
+                createActivity: result.Messages.Count > 0,
+                messageProperties: result.Messages.Select(static message => message.Message.Properties));
             telemetry.Complete();
             return result;
         }

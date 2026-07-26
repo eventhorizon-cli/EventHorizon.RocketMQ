@@ -1512,7 +1512,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         try
         {
             var result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
-            telemetry.Complete(true, result.ToString());
+            telemetry.Complete(result == ConsumeResult.Success, result.ToString());
             return result;
         }
         catch (Exception exception)

@@ -29,7 +29,8 @@ internal interface IRemotingRocketMQTelemetry
         DateTimeOffset startTime,
         long startTimestamp,
         int? queueId = null,
-        bool createActivity = true);
+        bool createActivity = true,
+        IEnumerable<IReadOnlyDictionary<string, string>>? messageProperties = null);
 
     IRemotingRocketMQTelemetryOperation StartProcess(
         string topic,

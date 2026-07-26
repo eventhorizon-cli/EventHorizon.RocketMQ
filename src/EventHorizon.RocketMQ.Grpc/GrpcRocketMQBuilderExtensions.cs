@@ -20,10 +20,10 @@ using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;
+using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -369,7 +369,9 @@ public static class GrpcRocketMQBuilderExtensions
             GrpcRocketMQRegistration.GetNamedOptions<GrpcProducerOptions>(provider, roleKey.OptionsName),
             GrpcRocketMQRegistration.GetClientOptions(provider, roleKey),
             provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey),
-            provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey));
+            provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey),
+            provider.GetRequiredService<ILogger<GrpcProducer>>(),
+            provider.GetRequiredService<ILogger<GrpcSessionManager>>());
     }
 
     private static IGrpcSimpleConsumer CreateGrpcSimpleConsumer(
@@ -404,17 +406,17 @@ public static class GrpcRocketMQBuilderExtensions
             options.Value.Subscriptions,
             Proto.ClientType.PushConsumer,
             options.Value.LongPollingTimeout);
-        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        var logger = provider.GetRequiredService<ILogger<GrpcPushConsumer>>();
         if (handlerLifetime is not { } lifetime)
         {
-            return ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, options, engine, loggerFactory);
+            return ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, options, engine, logger);
         }
 
         return ActivatorUtilities.CreateInstance<GrpcPushConsumer>(
             provider,
             options,
             engine,
-            loggerFactory,
+            logger,
             GrpcPushMessageHandlerFactory.Create(provider, roleKey, lifetime));
     }
 
@@ -429,7 +431,7 @@ public static class GrpcRocketMQBuilderExtensions
         var clientOptions = GrpcRocketMQRegistration.GetClientOptions(provider, roleKey);
         var client = provider.GetRequiredKeyedService<IRocketMQGrpcClient>(roleKey);
         var routes = provider.GetRequiredKeyedService<IGrpcRouteService>(roleKey);
-        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        var managerLogger = provider.GetRequiredService<ILogger<GrpcLiteSubscriptionManager>>();
         var subscriptions = new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
         {
             [options.Value.BindTopic] = FilterExpression.All
@@ -440,7 +442,7 @@ public static class GrpcRocketMQBuilderExtensions
             clientOptions,
             client,
             routes,
-            loggerFactory);
+            managerLogger);
         var engine = CreateGrpcReceiveConsumerEngine(
             provider,
             roleKey,
@@ -450,13 +452,14 @@ public static class GrpcRocketMQBuilderExtensions
             options.Value.LongPollingTimeout,
             manager.HandleTelemetryCommandAsync);
         var pushOptions = Options.Create<GrpcPushConsumerOptions>(options.Value);
+        var pushLogger = provider.GetRequiredService<ILogger<GrpcPushConsumer>>();
         var dispatcher = handlerLifetime is not { } lifetime
-            ? ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, pushOptions, engine, loggerFactory)
+            ? ActivatorUtilities.CreateInstance<GrpcPushConsumer>(provider, pushOptions, engine, pushLogger)
             : ActivatorUtilities.CreateInstance<GrpcPushConsumer>(
                 provider,
                 pushOptions,
                 engine,
-                loggerFactory,
+                pushLogger,
                 GrpcPushMessageHandlerFactory.Create(provider, roleKey, lifetime));
         return ActivatorUtilities.CreateInstance<GrpcLitePushConsumer>(provider, dispatcher, manager);
     }
@@ -470,7 +473,8 @@ public static class GrpcRocketMQBuilderExtensions
         TimeSpan longPollingTimeout,
         Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? telemetryHandler = null)
     {
-        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        var logger = provider.GetRequiredService<ILogger<GrpcReceiveConsumerEngine>>();
+        var sessionLogger = provider.GetRequiredService<ILogger<GrpcSessionManager>>();
         if (telemetryHandler is null)
         {
             return ActivatorUtilities.CreateInstance<GrpcReceiveConsumerEngine>(
@@ -482,7 +486,8 @@ public static class GrpcRocketMQBuilderExtensions
                 subscriptions,
                 clientType,
                 longPollingTimeout,
-                loggerFactory);
+                logger,
+                sessionLogger);
         }
 
         return ActivatorUtilities.CreateInstance<GrpcReceiveConsumerEngine>(
@@ -494,7 +499,8 @@ public static class GrpcRocketMQBuilderExtensions
             subscriptions,
             clientType,
             longPollingTimeout,
-            loggerFactory,
+            logger,
+            sessionLogger,
             telemetryHandler);
     }
 

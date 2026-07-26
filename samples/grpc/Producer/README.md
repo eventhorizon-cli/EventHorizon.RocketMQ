@@ -19,29 +19,31 @@ for example `RocketMQ__Client__Endpoint=proxy.example:8081`.
 | `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the default client registration. |
 | `RocketMQ:Audit:Client:*` | Same as `RocketMQ:Client` | Connection settings for the independent keyed client registration with registration name `audit`. |
 | `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the keyed client registration with registration name `audit`. |
-| `Sample:Topic` | `rocketmq-dotnet-manual` | Topic used when a request omits `topic`. |
-| `Sample:Tag` | `sample` | Tag used when a request omits `tag`. An empty value removes the tag. |
-| `Sample:Message` | `Hello from the RocketMQ gRPC producer sample.` | UTF-8 body used when a request omits `body`. |
 
 This role has no consumer group. `POST /messages` uses the default client registration;
 `POST /clients/audit/messages` resolves a separate `IGrpcProducer` from the .NET keyed service for registration name `audit`.
 The registration name is application configuration, not a Broker-side audit feature, and is also used as the keyed-service key.
 
+Both routes always send to `eventhorizon-test-topic` with the `sample` tag. These sample resources are deliberately
+fixed in code so the paired consumer samples receive the messages. The request accepts only the required `message`
+field; a missing or blank value returns `400 Bad Request` with a validation problem response.
+
 ## Prerequisites
 
 - A RocketMQ 5 Proxy must be reachable at `RocketMQ:Client:Endpoint`; gRPC clients connect to a
   Proxy, never directly to a NameServer.
-- The target Broker must accept standard messages for `rocketmq-dotnet-manual`, or the topic must
-  already exist. Create it explicitly when automatic topic creation is disabled:
+- The target Broker must accept standard messages for `eventhorizon-test-topic`, or the topic must
+  already exist. The supplied environment creates it during startup. For another Broker with automatic resource
+  creation disabled, create it explicitly:
 
   ```shell
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
   ```
 
 - The supplied RocketMQ 5.5.0 Compose environment supports this sample. It exposes its
-  cluster-mode Proxy at `localhost:8081` and enables automatic topic creation, although explicit
-  topic creation is the safer production setup.
+  cluster-mode Proxy at `localhost:8081`; its one-shot resource initializer prepares the fixed sample topic before
+  the startup command returns.
 
 Start that environment from the repository root when using the defaults:
 
@@ -70,7 +72,7 @@ Then send a message through the default client registration:
 ```shell
 curl --request POST http://localhost:5000/messages \
   --header 'Content-Type: application/json' \
-  --data '{"topic":"rocketmq-dotnet-manual","tag":"sample","body":"Hello from curl."}'
+  --data '{"message":"Hello from curl."}'
 ```
 
 Use the same JSON shape with `POST /clients/audit/messages` to select the keyed client registration. Swagger
@@ -83,8 +85,8 @@ is available at `/swagger`; its OpenAPI document is `/swagger/v1/swagger.json`.
 - This sample creates a new message key for every HTTP request. It sends only standard messages;
   FIFO, delayed, priority, transactional, recall, and Lite message setup require additional
   message properties and, in some cases, Broker support.
-- `topic`, `tag`, and `body` are optional request fields. Omitting a field uses the `Sample` default;
-  specifying an empty tag deliberately clears the tag.
+- `message` is the only request field. The Topic and tag are fixed to the ordinary sample resources, and a blank
+  message is rejected with HTTP 400.
 - The default and `audit` endpoints can point at different Proxies or clusters. They happen to use
   the same local defaults, but they are separate DI client registrations and neither route falls back to the
   other.

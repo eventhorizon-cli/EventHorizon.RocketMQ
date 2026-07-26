@@ -93,6 +93,7 @@ ASP.NET Core Host 会随应用启动和停止已注册的 Producer。完整应�
 | 协议层面的 Broker Push | — | Push 和 LitePush 都不是由服务端主动发起的 Broker Push。 |
 | 直接连接 NameServer 或 Broker | — | gRPC 通过 `Endpoint` 连接 RocketMQ Proxy。 |
 | 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQGrpc` 创建客户端注册，再添加所需角色。 |
+| OpenTelemetry tracing 和 metrics | ✅ | 在应用的 OpenTelemetry SDK 中订阅 `GrpcRocketMQInstrumentation` 提供的 source 和 meter 名称。 |
 
 ## 客户端注册和连接
 
@@ -122,6 +123,24 @@ public sealed class OrderPublisher(
 
 每个客户端注册中的同一角色只能注册一次。默认客户端注册使用常规构造函数注入。当从独立的
 `ServiceProvider` 而非 Generic Host 解析客户端时，请显式调用其 `StartAsync` 和 `StopAsync`。
+
+## OpenTelemetry
+
+该 Package 会发出 OpenTelemetry Activity 和 metrics，不需要安装单独的 instrumentation Package。在应用的
+OpenTelemetry SDK 中订阅公开名称：
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddRocketMQGrpcInstrumentation())
+    .WithMetrics(metrics => metrics
+        .AddRocketMQGrpcInstrumentation());
+```
+
+资源属性、采样器、processor 和 exporter 由应用负责。客户端会为 Producer send、非空 receive、自动 Push/LitePush
+process 以及 Consumer 完结操作发出 telemetry；它会把分布式上下文注入出站消息属性，且不会覆盖已有传播字段。
+trace 模型和 metrics 请参阅 [OpenTelemetry 埋点设计](../../docs/zh-CN/architecture/opentelemetry-instrumentation.md)，
+通过 OTLP 接入 Grafana 的方式请参阅 [OpenTelemetry Web 示例](../../samples/opentelemetry/README.zh-CN.md)。
 
 ## Producer
 

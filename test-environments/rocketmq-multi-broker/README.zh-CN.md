@@ -203,7 +203,7 @@ do
   docker compose exec proxy sh mqadmin updateSubGroup \
     -n nameserver:9876 \
     -b "$broker" \
-    -g rocketmq-dotnet-grpc-lite-push-sample \
+    -g eventhorizon-test-lite-push-consumer \
     --attributes +lite.bind.topic=rocketmq-dotnet-multi-broker-lite-manual
 done
 ```

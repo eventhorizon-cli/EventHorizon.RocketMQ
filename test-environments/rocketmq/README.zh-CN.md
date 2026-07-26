@@ -29,6 +29,9 @@ Dashboard 是独立容器，但与 Broker 共用网络命名空间，因此能�
 [`rocketmq-litepush`](../rocketmq-litepush) 环境。它的 Compose 启动过程会自动创建示例所需的 LITE parent Topic 和
 Consumer Group。
 
+本环境还包含供普通示例使用的一次性 `resource-init` 服务。Broker 与 Proxy 健康检查通过后，它会以幂等方式创建共享的普通
+Topic `eventhorizon-test-topic`。
+
 ## 启动与检查
 
 在本目录执行以下命令；若从仓库根目录执行，请额外传入
@@ -39,8 +42,11 @@ Consumer Group。
 ```shell
 docker compose config --quiet
 docker compose up -d --wait
-docker compose ps
+docker compose ps --all
 ```
+
+`resource-init` 应显示为 `Exited (0)`。这是一次性初始化完成后的正常状态；`docker compose up -d --wait` 会在
+共享的普通示例 Topic 创建成功后才返回。
 
 确认 Broker 已注册到 NameServer：
 
@@ -71,11 +77,11 @@ docker compose -f compose.yaml -f compose.host-volumes.yaml up -d --wait
 
 ## 准备手动测试资源
 
-测试普通 Pull 和 Push Consumer 前，先创建普通 topic 和 consumer group：
+所有普通示例都可以直接使用 `eventhorizon-test-topic`。测试独立场景时，再创建独立的普通 topic 和 consumer group：
 
 ```shell
 docker compose exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
 docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-pull
@@ -84,7 +90,7 @@ docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-push
 
 docker compose exec broker sh mqadmin topicRoute \
-  -n nameserver:9876 -t rocketmq-dotnet-manual
+  -n nameserver:9876 -t eventhorizon-test-topic
 ```
 
 如果要在这个通用环境中手动验证 gRPC LitePush，需要创建专用 LITE parent Topic，并为 Consumer Group 配置
@@ -93,11 +99,11 @@ bind topic。仓库提供的 LitePush 示例使用 [`rocketmq-litepush`](../rock
 
 ```shell
 docker compose exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-lite-manual -a +message.type=LITE
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-lite-parent-topic -a +message.type=LITE
 
 docker compose exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-lite-push-sample \
-  --attributes +lite.bind.topic=rocketmq-dotnet-lite-manual
+  -n nameserver:9876 -c DefaultCluster -g eventhorizon-test-lite-push-consumer \
+  --attributes +lite.bind.topic=eventhorizon-test-lite-parent-topic
 ```
 
 此环境的 Broker 配置已启用 `enableLmq=true` 和 `enableMultiDispatch=true`，Lite 消息必须依赖这两个开关来创建

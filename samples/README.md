@@ -2,9 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Each directory below is an independent .NET 8 project. Consumer samples use the Generic Host; Producer samples
-are standard ASP.NET Core Web applications built with Minimal APIs. They use protocol-specific dependency-injection
-registration, so client roles start and stop with the application.
+Each runnable child project below is an independent .NET 8 project. Consumer samples use the Generic Host; Producer
+samples and the two OpenTelemetry Web API projects are standard ASP.NET Core Web applications built with Minimal APIs. They use
+protocol-specific dependency-injection registration, so client roles start and stop with the application.
 
 Each sample directory has its own README. Read that guide before running the sample: it identifies the required
 Broker or Proxy capabilities, resources and permissions, supported server versions, and behavior that can otherwise
@@ -19,11 +19,14 @@ Start the local test environment from the repository root:
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 ```
 
-When automatic resource creation is disabled, create the default `rocketmq-dotnet-manual` topic and the consumer
-groups used by the standard samples before running them:
+The general environment's one-shot initializer creates the shared `eventhorizon-test-topic` topic before
+`docker compose up -d --wait` returns. All ordinary Producer and Consumer samples can use it directly.
+
+When targeting a different Broker that disables automatic resource creation, create the topic and the consumer groups
+used by the standard samples before running them:
 
 ```shell
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
 for group in rocketmq-dotnet-grpc-simple-sample rocketmq-dotnet-grpc-push-sample remoting-sample-pull-consumer remoting-sample-lite-pull-consumer remoting-sample-pop-consumer remoting-sample-push-consumer
 do
@@ -42,39 +45,60 @@ start the dedicated environment:
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 ```
 
-It automatically prepares `rocketmq-dotnet-lite-manual` and `rocketmq-dotnet-grpc-lite-push-sample`; the sample
-synchronizes its `rocketmq-dotnet-lite-sample` LiteTopic subscription when it starts. See the
+It automatically prepares `eventhorizon-test-lite-parent-topic` and `eventhorizon-test-lite-push-consumer`; the sample
+synchronizes its `eventhorizon-test-lite-topic` LiteTopic subscription when it starts. See the
 [LitePush environment guide](../test-environments/rocketmq-litepush/README.md) for the exact setup and limits.
 
 The gRPC projects use `RocketMQ:Client` for `GrpcClientOptions` and `RocketMQ:Producer` or
-`RocketMQ:Consumer` for the role options. Sample-only runtime settings, such as a message body or subscription
-list, are in the top-level `Sample` section when the sample needs them. For example:
+`RocketMQ:Consumer` for the role options. The ordinary sample topic and consumer subscriptions are fixed in code so
+they match the local resource initializer. For example:
 
 ```shell
-RocketMQ__Client__Endpoint=localhost:8081 Sample__Topic=rocketmq-dotnet-manual dotnet run --project samples/grpc/Producer
+RocketMQ__Client__Endpoint=localhost:8081 dotnet run --project samples/grpc/Producer
 ```
 
 The classic Remoting projects use `RocketMQ:Remoting` for the NameServer connection and a concrete role section
-such as `RocketMQ:Producer`, `RocketMQ:PullConsumer`, or `RocketMQ:PushConsumer`. Their sample-only runtime
-settings are likewise in the top-level `Sample` section. For example:
+such as `RocketMQ:Producer`, `RocketMQ:PullConsumer`, or `RocketMQ:PushConsumer`. Their ordinary sample topic and
+consumer subscriptions are likewise fixed in code. For example:
 
 ```shell
-RocketMQ__Remoting__NamesrvAddr=localhost:9876 Sample__Topic=rocketmq-dotnet-manual dotnet run --project samples/remoting/Producer
+RocketMQ__Remoting__NamesrvAddr=localhost:9876 dotnet run --project samples/remoting/Producer
 ```
 
 Every project also contains an `appsettings.json` file with its default values. Consumer samples continue until
-they receive Ctrl+C. Both Producer samples and the Remoting Admin sample host Web APIs and continue serving until
-they receive Ctrl+C. Each has a single HTTP launch profile that sets `launchBrowser` and `launchUrl` to open
-`/swagger`; supported IDE and debug launchers honor that request. If a browser is not opened, use the listening
-address printed by the application and append `/swagger`.
+they receive Ctrl+C. Both Producer samples, the Remoting Admin sample, and the two OpenTelemetry Web API projects
+host Web APIs and continue serving until they receive Ctrl+C. Each has a single HTTP launch profile that sets
+`launchBrowser` and `launchUrl` to open `/swagger`; supported IDE and debug launchers honor that request. If a browser
+is not opened, use the listening address printed by the application and append `/swagger`.
+
+## OpenTelemetry
+
+The [`opentelemetry`](opentelemetry/README.md) samples show how an application configures the OpenTelemetry SDK for
+the separately published gRPC and classic Remoting clients. They subscribe to the clients' public activity-source and
+meter names, and export application-owned telemetry to a collector.
+
+For the local Grafana workflow, start the normal RocketMQ stack together with the independent Grafana OTEL LGTM
+environment. Their published ports do not overlap:
+
+```shell
+docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
+```
+
+The LGTM environment exposes Grafana on `http://127.0.0.1:3000` and OTLP/gRPC on `http://127.0.0.1:4317`; it
+preconfigures separate Producer and Consumer OpenTelemetry dashboards. Start
+[`opentelemetry/ConsumerWebApi`](opentelemetry/ConsumerWebApi/README.md) first, then use
+[`opentelemetry/ProducerWebApi`](opentelemetry/ProducerWebApi/README.md) to send messages through separate gRPC and
+Remoting routes. Both use the auto-created `eventhorizon-test-topic`; the Producer request accepts only the JSON
+`message` field. The category guide covers the shared SDK and collector configuration.
 
 ## Producer Web API and Swagger
 
 Both Producer samples expose Swagger UI at `/swagger` and their OpenAPI document at
 `/swagger/v1/swagger.json`. Swagger UI can invoke both the default and keyed audit send endpoints directly.
 
-Both Producer samples expose `POST /messages`. Its JSON request body can contain optional `topic`, `tag`, and
-`body` fields. When a field is omitted, the sample uses the matching value from the `Sample` configuration section.
+Both Producer samples expose `POST /messages`. Its JSON request body has one required `message` field. The samples
+always send to `eventhorizon-test-topic` with the `sample` tag.
 
 Use the HTTP launch profile in a supported IDE or debug launcher to open Swagger automatically. For a predictable
 command-line fallback, disable the launch profile, bind a known local address, and then open
@@ -85,7 +109,7 @@ ASPNETCORE_URLS=http://localhost:5000 dotnet run --no-launch-profile --project s
 
 curl --request POST http://localhost:5000/messages \
     --header 'Content-Type: application/json' \
-    --data '{"topic":"rocketmq-dotnet-manual","tag":"sample","body":"Hello from curl."}'
+    --data '{"message":"Hello from curl."}'
 ```
 
 Replace `samples/grpc/Producer` with `samples/remoting/Producer` to use the classic Remoting Producer sample.
@@ -103,12 +127,12 @@ the same local RocketMQ environment as the default client registration, but can 
 `RocketMQ:Audit:Client` and `RocketMQ:Audit:Producer`; Remoting reads `RocketMQ:Audit:Remoting` and
 `RocketMQ:Audit:Producer`.
 
-Send through the audit keyed service with the same optional JSON body:
+Send through the audit keyed service with the same required `message` JSON body:
 
 ```shell
 curl --request POST http://localhost:5000/clients/audit/messages \
     --header 'Content-Type: application/json' \
-    --data '{"body":"Audit event from curl."}'
+    --data '{"message":"Audit event from curl."}'
 ```
 
 ## gRPC

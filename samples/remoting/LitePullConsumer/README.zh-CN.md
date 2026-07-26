@@ -14,8 +14,8 @@
 | `RocketMQ:LitePullConsumer:BatchSize` | `32` | 单次 poll 请求的最大消息数。 |
 | `RocketMQ:LitePullConsumer:LongPollingTimeout` | `00:00:05` | 空 poll 请求在 Broker 上的最大等待时间。 |
 | `RocketMQ:LitePullConsumer:InitialOffset` | `End` | 仅在 group 对新分配的队列没有已提交位点时使用。 |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | 默认订阅的普通 topic。 |
-| `Sample:Subscriptions[0]:Filter` | `*` | 订阅过滤条件。 |
+| 固定 topic | `eventhorizon-test-topic` | 共享订阅的普通 topic。 |
+| `Sample:Filter` | `*` | 订阅过滤条件。 |
 | `Sample:RetryDelay` | `00:00:01` | 分配或轮询失败后的等待时间。 |
 
 API 支持订阅模式和手动分配模式，但此示例使用订阅。它轮询当前分配给客户端的队列，记录每条返回消息，再调用
@@ -25,17 +25,13 @@ API 支持订阅模式和手动分配模式，但此示例使用订阅。它轮�
 
 - 使用 classic Remoting NameServer 和 Broker。进程必须能访问配置的 NameServer 以及其路由数据返回的 Broker 地址；
   `NamesrvAddr` 不是 Proxy 端点。
-- 创建普通 topic `rocketmq-dotnet-manual`，并允许集群 group `remoting-sample-lite-pull-consumer` 消费，或同时
-  修改这两个值。如果启用了 ACL，请授予路由查询和消费权限。
+- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许集群 group
+  `remoting-sample-lite-pull-consumer` 消费。如果启用了 ACL，请授予路由查询和消费权限。
 - 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机运行此经典普通 topic 示例。
-  在仓库根目录准备默认资源：
+  它会在启动时自动创建共享 topic：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-lite-pull-consumer
 ```
 
 此环境的 Broker 会公布宿主机可访问的地址。在不同网络命名空间或容器中运行示例时，请使用可访问的 NameServer 和
@@ -58,4 +54,4 @@ dotnet run --project samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Sam
   记录日志就是其全部处理步骤；生产代码只应在业务处理成功后提交。
 - `InitialOffset` 仅在 group 对已分配队列没有已提交位点时生效。复用同一个 group 会保留已提交位点；仅修改
   `InitialOffset` 不会重读历史消息。
-- 订阅模式和显式 `AssignAsync` 模式互斥。保留 `Sample:Subscriptions` 配置时，不要再添加手动分配。
+- 订阅模式和显式 `AssignAsync` 模式互斥。保留固定的示例订阅时，不要再添加手动分配。

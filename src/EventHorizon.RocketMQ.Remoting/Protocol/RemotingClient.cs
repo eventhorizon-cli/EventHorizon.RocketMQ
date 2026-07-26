@@ -18,7 +18,6 @@ using System.IO;
 using System.Net;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
@@ -27,7 +26,7 @@ internal class RemotingClient : IRemotingClient
     private const int InboundRequestCapacity = 128;
     private const int InboundRequestWorkerCount = 2;
 
-    private readonly ILogger _logger;
+    private readonly ILogger<RemotingClient> _logger;
     private readonly Dictionary<EndPoint, RemotingConnection> _connections;
     private readonly ConcurrentDictionary<EndPoint, SemaphoreSlim> _connectionLocks;
     private readonly ConcurrentDictionary<int, PendingRequest> _responseCallbacks;
@@ -53,11 +52,11 @@ internal class RemotingClient : IRemotingClient
     public RemotingClient(
         IRemoteCommandSerializer serializer,
         IOptions<RemotingClientOptions> options,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<RemotingClient> logger)
     {
         ArgumentNullException.ThrowIfNull(serializer);
         ArgumentNullException.ThrowIfNull(options);
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<RemotingClient>();
+        _logger = logger;
 
         _connections = new Dictionary<EndPoint, RemotingConnection>();
         _connectionLocks = new ConcurrentDictionary<EndPoint, SemaphoreSlim>();

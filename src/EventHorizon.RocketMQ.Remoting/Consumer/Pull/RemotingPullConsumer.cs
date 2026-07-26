@@ -17,43 +17,56 @@ using EventHorizon.RocketMQ.Remoting.Consumer;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 
-internal sealed class RemotingPullConsumer(IRemotingConsumerEngine engine) : IRemotingPullConsumer
+internal sealed class RemotingPullConsumer : IRemotingPullConsumer
 {
+    private readonly IRemotingConsumerEngine _engine;
+
+    public RemotingPullConsumer(IRemotingConsumerEngine engine)
+    {
+        _engine = engine;
+    }
+
     public ValueTask StartAsync(CancellationToken cancellationToken = default) =>
-        engine.StartAsync(cancellationToken);
+        _engine.StartAsync(cancellationToken);
 
     public ValueTask StopAsync(CancellationToken cancellationToken = default) =>
-        engine.StopAsync(cancellationToken);
+        _engine.StopAsync(cancellationToken);
 
     public Task<IReadOnlyList<RemotingPullMessageQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default) =>
-        engine.GetMessageQueuesAsync(topic, cancellationToken);
+        _engine.GetMessageQueuesAsync(topic, cancellationToken);
 
-    public Task<RemotingPullResult> PullAsync(
+    public async Task<RemotingPullResult> PullAsync(
         RemotingPullMessageQueue queue,
         long offset,
         int? maxMessages = null,
-        CancellationToken cancellationToken = default) =>
-        engine.PullAsync(queue, offset, maxMessages, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        return await _engine.PullAsync(queue, offset, maxMessages, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<long> GetOffsetAsync(
         RemotingPullMessageQueue queue,
         CancellationToken cancellationToken = default) =>
-        engine.GetOffsetAsync(queue, cancellationToken);
+        _engine.GetOffsetAsync(queue, cancellationToken);
 
-    public Task UpdateOffsetAsync(
+    public async Task UpdateOffsetAsync(
         RemotingPullMessageQueue queue,
         long offset,
-        CancellationToken cancellationToken = default) =>
-        engine.UpdateOffsetAsync(queue, offset, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        await _engine.UpdateOffsetAsync(queue, offset, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<long> QueryOffsetAsync(
         RemotingPullMessageQueue queue,
         QueryOffsetPolicy policy,
         DateTimeOffset? timestamp = null,
         CancellationToken cancellationToken = default) =>
-        engine.QueryOffsetAsync(queue, policy, timestamp, cancellationToken);
+        _engine.QueryOffsetAsync(queue, policy, timestamp, cancellationToken);
 
-    public ValueTask DisposeAsync() => engine.DisposeAsync();
+    public ValueTask DisposeAsync() => _engine.DisposeAsync();
 }

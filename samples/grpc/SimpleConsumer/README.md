@@ -16,31 +16,32 @@ and then calls `AckAsync`; the application, rather than the client, controls tho
 | `RocketMQ:Consumer:GroupName` | `rocketmq-dotnet-grpc-simple-sample` | Consumer group that owns acknowledgements and retry state. |
 | `RocketMQ:Consumer:AwaitDuration` | `00:00:05` | Server-side receive long-poll duration. |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration for a received message. |
-| `Sample:Subscriptions:0:Topic` | `rocketmq-dotnet-manual` | Standard topic to receive. |
-| `Sample:Subscriptions:0:Filter` | `sample` | Tag filter expression. |
+| `Sample:Filter` | `sample` | Tag filter expression for the fixed standard topic. |
 | `Sample:BatchSize` | `16` | Maximum messages requested by each receive call. |
 | `Sample:MaxDeliveryAttempts` | `16` | Threshold passed when forwarding a corrupted message to the dead-letter queue. |
 
-The producer sample's default tag is `sample`, so its default messages match this subscription.
+This sample always subscribes to `eventhorizon-test-topic`; the Topic is fixed in code. The Producer sample's fixed
+`sample` tag matches the default filter.
 
 ## Prerequisites
 
 - A RocketMQ 5 Proxy must be reachable at `RocketMQ:Client:Endpoint`; the client does not connect
   directly to a NameServer.
 - The standard topic and consumer group must exist, or the Broker must permit their automatic
-  creation. Create them explicitly when that policy is disabled:
+  creation. The supplied environment creates the fixed Topic at startup. Create both resources explicitly when using
+  another Broker with automatic resource creation disabled:
 
   ```shell
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
     -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-simple-sample
   ```
 
 - The supplied RocketMQ 5.5.0 Compose environment supports SimpleConsumer at `localhost:8081`.
-  Its Broker enables automatic topic and subscription-group creation, but production deployments
-  commonly require administrators to provision both resources first.
+  Its one-shot resource initializer creates the fixed Topic before the startup command returns, but production
+  deployments commonly require administrators to provision both resources first.
 
 Start the supplied environment from the repository root:
 
@@ -57,7 +58,7 @@ dotnet run --project samples/grpc/SimpleConsumer
 ```
 
 The sample continues until Ctrl+C. Send a message with the Producer sample, or publish a standard
-message tagged `sample` to `rocketmq-dotnet-manual` through another client.
+message tagged `sample` to `eventhorizon-test-topic` through another client.
 
 ## Semantics and common pitfalls
 

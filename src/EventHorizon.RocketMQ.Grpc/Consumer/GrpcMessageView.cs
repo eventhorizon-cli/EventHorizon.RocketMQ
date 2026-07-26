@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Diagnostics;
+
 namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 /// <summary>
@@ -153,5 +155,6 @@ public sealed class GrpcMessageView
     public string? CorruptionReason { get; }
 
     internal Uri Endpoint { get; }
+    internal ActivityContext? ReceiveActivityContext { get; set; }
     internal object? Owner { get; set; }
 }

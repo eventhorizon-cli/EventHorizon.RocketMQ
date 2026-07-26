@@ -24,12 +24,12 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Producer.Transactions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Producer;
@@ -42,7 +42,8 @@ internal sealed class RemotingProducer : IRemotingProducer
     private readonly ITopicRouteService _routeService;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
-    private readonly ILogger _logger;
+    private readonly IRemotingRocketMQTelemetry _telemetry;
+    private readonly ILogger<RemotingProducer> _logger;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly ConcurrentDictionary<string, PendingReply> _pendingReplies = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ProducerBrokerEndpoint> _requestReplyBrokers = new(StringComparer.Ordinal);
@@ -62,15 +63,17 @@ internal sealed class RemotingProducer : IRemotingProducer
         ITopicRouteService routeService,
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<RemotingProducer> logger,
+        IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
         _routeService = routeService;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
+        _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
         _clientId = _clientOptions.BuildRemotingClientId();
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<RemotingProducer>();
+        _logger = logger;
     }
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
@@ -470,13 +473,28 @@ internal sealed class RemotingProducer : IRemotingProducer
         ValidateMessage(reply);
         EnsureStarted();
         EnsureUniqueMessageId(reply);
-        var outcome = await SendCoreAsync(
-            reply,
-            queue => BuildRequest(reply, queue, requestCode: RequestCode.SendReplyMessage),
-            (response, topic, brokerName) => CreateSendResult(reply, topic, brokerName, response),
-            cancellationToken,
-            queueSelector: null).ConfigureAwait(false);
-        return outcome.SendResult;
+        var telemetry = _telemetry.StartSend(reply.Topic, 1, reply.Body.LongLength);
+        try
+        {
+            _telemetry.InjectContext(telemetry.Activity, reply.Properties);
+            var outcome = await SendCoreAsync(
+                reply,
+                queue => BuildRequest(reply, queue, requestCode: RequestCode.SendReplyMessage),
+                (response, topic, brokerName) => CreateSendResult(reply, topic, brokerName, response),
+                cancellationToken,
+                queueSelector: null).ConfigureAwait(false);
+            telemetry.Complete();
+            return outcome.SendResult;
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
+        finally
+        {
+            telemetry.Dispose();
+        }
     }
 
     private async Task<RemotingReplyMessage> RequestCoreAsync(
@@ -537,14 +555,29 @@ internal sealed class RemotingProducer : IRemotingProducer
         ValidateMessage(message, transactionPrepared);
         EnsureStarted();
         EnsureUniqueMessageId(message);
-
-        return await SendCoreAsync(
-            message,
-            queue => BuildRequest(message, queue, transactionPrepared),
-            (response, topic, brokerName) => CreateSendResult(message, topic, brokerName, response),
-            cancellationToken,
-            queueSelector,
-            beforeInvoke).ConfigureAwait(false);
+        var telemetry = _telemetry.StartSend(message.Topic, 1, message.Body.LongLength);
+        try
+        {
+            _telemetry.InjectContext(telemetry.Activity, message.Properties);
+            var outcome = await SendCoreAsync(
+                message,
+                queue => BuildRequest(message, queue, transactionPrepared),
+                (response, topic, brokerName) => CreateSendResult(message, topic, brokerName, response),
+                cancellationToken,
+                queueSelector,
+                beforeInvoke).ConfigureAwait(false);
+            telemetry.Complete();
+            return outcome;
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
+        finally
+        {
+            telemetry.Dispose();
+        }
     }
 
     private async Task<SendOutcome> SendCoreAsync(
@@ -779,13 +812,44 @@ internal sealed class RemotingProducer : IRemotingProducer
         PublishQueueSelector? queueSelector = null)
     {
         EnsureStarted();
-        var outcome = await SendCoreAsync(
-            batch.RoutingMessage,
-            queue => BuildBatchRequest(batch, queue),
-            (response, topic, brokerName) => CreateBatchSendResult(batch, topic, brokerName, response),
-            cancellationToken,
-            queueSelector).ConfigureAwait(false);
-        return outcome.SendResult;
+        var telemetry = _telemetry.StartSend(
+            batch.RoutingMessage.Topic,
+            batch.Messages.Count,
+            batch.Body.LongLength);
+        try
+        {
+            foreach (var message in batch.Messages)
+            {
+                _telemetry.InjectContext(telemetry.Activity, message.Properties);
+            }
+
+            var body = RemotingMessageBatchCodec.Encode(batch.Messages, message => BuildProperties(message, false));
+            if (body.Length > _options.MaxMessageSize)
+            {
+                throw new ArgumentException(
+                    $"Encoded batch body exceeds the configured maximum of {_options.MaxMessageSize} bytes.",
+                    nameof(batch));
+            }
+
+            var instrumentedBatch = batch with { Body = body };
+            var outcome = await SendCoreAsync(
+                instrumentedBatch.RoutingMessage,
+                queue => BuildBatchRequest(instrumentedBatch, queue),
+                (response, topic, brokerName) => CreateBatchSendResult(instrumentedBatch, topic, brokerName, response),
+                cancellationToken,
+                queueSelector).ConfigureAwait(false);
+            telemetry.Complete();
+            return outcome.SendResult;
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
+        finally
+        {
+            telemetry.Dispose();
+        }
     }
 
     private PreparedBatch PrepareBatch(IReadOnlyCollection<Message> messages)
@@ -877,53 +941,67 @@ internal sealed class RemotingProducer : IRemotingProducer
         ValidateMessage(message);
         EnsureStarted();
         EnsureUniqueMessageId(message);
-
-        Exception? lastException = null;
-        string? lastBroker = null;
-        var attempts = Math.Max(0, _options.RetryTimesWhenSendFailed) + 1;
-        var topic = LegacyNamespace.Wrap(_clientOptions.Namespace, message.Topic);
-        for (var attempt = 0; attempt < attempts; attempt++)
+        var telemetry = _telemetry.StartSend(message.Topic, 1, message.Body.LongLength);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            _telemetry.InjectContext(telemetry.Activity, message.Properties);
+            Exception? lastException = null;
+            string? lastBroker = null;
+            var attempts = Math.Max(0, _options.RetryTimesWhenSendFailed) + 1;
+            var topic = LegacyNamespace.Wrap(_clientOptions.Namespace, message.Topic);
+            for (var attempt = 0; attempt < attempts; attempt++)
             {
-                var route = await _routeService.GetAsync(
-                    topic,
-                    forceRefresh: attempt > 0,
-                    cancellationToken).ConfigureAwait(false);
-                var queue = queueSelector is null
-                    ? SelectQueue(message, topic, route, lastBroker)
-                    : queueSelector(topic, route, lastBroker);
-                lastBroker = queue.MessageQueue.BrokerName;
-                await _remotingClient.InvokeOnewayAsync(
-                    EndpointParser.Parse(queue.BrokerAddress),
-                    BuildRequest(message, queue.MessageQueue),
-                    _options.SendMsgTimeout,
-                    cancellationToken).ConfigureAwait(false);
-                return;
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var route = await _routeService.GetAsync(
+                        topic,
+                        forceRefresh: attempt > 0,
+                        cancellationToken).ConfigureAwait(false);
+                    var queue = queueSelector is null
+                        ? SelectQueue(message, topic, route, lastBroker)
+                        : queueSelector(topic, route, lastBroker);
+                    lastBroker = queue.MessageQueue.BrokerName;
+                    await _remotingClient.InvokeOnewayAsync(
+                        EndpointParser.Parse(queue.BrokerAddress),
+                        BuildRequest(message, queue.MessageQueue),
+                        _options.SendMsgTimeout,
+                        cancellationToken).ConfigureAwait(false);
+                    telemetry.Complete();
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (ArgumentException)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (attempt + 1 < attempts)
+                {
+                    lastException = exception;
+                }
+                catch (Exception exception)
+                {
+                    lastException = exception;
+                    break;
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (ArgumentException)
-            {
-                throw;
-            }
-            catch (Exception exception) when (attempt + 1 < attempts)
-            {
-                lastException = exception;
-            }
-            catch (Exception exception)
-            {
-                lastException = exception;
-                break;
-            }
-        }
 
-        throw new RocketMQClientException(
-            $"Failed to send one-way message for topic '{message.Topic}' after {attempts} attempts.",
-            lastException);
+            throw new RocketMQClientException(
+                $"Failed to send one-way message for topic '{message.Topic}' after {attempts} attempts.",
+                lastException);
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
+        finally
+        {
+            telemetry.Dispose();
+        }
     }
 
     public async ValueTask DisposeAsync()

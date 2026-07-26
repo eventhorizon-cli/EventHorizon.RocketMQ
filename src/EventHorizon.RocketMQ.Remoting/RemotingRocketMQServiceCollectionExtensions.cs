@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -103,6 +104,9 @@ public static class RemotingRocketMQServiceCollectionExtensions
                 $"Maximum classic remoting frame size must be at least " +
                 $"{RemotingClientOptions.MinimumRemotingFrameSize} bytes.");
 
+        services.AddLogging();
+        services.AddMetrics();
+        services.TryAddSingleton<IRemotingRocketMQTelemetry, RemotingRocketMQTelemetry>();
         services.TryAddSingleton(TimeProvider.System);
         return new RemotingRocketMQBuilder(services, optionsName, registrationName);
     }

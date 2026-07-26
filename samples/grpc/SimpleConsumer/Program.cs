@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Grpc;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -29,13 +30,7 @@ sampleSection.Bind(sampleOptions);
 builder.Services
     .AddOptions<SimpleConsumerSampleOptions>()
     .Bind(sampleSection)
-    .Validate(static options => options.Subscriptions.Count > 0, "At least one subscription is required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Topic)),
-        "Subscription topics are required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Filter)),
-        "Subscription filters are required.")
+    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "Subscription filter is required.")
     .Validate(static options => options.BatchSize > 0, "Batch size must be positive.")
     .Validate(static options => options.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
     .ValidateOnStart();
@@ -47,7 +42,7 @@ builder.Services
     .AddGrpcSimpleConsumer(options =>
     {
         consumerSection.Bind(options);
-        sampleOptions.ApplySubscriptions(options);
+        options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
     });
 builder.Services.AddHostedService<SimpleConsumer>();
 

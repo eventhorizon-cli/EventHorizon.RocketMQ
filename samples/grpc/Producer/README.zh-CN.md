@@ -18,29 +18,29 @@
 | `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | 默认客户端注册中 Producer 的发送超时。 |
 | `RocketMQ:Audit:Client:*` | 与 `RocketMQ:Client` 相同 | `registrationName` 为 `audit` 的独立 keyed 客户端注册的连接设置。 |
 | `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | `registrationName` 为 `audit` 的 keyed 客户端注册中 Producer 的发送超时。 |
-| `Sample:Topic` | `rocketmq-dotnet-manual` | 请求未提供 `topic` 时使用的主题。 |
-| `Sample:Tag` | `sample` | 请求未提供 `tag` 时使用的 tag；空值会移除 tag。 |
-| `Sample:Message` | `Hello from the RocketMQ gRPC producer sample.` | 请求未提供 `body` 时使用的 UTF-8 消息体。 |
 
 该角色没有 consumer group。`POST /messages` 使用默认客户端注册中的 `IGrpcProducer`；
 `POST /clients/audit/messages` 使用 `registrationName` 为 `audit` 的独立 keyed 客户端注册所提供的
 `IGrpcProducer` keyed service。该 `registrationName` 同时作为 keyed service 的 key；它是应用侧配置，
 不是 Broker 端的审计功能。
 
+两个路由都会固定向 `eventhorizon-test-topic` 发送带 `sample` tag 的消息。这些示例资源刻意写死在代码中，以便配套的
+Consumer 示例能够接收消息。请求只接受必填的 `message` 字段；省略或传入空白值时会返回 `400 Bad Request` 及验证问题响应。
+
 ## 前置条件
 
 - `RocketMQ:Client:Endpoint` 必须指向可访问的 RocketMQ 5 Proxy；gRPC 客户端连接 Proxy，不会直接连接
   NameServer。
-- 目标 Broker 必须允许向 `rocketmq-dotnet-manual` 发送标准消息，或者该 topic 已经存在。禁用自动建 topic
-  时，请显式创建：
+- 目标 Broker 必须允许向 `eventhorizon-test-topic` 发送标准消息，或者该 topic 已经存在。本仓库提供的环境会在启动时创建它。
+  使用禁用自动资源创建的其他 Broker 时，请显式创建：
 
   ```shell
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
   ```
 
-- 本仓库提供的 RocketMQ 5.5.0 Compose 环境支持该示例。它在 `localhost:8081` 提供 cluster-mode Proxy，并开启了
-  自动建 topic；但生产环境中显式建 topic 更稳妥。
+- 本仓库提供的 RocketMQ 5.5.0 Compose 环境支持该示例。它在 `localhost:8081` 提供 cluster-mode Proxy；一次性资源
+  初始化服务会在启动命令返回前准备好固定的示例 Topic。
 
 使用默认值时，在仓库根目录启动该环境：
 
@@ -68,7 +68,7 @@ ASPNETCORE_URLS=http://localhost:5000 \
 ```shell
 curl --request POST http://localhost:5000/messages \
   --header 'Content-Type: application/json' \
-  --data '{"topic":"rocketmq-dotnet-manual","tag":"sample","body":"Hello from curl."}'
+  --data '{"message":"Hello from curl."}'
 ```
 
 向 `POST /clients/audit/messages` 发送结构相同的 JSON 请求，即可选择 `registrationName` 为 `audit` 的
@@ -80,7 +80,7 @@ keyed 客户端注册所提供的 keyed service。Swagger 位于 `/swagger`，Op
   不会在本地排队等待稍后重试。
 - 每个 HTTP 请求都会生成一个新的消息 key。本示例只发送标准消息；FIFO、延迟、优先级、事务、撤回和 Lite
   消息还需要额外消息属性，部分场景还需要 Broker 支持。
-- `topic`、`tag` 和 `body` 都是可选请求字段。省略字段会使用 `Sample` 默认值；显式指定空 tag 会清除 tag。
+- `message` 是唯一的请求字段。Topic 和 tag 固定使用普通示例资源；空白消息会被 HTTP 400 拒绝。
 - 默认端点和 `audit` 端点可指向不同 Proxy 或集群。它们恰好使用相同的本地默认值，但分别来自默认客户端注册和
   keyed 客户端注册；任一路由都不会回退到另一个客户端注册。
 

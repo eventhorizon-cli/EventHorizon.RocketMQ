@@ -31,7 +31,13 @@ builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcLitePushConsumer<LitePushConsumerMessageHandler>(
         ServiceLifetime.Scoped,
-        consumerSection.Bind);
+        options =>
+        {
+            consumerSection.Bind(options);
+            options.BindTopic = "eventhorizon-test-lite-parent-topic";
+            options.LiteTopics.Clear();
+            options.LiteTopics.Add("eventhorizon-test-lite-topic");
+        });
 // AddGrpcLitePushConsumer registers the lifecycle service; this hosted service only reports the active LiteTopics.
 builder.Services.AddHostedService<LitePushConsumer>();
 

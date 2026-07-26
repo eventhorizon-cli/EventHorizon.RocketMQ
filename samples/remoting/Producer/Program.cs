@@ -20,7 +20,6 @@ using EventHorizon.RocketMQ.Samples.Remoting.Producer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
 // This registration name is also the .NET keyed-service key for the explicit audit route.
@@ -32,13 +31,6 @@ var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remotin
 var producerSection = builder.Configuration.GetRequiredSection("RocketMQ:Producer");
 var auditRemotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Remoting");
 var auditProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Producer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-
-builder.Services.AddOptions<ProducerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Topic), "A message topic is required.")
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Message), "A message body is required.")
-    .ValidateOnStart();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -66,8 +58,9 @@ app.MapPost("/messages", SendMessageAsync)
     .WithSummary("Send a message through the default Remoting producer.")
     .WithDescription(
         "Sends a message with the producer from the default client registration. " +
-        "Request values override the Sample defaults.")
+        "The sample uses its fixed shared topic and sample tag.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status502BadGateway);
 
 app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
@@ -75,8 +68,9 @@ app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithSummary("Send a message through the keyed audit Remoting producer.")
     .WithDescription(
         "Sends a message with the producer registered under registration name 'audit'. " +
-        "Request values override the Sample defaults.")
+        "The sample uses its fixed shared topic and sample tag.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status502BadGateway);
 
 await app.RunAsync();
@@ -84,26 +78,26 @@ await app.RunAsync();
 static async Task<IResult> SendMessageAsync(
     SendMessageRequest? request,
     IRemotingProducer producer,
-    IOptions<ProducerSampleOptions> sampleOptions,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    request ??= new SendMessageRequest();
-    var options = sampleOptions.Value;
-    var topic = string.IsNullOrWhiteSpace(request.Topic) ? options.Topic : request.Topic;
-    var tag = request.Tag is null
-        ? string.IsNullOrWhiteSpace(options.Tag) ? null : options.Tag
-        : string.IsNullOrWhiteSpace(request.Tag) ? null : request.Tag;
-    var body = request.Body ?? options.Message;
-    var messageKey = $"sample-{Guid.NewGuid():N}";
-    var message = new Message(topic, Encoding.UTF8.GetBytes(body))
+    var body = request?.Message;
+    if (string.IsNullOrWhiteSpace(body))
     {
-        Tag = tag
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["message"] = ["A non-empty message is required."]
+            });
+    }
+
+    var message = new Message("eventhorizon-test-topic", Encoding.UTF8.GetBytes(body))
+    {
+        Tag = "sample"
     };
+    var messageKey = $"sample-{Guid.NewGuid():N}";
     message.Keys.Add(messageKey);
     message.Properties["sample"] = "remoting-producer";
-
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Producer");
 
     try
     {
@@ -144,7 +138,6 @@ static async Task<IResult> SendMessageAsync(
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
     [FromKeyedServices(AuditRegistrationName)] IRemotingProducer producer,
-    IOptions<ProducerSampleOptions> sampleOptions,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
-    SendMessageAsync(request, producer, sampleOptions, loggerFactory, cancellationToken);
+    SendMessageAsync(request, producer, logger, cancellationToken);

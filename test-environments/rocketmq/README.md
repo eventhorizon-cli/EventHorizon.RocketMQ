@@ -28,6 +28,9 @@ For the bundled LitePush sample, prefer the self-initializing
 [`rocketmq-litepush`](../rocketmq-litepush) environment. Its Compose startup creates the sample's LITE parent topic
 and consumer group automatically.
 
+This environment also includes a one-shot `resource-init` service for the standard samples. After the Broker and
+Proxy are healthy, it idempotently creates the ordinary shared `eventhorizon-test-topic` topic.
+
 ## Start and inspect
 
 Run these commands from this directory, or add `-f test-environments/rocketmq/compose.yaml` when
@@ -38,8 +41,11 @@ The first run also pulls `apacherocketmq/rocketmq-dashboard:2.1.0` when it is no
 ```shell
 docker compose config --quiet
 docker compose up -d --wait
-docker compose ps
+docker compose ps --all
 ```
+
+`resource-init` should show `Exited (0)`. That completed state is expected: `docker compose up -d --wait` does not
+return until the shared standard sample topic has been created.
 
 Confirm that the Broker registered with the NameServer:
 
@@ -72,11 +78,12 @@ remove `./data` explicitly when a full reset is needed.
 
 ## Prepare manual tests
 
-Create a standard topic and consumer groups before testing standard pull and push consumers:
+All standard samples can use `eventhorizon-test-topic` immediately. Create a separate standard topic and consumer
+groups before testing an independent scenario:
 
 ```shell
 docker compose exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
 docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-pull
@@ -85,7 +92,7 @@ docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-push
 
 docker compose exec broker sh mqadmin topicRoute \
-  -n nameserver:9876 -t rocketmq-dotnet-manual
+  -n nameserver:9876 -t eventhorizon-test-topic
 ```
 
 For manual gRPC LitePush experiments in this general environment, create a dedicated LITE parent topic and configure
@@ -94,11 +101,11 @@ the consumer group's bind topic. This is not required for the bundled LitePush s
 
 ```shell
 docker compose exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-lite-manual -a +message.type=LITE
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-lite-parent-topic -a +message.type=LITE
 
 docker compose exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-lite-push-sample \
-  --attributes +lite.bind.topic=rocketmq-dotnet-lite-manual
+  -n nameserver:9876 -c DefaultCluster -g eventhorizon-test-lite-push-consumer \
+  --attributes +lite.bind.topic=eventhorizon-test-lite-parent-topic
 ```
 
 The supplied Broker configuration enables `enableLmq=true` and `enableMultiDispatch=true`, which are required for

@@ -13,13 +13,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Grpc.Producer;
+using System.Diagnostics;
 
-internal sealed class ProducerSampleOptions
+namespace EventHorizon.RocketMQ.Grpc;
+
+/// <summary>
+/// Provides the telemetry names emitted by the RocketMQ gRPC client.
+/// </summary>
+public static class GrpcRocketMQInstrumentation
 {
-    public string Topic { get; set; } = string.Empty;
+    /// <summary>
+    /// Gets the name of the activity source emitted by the RocketMQ gRPC client.
+    /// </summary>
+    public const string ActivitySourceName = "EventHorizon.RocketMQ.Grpc";
 
-    public string? Tag { get; set; }
+    /// <summary>
+    /// Gets the name of the meter emitted by the RocketMQ gRPC client.
+    /// </summary>
+    public const string MeterName = "EventHorizon.RocketMQ.Grpc";
 
-    public string Message { get; set; } = string.Empty;
+    /// <summary>
+    /// Gets the activity source emitted by the RocketMQ gRPC client.
+    /// </summary>
+    internal static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
 }

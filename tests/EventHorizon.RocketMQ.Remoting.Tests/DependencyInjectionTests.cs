@@ -18,6 +18,7 @@ using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -28,6 +29,17 @@ namespace EventHorizon.RocketMQ.Remoting.Tests;
 
 public sealed class DependencyInjectionTests
 {
+    [Fact]
+    public void AddRocketMQRemoting_RegistersTelemetryWithTheDefaultServiceProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876");
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        Assert.NotNull(provider.GetRequiredService<IRemotingRocketMQTelemetry>());
+    }
+
     [Fact]
     public async Task AddRocketMQRemoting_ValidatesClientOptions()
     {

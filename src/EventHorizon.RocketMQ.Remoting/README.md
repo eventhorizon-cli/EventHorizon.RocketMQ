@@ -103,6 +103,7 @@ enable the applicable server-side feature.
 | Queue-orderly Push consumption | ✅ | Uses optional Broker queue locks for ordered consumption; configure it only where the destination Broker supports the classic locking flow. |
 | Built-in socket transport | ✅ | Uses `System.IO.Pipelines` with optional TLS, multiple NameServer addresses, Broker failover, ACL signing, namespaces, and configurable frame limits. It does not depend on Bedrock Framework. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQRemoting`, then add the required roles. |
+| OpenTelemetry tracing and metrics | ✅ | Subscribe to `RemotingRocketMQInstrumentation` source and meter names from the application's OpenTelemetry SDK. |
 | RocketMQ 5 Proxy gRPC and `SimpleConsumer` APIs | — | Use `EventHorizon.RocketMQ.Grpc` for the Proxy-backed protobuf/gRPC API. |
 
 ## Connection and security
@@ -165,6 +166,26 @@ builder.Services.AddRocketMQRemoting(options =>
 
 The callback can be invoked concurrently and receives a fresh `SslClientAuthenticationOptions`
 instance for each connection.
+
+## OpenTelemetry
+
+The Package emits OpenTelemetry Activities and metrics without requiring a separate instrumentation Package. Configure
+the application's OpenTelemetry SDK to subscribe to the public names:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddRocketMQRemotingInstrumentation())
+    .WithMetrics(metrics => metrics
+        .AddRocketMQRemotingInstrumentation());
+```
+
+The application owns its resource attributes, sampler, processors, and exporter. The client emits Producer send,
+non-empty receive, automatic Push process, and consumer-settlement telemetry. It injects distributed context into
+outbound message properties and preserves existing propagation fields. See the
+[OpenTelemetry instrumentation design](../../docs/en-US/architecture/opentelemetry-instrumentation.md) for the trace
+model and metrics, and the [OpenTelemetry web sample](../../samples/opentelemetry/README.md) for an OTLP/Grafana
+setup.
 
 ## Producer
 

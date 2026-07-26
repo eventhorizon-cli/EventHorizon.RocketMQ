@@ -18,6 +18,7 @@ using System.Numerics;
 using System.Text;
 using System.Threading.Channels;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Producer.Transactions;
 using EventHorizon.RocketMQ.Grpc.Protocol;
@@ -27,7 +28,6 @@ using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -39,10 +39,11 @@ internal sealed class GrpcProducer : IGrpcProducer
     private readonly GrpcClientOptions _clientOptions;
     private readonly IRocketMQGrpcClient _client;
     private readonly IGrpcRouteService _routes;
-    private readonly ILoggerFactory _loggerFactory;
+    private readonly IGrpcRocketMQTelemetry _telemetry;
+    private readonly ILogger<GrpcProducer> _logger;
+    private readonly ILogger<GrpcSessionManager> _sessionLogger;
     private GrpcSessionManager? _sessions;
     private TransactionCheckDispatcher? _transactionChecks;
-    private readonly ILogger _logger;
     private readonly HashSet<string> _declaredTopics;
     private readonly HashSet<string> _topics;
     private readonly object _topicsGate = new();
@@ -56,14 +57,17 @@ internal sealed class GrpcProducer : IGrpcProducer
         IOptions<GrpcClientOptions> clientOptions,
         IRocketMQGrpcClient client,
         IGrpcRouteService routes,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<GrpcProducer> logger,
+        ILogger<GrpcSessionManager> sessionLogger,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
         _client = client;
         _routes = routes;
-        _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
-        _logger = _loggerFactory.CreateLogger<GrpcProducer>();
+        _telemetry = telemetry ?? GrpcRocketMQTelemetry.Disabled;
+        _logger = logger;
+        _sessionLogger = sessionLogger;
         if (_options.MaxConcurrentTransactionChecks <= 0)
         {
             throw new ArgumentOutOfRangeException(
@@ -238,147 +242,162 @@ internal sealed class GrpcProducer : IGrpcProducer
         bool transactional,
         CancellationToken cancellationToken)
     {
-        Validate(message, transactional);
-        var sessions = GetSessions();
-        var isNewTopic = AddTopic(message.Topic);
-        var outboundMessage = ToProtobuf(message, Guid.NewGuid().ToString("N"), transactional);
-        Exception? lastException = null;
-        var attempts = Math.Max(0, _options.RetryTimesWhenSendFailed) + 1;
-        Proto.RetryPolicy? retryPolicy = null;
-        var failedBrokerNames = new HashSet<string>(StringComparer.Ordinal);
-
-        for (var attempt = 0; attempt < attempts; attempt++)
+        var telemetry = _telemetry.StartSend(message.Topic, 1, message.Body.LongLength);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            string? attemptedBrokerName = null;
-            try
+            Validate(message, transactional);
+            var sessions = GetSessions();
+            var isNewTopic = AddTopic(message.Topic);
+            var outboundMessage = ToProtobuf(message, Guid.NewGuid().ToString("N"), transactional);
+            _telemetry.InjectContext(telemetry.Activity, outboundMessage.UserProperties);
+            Exception? lastException = null;
+            var attempts = Math.Max(0, _options.RetryTimesWhenSendFailed) + 1;
+            Proto.RetryPolicy? retryPolicy = null;
+            var failedBrokerNames = new HashSet<string>(StringComparer.Ordinal);
+
+            for (var attempt = 0; attempt < attempts; attempt++)
             {
-                var queues = await _routes.GetAsync(message.Topic, attempt > 0, cancellationToken).ConfigureAwait(false);
-                var candidates = queues.Where(static queue =>
-                        queue.Permission is Proto.Permission.Write or Proto.Permission.ReadWrite)
-                    .ToArray();
-                if (candidates.Length == 0)
+                cancellationToken.ThrowIfCancellationRequested();
+                string? attemptedBrokerName = null;
+                try
                 {
-                    throw new RocketMQClientException(
-                        $"No writable message queue is available for topic '{message.Topic}'.");
-                }
-
-                var messageType = outboundMessage.SystemProperties.MessageType;
-                var queue = SelectQueue(message, candidates, failedBrokerNames);
-                attemptedBrokerName = queue.Broker.Name;
-                var endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
-                var settings = BuildSettings();
-                await sessions.EnsureAsync(new[] { endpoint }, settings, cancellationToken).ConfigureAwait(false);
-                var serverSettings = sessions.GetServerSettings(endpoint);
-                ApplyPublishingLimits(message, serverSettings);
-                if (serverSettings?.BackoffPolicy is { } serverRetryPolicy)
-                {
-                    retryPolicy = serverRetryPolicy;
-                    if (serverRetryPolicy.MaxAttempts > 0)
-                    {
-                        attempts = serverRetryPolicy.MaxAttempts;
-                    }
-                }
-
-                if (ShouldValidateMessageType(serverSettings) && !AcceptsMessageType(queue, messageType))
-                {
-                    var compatibleCandidates = candidates
-                        .Where(candidate => AcceptsMessageType(candidate, messageType))
+                    var queues = await _routes.GetAsync(message.Topic, attempt > 0, cancellationToken).ConfigureAwait(false);
+                    var candidates = queues.Where(static queue =>
+                            queue.Permission is Proto.Permission.Write or Proto.Permission.ReadWrite)
                         .ToArray();
-                    if (compatibleCandidates.Length == 0)
+                    if (candidates.Length == 0)
                     {
                         throw new RocketMQClientException(
-                            $"Topic '{message.Topic}' does not accept {messageType} messages.");
+                            $"No writable message queue is available for topic '{message.Topic}'.");
                     }
 
-                    queue = SelectQueue(message, compatibleCandidates, failedBrokerNames);
+                    var messageType = outboundMessage.SystemProperties.MessageType;
+                    var queue = SelectQueue(message, candidates, failedBrokerNames);
                     attemptedBrokerName = queue.Broker.Name;
-                    endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
+                    var endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
+                    var settings = BuildSettings();
                     await sessions.EnsureAsync(new[] { endpoint }, settings, cancellationToken).ConfigureAwait(false);
-                    serverSettings = sessions.GetServerSettings(endpoint);
+                    var serverSettings = sessions.GetServerSettings(endpoint);
                     ApplyPublishingLimits(message, serverSettings);
-                    if (serverSettings?.BackoffPolicy is { } compatibleRetryPolicy)
+                    if (serverSettings?.BackoffPolicy is { } serverRetryPolicy)
                     {
-                        retryPolicy = compatibleRetryPolicy;
-                        if (compatibleRetryPolicy.MaxAttempts > 0)
+                        retryPolicy = serverRetryPolicy;
+                        if (serverRetryPolicy.MaxAttempts > 0)
                         {
-                            attempts = compatibleRetryPolicy.MaxAttempts;
+                            attempts = serverRetryPolicy.MaxAttempts;
                         }
                     }
-                }
 
-                if (isNewTopic)
-                {
-                    await sessions.SyncSettingsAsync(settings, cancellationToken).ConfigureAwait(false);
-                    isNewTopic = false;
-                }
+                    if (ShouldValidateMessageType(serverSettings) && !AcceptsMessageType(queue, messageType))
+                    {
+                        var compatibleCandidates = candidates
+                            .Where(candidate => AcceptsMessageType(candidate, messageType))
+                            .ToArray();
+                        if (compatibleCandidates.Length == 0)
+                        {
+                            throw new RocketMQClientException(
+                                $"Topic '{message.Topic}' does not accept {messageType} messages.");
+                        }
 
-                var attemptMessage = outboundMessage.Clone();
-                attemptMessage.SystemProperties.QueueId = queue.Id;
-                var response = await _client.SendMessageAsync(endpoint, new Proto.SendMessageRequest
-                {
-                    Messages = { attemptMessage }
-                }, _options.SendMsgTimeout, cancellationToken).ConfigureAwait(false);
-                GrpcStatus.EnsureSuccess(response.Status);
-                if (response.Entries.Count != 1)
-                {
-                    throw new InvalidDataException(
-                        $"RocketMQ returned {response.Entries.Count} send result entries for a single message.");
-                }
+                        queue = SelectQueue(message, compatibleCandidates, failedBrokerNames);
+                        attemptedBrokerName = queue.Broker.Name;
+                        endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
+                        await sessions.EnsureAsync(new[] { endpoint }, settings, cancellationToken).ConfigureAwait(false);
+                        serverSettings = sessions.GetServerSettings(endpoint);
+                        ApplyPublishingLimits(message, serverSettings);
+                        if (serverSettings?.BackoffPolicy is { } compatibleRetryPolicy)
+                        {
+                            retryPolicy = compatibleRetryPolicy;
+                            if (compatibleRetryPolicy.MaxAttempts > 0)
+                            {
+                                attempts = compatibleRetryPolicy.MaxAttempts;
+                            }
+                        }
+                    }
 
-                var entry = response.Entries[0];
-                GrpcStatus.EnsureSuccess(entry.Status);
-                if (string.IsNullOrWhiteSpace(entry.MessageId))
-                {
-                    throw new InvalidDataException("RocketMQ returned no message identifier for a sent message.");
-                }
+                    if (isNewTopic)
+                    {
+                        await sessions.SyncSettingsAsync(settings, cancellationToken).ConfigureAwait(false);
+                        isNewTopic = false;
+                    }
 
-                var receipt = new GrpcSendReceipt(
-                    entry.MessageId,
-                    entry.Offset,
-                    string.IsNullOrEmpty(entry.TransactionId) ? null : entry.TransactionId,
-                    string.IsNullOrEmpty(entry.RecallHandle) ? null : entry.RecallHandle,
-                    GrpcEndpoint.FromProtobufAll(queue.Broker.Endpoints, _clientOptions.UseTLS));
-                return new SendOutcome(receipt, endpoint, attemptMessage);
+                    var attemptMessage = outboundMessage.Clone();
+                    attemptMessage.SystemProperties.QueueId = queue.Id;
+                    var response = await _client.SendMessageAsync(endpoint, new Proto.SendMessageRequest
+                    {
+                        Messages = { attemptMessage }
+                    }, _options.SendMsgTimeout, cancellationToken).ConfigureAwait(false);
+                    GrpcStatus.EnsureSuccess(response.Status);
+                    if (response.Entries.Count != 1)
+                    {
+                        throw new InvalidDataException(
+                            $"RocketMQ returned {response.Entries.Count} send result entries for a single message.");
+                    }
+
+                    var entry = response.Entries[0];
+                    GrpcStatus.EnsureSuccess(entry.Status);
+                    if (string.IsNullOrWhiteSpace(entry.MessageId))
+                    {
+                        throw new InvalidDataException("RocketMQ returned no message identifier for a sent message.");
+                    }
+
+                    var receipt = new GrpcSendReceipt(
+                        entry.MessageId,
+                        entry.Offset,
+                        string.IsNullOrEmpty(entry.TransactionId) ? null : entry.TransactionId,
+                        string.IsNullOrEmpty(entry.RecallHandle) ? null : entry.RecallHandle,
+                        GrpcEndpoint.FromProtobufAll(queue.Broker.Endpoints, _clientOptions.UseTLS));
+                    telemetry.Complete();
+                    return new SendOutcome(receipt, endpoint, attemptMessage);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (!IsTransientSendFailure(exception))
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    lastException = exception;
+                    if (!string.IsNullOrWhiteSpace(attemptedBrokerName))
+                    {
+                        failedBrokerNames.Add(attemptedBrokerName);
+                    }
+
+                    if (attempt + 1 >= attempts)
+                    {
+                        break;
+                    }
+
+                    var delay = GetRetryDelay(retryPolicy, attempt + 1);
+                    _logger.LogWarning(
+                        exception,
+                        "RocketMQ gRPC send failed; retrying attempt {Attempt} of {Attempts} in {Delay}",
+                        attempt + 2,
+                        attempts,
+                        delay);
+                    if (delay > TimeSpan.Zero)
+                    {
+                        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    }
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception) when (!IsTransientSendFailure(exception))
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                lastException = exception;
-                if (!string.IsNullOrWhiteSpace(attemptedBrokerName))
-                {
-                    failedBrokerNames.Add(attemptedBrokerName);
-                }
 
-                if (attempt + 1 >= attempts)
-                {
-                    break;
-                }
-
-                var delay = GetRetryDelay(retryPolicy, attempt + 1);
-                _logger.LogWarning(
-                    exception,
-                    "RocketMQ gRPC send failed; retrying attempt {Attempt} of {Attempts} in {Delay}",
-                    attempt + 2,
-                    attempts,
-                    delay);
-                if (delay > TimeSpan.Zero)
-                {
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                }
-            }
+            throw new RocketMQClientException(
+                $"Failed to send message for topic '{message.Topic}' after {attempts} attempts.",
+                lastException);
         }
-
-        throw new RocketMQClientException(
-            $"Failed to send message for topic '{message.Topic}' after {attempts} attempts.",
-            lastException);
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
+        finally
+        {
+            telemetry.Dispose();
+        }
     }
 
     internal async Task EndTransactionAsync(
@@ -887,7 +906,7 @@ internal sealed class GrpcProducer : IGrpcProducer
         Options.Create(_clientOptions),
         Proto.ClientType.Producer,
         null,
-        _loggerFactory,
+        _sessionLogger,
         telemetryHandler: HandleTelemetryCommandAsync);
 
     private GrpcSessionManager GetSessions()

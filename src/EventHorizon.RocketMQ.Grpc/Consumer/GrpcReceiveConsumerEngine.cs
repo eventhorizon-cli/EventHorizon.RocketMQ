@@ -14,15 +14,16 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -39,9 +40,10 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     private readonly string _groupName;
     private readonly TimeSpan _longPollingTimeout;
     private readonly Proto.ClientType _clientType;
-    private readonly ILoggerFactory? _loggerFactory;
+    private readonly IGrpcRocketMQTelemetry _telemetry;
+    private readonly ILogger<GrpcReceiveConsumerEngine> _logger;
+    private readonly ILogger<GrpcSessionManager> _sessionLogger;
     private readonly Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? _telemetryHandler;
-    private readonly ILogger _logger;
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _messageOwner = new();
@@ -57,8 +59,10 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         IReadOnlyDictionary<string, FilterExpression> subscriptions,
         Proto.ClientType clientType,
         TimeSpan longPollingTimeout,
-        ILoggerFactory? loggerFactory,
-        Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? telemetryHandler = null)
+        ILogger<GrpcReceiveConsumerEngine> logger,
+        ILogger<GrpcSessionManager> sessionLogger,
+        Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? telemetryHandler = null,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
         _client = client;
         _routes = routes;
@@ -66,9 +70,10 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         _groupName = groupName;
         _longPollingTimeout = longPollingTimeout;
         _clientType = clientType;
-        _loggerFactory = loggerFactory;
+        _telemetry = telemetry ?? GrpcRocketMQTelemetry.Disabled;
+        _logger = logger;
+        _sessionLogger = sessionLogger;
         _telemetryHandler = telemetryHandler;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<GrpcReceiveConsumerEngine>();
         _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
             subscriptions,
             StringComparer.Ordinal);
@@ -89,7 +94,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
                 Options.Create(_clientOptions),
                 _clientType,
                 _groupName,
-                _loggerFactory,
+                _sessionLogger,
                 _telemetryHandler);
             sessions.Start();
             Volatile.Write(ref _sessions, sessions);
@@ -190,72 +195,109 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         CancellationToken cancellationToken)
     {
         EnsureStarted();
-        var endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
-        await GetSessions().EnsureAsync([endpoint], BuildSettings(), cancellationToken).ConfigureAwait(false);
-        var serverSettings = GetServerSettings(endpoint);
-        if (IsPushConsumer())
+        var parentContext = Activity.Current?.Context;
+        var startTime = DateTimeOffset.UtcNow;
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            var subscription = serverSettings?.Subscription;
-            if (subscription is { HasReceiveBatchSize: true, ReceiveBatchSize: > 0 })
+            var endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
+            await GetSessions().EnsureAsync([endpoint], BuildSettings(), cancellationToken).ConfigureAwait(false);
+            var serverSettings = GetServerSettings(endpoint);
+            if (IsPushConsumer())
             {
-                maxMessages = Math.Min(maxMessages, subscription.ReceiveBatchSize);
+                var subscription = serverSettings?.Subscription;
+                if (subscription is { HasReceiveBatchSize: true, ReceiveBatchSize: > 0 })
+                {
+                    maxMessages = Math.Min(maxMessages, subscription.ReceiveBatchSize);
+                }
+
+                if (TryGetPositiveDuration(subscription?.LongPollingTimeout, out var brokerLongPollingTimeout))
+                {
+                    longPollingTimeout = brokerLongPollingTimeout;
+                }
             }
 
-            if (TryGetPositiveDuration(subscription?.LongPollingTimeout, out var brokerLongPollingTimeout))
+            // The server may advertise its own internal request budget. The RPC deadline remains
+            // the client-configured request timeout plus the long-poll duration, matching Apache clients.
+            var timeout = _clientOptions.RequestTimeout + longPollingTimeout;
+            var request = new Proto.ReceiveMessageRequest
             {
-                longPollingTimeout = brokerLongPollingTimeout;
-            }
-        }
-
-        // The server may advertise its own internal request budget. The RPC deadline remains
-        // the client-configured request timeout plus the long-poll duration, matching Apache clients.
-        var timeout = _clientOptions.RequestTimeout + longPollingTimeout;
-        var request = new Proto.ReceiveMessageRequest
-        {
-            Group = Resource(_groupName),
-            MessageQueue = queue,
-            FilterExpression = ToProtobuf(filter),
-            BatchSize = maxMessages,
-            InvisibleDuration = Duration.FromTimeSpan(invisibleDuration),
-            AutoRenew = autoRenew
-        };
-        if (IsPushConsumer())
-        {
-            request.LongPollingTimeout = Duration.FromTimeSpan(longPollingTimeout);
-            request.AttemptId = Guid.NewGuid().ToString();
-        }
-
-        var responses = await _client.ReceiveMessageAsync(
-            endpoint,
-            request,
-            timeout,
-            cancellationToken).ConfigureAwait(false);
-
-        var messages = new List<GrpcMessageView>();
-        Proto.Status? status = null;
-        foreach (var response in responses)
-        {
-            switch (response.ContentCase)
+                Group = Resource(_groupName),
+                MessageQueue = queue,
+                FilterExpression = ToProtobuf(filter),
+                BatchSize = maxMessages,
+                InvisibleDuration = Duration.FromTimeSpan(invisibleDuration),
+                AutoRenew = autoRenew
+            };
+            if (IsPushConsumer())
             {
-                case Proto.ReceiveMessageResponse.ContentOneofCase.Status:
-                    status = response.Status;
-                    break;
-                case Proto.ReceiveMessageResponse.ContentOneofCase.Message:
-                    var message = GrpcMessageViewFactory.Create(response.Message, queue, endpoint);
-                    BindMessage(message);
-                    messages.Add(message);
-                    break;
+                request.LongPollingTimeout = Duration.FromTimeSpan(longPollingTimeout);
+                request.AttemptId = Guid.NewGuid().ToString();
             }
-        }
 
-        GrpcStatus.EnsureReceiveSuccess(status);
-        return messages;
+            var responses = await _client.ReceiveMessageAsync(
+                endpoint,
+                request,
+                timeout,
+                cancellationToken).ConfigureAwait(false);
+
+            var messages = new List<GrpcMessageView>();
+            Proto.Status? status = null;
+            foreach (var response in responses)
+            {
+                switch (response.ContentCase)
+                {
+                    case Proto.ReceiveMessageResponse.ContentOneofCase.Status:
+                        status = response.Status;
+                        break;
+                    case Proto.ReceiveMessageResponse.ContentOneofCase.Message:
+                        var message = GrpcMessageViewFactory.Create(response.Message, queue, endpoint);
+                        BindMessage(message);
+                        messages.Add(message);
+                        break;
+                }
+            }
+
+            GrpcStatus.EnsureReceiveSuccess(status);
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic.Name,
+                _groupName,
+                messages.Count,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.Id,
+                createActivity: messages.Count > 0);
+            if (telemetry.Activity is { } activity)
+            {
+                foreach (var message in messages)
+                {
+                    message.ReceiveActivityContext = activity.Context;
+                }
+            }
+
+            telemetry.Complete();
+            return messages;
+        }
+        catch (Exception exception)
+        {
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic.Name,
+                _groupName,
+                0,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.Id);
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public Task AckAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
         var endpoint = ValidateCompletionMessage(message);
-        return ExecuteCompletionAsync("acknowledge", message, async token =>
+        return ExecuteCompletionAsync("acknowledge", "ack", message, async token =>
         {
             var entry = new Proto.AckMessageEntry
             {
@@ -289,7 +331,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             throw new ArgumentOutOfRangeException(nameof(invisibleDuration), "Invisible duration must be positive.");
         }
 
-        return ExecuteCompletionAsync("change invisible duration for", message, async token =>
+        return ExecuteCompletionAsync("change invisible duration for", "nack", message, async token =>
         {
             var request = new Proto.ChangeInvisibleDurationRequest
             {
@@ -326,7 +368,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             throw new ArgumentOutOfRangeException(nameof(maxDeliveryAttempts), "Maximum delivery attempts must be positive.");
         }
 
-        return ExecuteCompletionAsync("forward to the dead-letter queue", message, async token =>
+        return ExecuteCompletionAsync("forward to the dead-letter queue", "reject", message, async token =>
         {
             var request = new Proto.ForwardMessageToDeadLetterQueueRequest
             {
@@ -445,34 +487,51 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
 
     private async Task ExecuteCompletionAsync(
         string operation,
+        string telemetryOperation,
         GrpcMessageView message,
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 1; ; attempt++)
+        using var telemetry = _telemetry.StartSettle(
+            telemetryOperation,
+            message.Topic,
+            _groupName,
+            message.MessageId,
+            message.QueueId,
+            message.Properties);
+        try
         {
-            try
+            for (var attempt = 1; ; attempt++)
             {
-                await action(cancellationToken).ConfigureAwait(false);
-                return;
+                try
+                {
+                    await action(cancellationToken).ConfigureAwait(false);
+                    telemetry.Complete();
+                    return;
+                }
+                catch (Exception exception) when (
+                    attempt < CompletionMaxAttempts &&
+                    IsTransientCompletionFailure(exception, cancellationToken))
+                {
+                    var delay = TimeSpan.FromMilliseconds(Math.Min(
+                        CompletionInitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1),
+                        CompletionMaximumRetryDelay.TotalMilliseconds));
+                    _logger.LogWarning(
+                        exception,
+                        "Transient failure while attempting to {Operation} message {MessageId}; retrying attempt {NextAttempt} of {MaxAttempts} in {Delay}",
+                        operation,
+                        message.MessageId,
+                        attempt + 1,
+                        CompletionMaxAttempts,
+                        delay);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
             }
-            catch (Exception exception) when (
-                attempt < CompletionMaxAttempts &&
-                IsTransientCompletionFailure(exception, cancellationToken))
-            {
-                var delay = TimeSpan.FromMilliseconds(Math.Min(
-                    CompletionInitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1),
-                    CompletionMaximumRetryDelay.TotalMilliseconds));
-                _logger.LogWarning(
-                    exception,
-                    "Transient failure while attempting to {Operation} message {MessageId}; retrying attempt {NextAttempt} of {MaxAttempts} in {Delay}",
-                    operation,
-                    message.MessageId,
-                    attempt + 1,
-                    CompletionMaxAttempts,
-                    delay);
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-            }
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
         }
     }
 

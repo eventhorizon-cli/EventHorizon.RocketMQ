@@ -19,21 +19,10 @@ namespace EventHorizon.RocketMQ.Samples.Remoting.PullConsumer;
 
 internal sealed class PullConsumerSampleOptions
 {
-    public List<PullConsumerSubscriptionOptions> Subscriptions { get; set; } = [];
-
-    public string Topic => Subscriptions[0].Topic;
+    public string Filter { get; set; } = "*";
 
     public QueryOffsetPolicy InitialOffset { get; set; } = QueryOffsetPolicy.End;
 
     public DateTimeOffset? InitialTimestamp { get; set; }
 
-    public void ApplySubscriptions(ConsumerOptions consumerOptions)
-    {
-        ArgumentNullException.ThrowIfNull(consumerOptions);
-
-        foreach (var subscription in Subscriptions)
-        {
-            consumerOptions.Subscribe(subscription.Topic, new FilterExpression(subscription.Filter));
-        }
-    }
 }

@@ -36,10 +36,11 @@ internal sealed class PullConsumer(
             try
             {
                 // NameServer discovery provides Broker queues; this pull loop owns queue selection and offsets.
-                var queues = await consumer.GetMessageQueuesAsync(_options.Topic, stoppingToken).ConfigureAwait(false);
+                var queues = await consumer.GetMessageQueuesAsync("eventhorizon-test-topic", stoppingToken)
+                    .ConfigureAwait(false);
                 if (queues.Count == 0)
                 {
-                    logger.LogWarning("No readable queues were found for {Topic}", _options.Topic);
+                    logger.LogWarning("No readable queues were found for {Topic}", "eventhorizon-test-topic");
                     await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
                     continue;
                 }

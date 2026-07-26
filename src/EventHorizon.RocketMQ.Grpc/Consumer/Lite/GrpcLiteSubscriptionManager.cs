@@ -16,7 +16,6 @@
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -42,13 +41,13 @@ internal sealed class GrpcLiteSubscriptionManager : IAsyncDisposable
         IOptions<GrpcClientOptions> clientOptions,
         IRocketMQGrpcClient client,
         IGrpcRouteService routes,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<GrpcLiteSubscriptionManager> logger)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
         _client = client;
         _routes = routes;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<GrpcLiteSubscriptionManager>();
+        _logger = logger;
         foreach (var liteTopic in _options.LiteTopics)
         {
             _liteTopics.Add(liteTopic);

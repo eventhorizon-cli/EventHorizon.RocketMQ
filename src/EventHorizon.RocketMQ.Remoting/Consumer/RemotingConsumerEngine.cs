@@ -14,10 +14,12 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Options;
@@ -38,6 +40,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     private readonly ITopicRouteService _routes;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
+    private readonly IRemotingRocketMQTelemetry _telemetry;
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private int _started;
@@ -48,13 +51,15 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         IOptions<RemotingClientOptions> clientOptions,
         ITopicRouteService routes,
         IRemotingClient remotingClient,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IRemotingRocketMQTelemetry? telemetry = null)
     {
         _settings = settings;
         _clientOptions = clientOptions.Value;
         _routes = routes;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
+        _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
         _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
             _settings.Subscriptions,
             StringComparer.Ordinal);
@@ -163,37 +168,75 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
                 _clientOptions.MaxRemotingFrameSize - RemotingClientOptions.RemotingMessageFrameReserve),
             Bname = queue.BrokerName
         });
-        var response = await _remotingClient.InvokeAsync(
-            EndpointParser.Parse(queue.GetPullBrokerAddress()),
-            request,
-            _clientOptions.RequestTimeout + _settings.LongPollingTimeout + BrokerLongPollingCheckInterval,
-            cancellationToken).ConfigureAwait(false);
-
-        var suggestedBrokerId = GetInt64(response.ExtFields, "suggestWhichBrokerId", long.MinValue);
-        if (suggestedBrokerId != long.MinValue)
+        var parentContext = Activity.Current?.Context;
+        var startTime = DateTimeOffset.UtcNow;
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            queue.SetPreferredBrokerId(suggestedBrokerId);
+            var response = await _remotingClient.InvokeAsync(
+                EndpointParser.Parse(queue.GetPullBrokerAddress()),
+                request,
+                _clientOptions.RequestTimeout + _settings.LongPollingTimeout + BrokerLongPollingCheckInterval,
+                cancellationToken).ConfigureAwait(false);
+
+            var suggestedBrokerId = GetInt64(response.ExtFields, "suggestWhichBrokerId", long.MinValue);
+            if (suggestedBrokerId != long.MinValue)
+            {
+                queue.SetPreferredBrokerId(suggestedBrokerId);
+            }
+
+            var status = response.Code switch
+            {
+                ResponseCodes.ResSuccess => RemotingPullStatus.Found,
+                ResponseCodes.ResPullNotFound => RemotingPullStatus.NoNewMessage,
+                ResponseCodes.ResPullRetryImmediately => RemotingPullStatus.NoMatchedMessage,
+                ResponseCodes.ResPullOffsetMoved => RemotingPullStatus.OffsetIllegal,
+                _ => throw new RemotingCommandException(
+                    response.Code,
+                    response.Remark ?? "Broker rejected the pull request.")
+            };
+            var messages = status == RemotingPullStatus.Found && response.Body is { Length: > 0 }
+                ? LegacyMessageDecoder.Decode(response.Body, queue.BrokerName, _clientOptions.Namespace)
+                : Array.Empty<RemotingMessageView>();
+            var result = new RemotingPullResult(
+                messages,
+                GetInt64(response.ExtFields, "nextBeginOffset", offset),
+                status,
+                GetInt64(response.ExtFields, "minOffset", 0),
+                GetInt64(response.ExtFields, "maxOffset", 0));
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic,
+                _settings.GroupName,
+                result.Messages.Count,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.QueueId,
+                createActivity: result.Messages.Count > 0);
+            if (telemetry.Activity is { } activity)
+            {
+                foreach (var message in result.Messages)
+                {
+                    message.ReceiveActivityContext = activity.Context;
+                }
+            }
+
+            telemetry.Complete();
+            return result;
         }
-
-        var status = response.Code switch
+        catch (Exception exception)
         {
-            ResponseCodes.ResSuccess => RemotingPullStatus.Found,
-            ResponseCodes.ResPullNotFound => RemotingPullStatus.NoNewMessage,
-            ResponseCodes.ResPullRetryImmediately => RemotingPullStatus.NoMatchedMessage,
-            ResponseCodes.ResPullOffsetMoved => RemotingPullStatus.OffsetIllegal,
-            _ => throw new RemotingCommandException(
-                response.Code,
-                response.Remark ?? "Broker rejected the pull request.")
-        };
-        var messages = status == RemotingPullStatus.Found && response.Body is { Length: > 0 }
-            ? LegacyMessageDecoder.Decode(response.Body, queue.BrokerName, _clientOptions.Namespace)
-            : Array.Empty<RemotingMessageView>();
-        return new RemotingPullResult(
-            messages,
-            GetInt64(response.ExtFields, "nextBeginOffset", offset),
-            status,
-            GetInt64(response.ExtFields, "minOffset", 0),
-            GetInt64(response.ExtFields, "maxOffset", 0));
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic,
+                _settings.GroupName,
+                0,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.QueueId);
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public async Task<long> GetOffsetAsync(
@@ -229,19 +272,35 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     {
         EnsureStarted();
         if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
-        var response = await InvokeOffsetAsync(
-            RequestCode.UpdateConsumerOffset,
-            queue,
-            new ConsumerOffsetRequestHeader
-            {
-                ConsumerGroup = GetConsumerGroup(),
-                Topic = GetWireTopic(queue.Topic),
-                QueueId = queue.QueueId,
-                CommitOffset = offset,
-                Bname = queue.BrokerName
-            },
-            cancellationToken).ConfigureAwait(false);
-        EnsureSuccess(response, "update consumer offset");
+        using var telemetry = _telemetry.StartSettle(
+            "commit",
+            queue.Topic,
+            _settings.GroupName,
+            null,
+            queue.QueueId,
+            null);
+        try
+        {
+            var response = await InvokeOffsetAsync(
+                RequestCode.UpdateConsumerOffset,
+                queue,
+                new ConsumerOffsetRequestHeader
+                {
+                    ConsumerGroup = GetConsumerGroup(),
+                    Topic = GetWireTopic(queue.Topic),
+                    QueueId = queue.QueueId,
+                    CommitOffset = offset,
+                    Bname = queue.BrokerName
+                },
+                cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response, "update consumer offset");
+            telemetry.Complete();
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public async Task<long> QueryOffsetAsync(
@@ -285,24 +344,40 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         CancellationToken cancellationToken)
     {
         EnsureStarted();
-        var response = await _remotingClient.InvokeAsync(
-            GetBrokerEndpoint(queue),
-            new RemotingCommand(RequestCode.ConsumerSendMsgBack, new ConsumerSendMessageBackRequestHeader
-            {
-                Offset = message.CommitLogOffset,
-                Group = GetConsumerGroup(),
-                DelayLevel = delayLevel,
-                OriginMsgId = message.Properties.TryGetValue("ORIGIN_MESSAGE_ID", out var originMessageId)
-                    ? originMessageId
-                    : message.MessageId,
-                OriginTopic = GetWireTopic(message.Topic),
-                UnitMode = _clientOptions.UnitMode,
-                MaxReconsumeTimes = maxReconsumeTimes,
-                Bname = queue.BrokerName
-            }),
-            _clientOptions.RequestTimeout,
-            cancellationToken).ConfigureAwait(false);
-        EnsureSuccess(response, "send message back");
+        using var telemetry = _telemetry.StartSettle(
+            delayLevel < 0 ? "reject" : "nack",
+            message.Topic,
+            _settings.GroupName,
+            message.MessageId,
+            queue.QueueId,
+            message.Properties);
+        try
+        {
+            var response = await _remotingClient.InvokeAsync(
+                GetBrokerEndpoint(queue),
+                new RemotingCommand(RequestCode.ConsumerSendMsgBack, new ConsumerSendMessageBackRequestHeader
+                {
+                    Offset = message.CommitLogOffset,
+                    Group = GetConsumerGroup(),
+                    DelayLevel = delayLevel,
+                    OriginMsgId = message.Properties.TryGetValue("ORIGIN_MESSAGE_ID", out var originMessageId)
+                        ? originMessageId
+                        : message.MessageId,
+                    OriginTopic = GetWireTopic(message.Topic),
+                    UnitMode = _clientOptions.UnitMode,
+                    MaxReconsumeTimes = maxReconsumeTimes,
+                    Bname = queue.BrokerName
+                }),
+                _clientOptions.RequestTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response, "send message back");
+            telemetry.Complete();
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public void SetSubscription(string topic, FilterExpression expression)

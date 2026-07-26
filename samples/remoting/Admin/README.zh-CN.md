@@ -38,7 +38,7 @@ Swagger UI 位于 `/swagger`，OpenAPI 文档位于 `/swagger/v1/swagger.json`�
   发现返回的 Broker 地址。
 - 运行该 API 的进程必须能访问 `NamesrvAddr` 和每个已公布的 Broker 主机及端口。仅能访问 NameServer 不足以完成
   查询。
-- 在禁用自动创建 topic 的生产 Broker 上，使用前创建待查询的 topic，例如 `rocketmq-dotnet-manual`。只读 Admin
+- 在禁用自动创建 topic 的生产 Broker 上，使用前创建待查询的 topic，例如 `eventhorizon-test-topic`。只读 Admin
   角色本身不需要 Producer 或 consumer group；消费位点路由可查询已有 group，未提交位点时会返回 `null`。
 - 启用 ACL 或 topic 权限时，授予路由查询、读取和管理权限。
 
@@ -53,7 +53,7 @@ Broker 公布了仅内部可访问地址时，不能从此 API 查看该消息�
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 ```
 
 本地环境在 `localhost:9876` 暴露 NameServer，并公布 `localhost:10911` 作为宿主机可访问的 Broker。若在另一个
@@ -71,12 +71,12 @@ dotnet run --project samples/remoting/Admin/EventHorizon.RocketMQ.Samples.Remoti
 ASPNETCORE_URLS=http://localhost:5000 \
   dotnet run --no-launch-profile --project samples/remoting/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj
 
-curl http://localhost:5000/topics/rocketmq-dotnet-manual/queues
+curl http://localhost:5000/topics/eventhorizon-test-topic/queues
 ```
 
 使用返回的 `brokerName` 和 `queueId` 调用位点路由。若要测试消息查看路由，先通过
 [Remoting Producer 示例](../Producer/README.zh-CN.md)发送一条消息，然后将其返回的 `OffsetMessageId` 用于
-`/topics/rocketmq-dotnet-manual/messages/{offsetMessageId}`。
+`/topics/eventhorizon-test-topic/messages/{offsetMessageId}`。
 
 ## 重要行为
 

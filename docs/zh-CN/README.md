@@ -15,6 +15,7 @@
 | 架构 | [RocketMQ 服务端与客户端路径](architecture/rocketmq-architecture.md) | NameServer、Broker、Proxy、两种协议路径、LitePush 与本地 Compose 拓扑如何配合？ |
 | 架构 | [协议边界与类型归属](architecture/protocol-boundaries.md) | 为什么 gRPC 与 Remoting 分别保存自己的 API 模型，又能在同一应用中使用？ |
 | 架构 | [依赖注入与生命周期](architecture/dependency-injection-and-lifetimes.md) | 默认客户端注册、keyed 客户端注册、keyed service、Consumer Engine 和 handler 如何组成一个 Host？ |
+| 架构 | [OpenTelemetry 埋点](architecture/opentelemetry-instrumentation.md) | tracing、metrics、上下文传播与应用负责的 exporter 如何分工？ |
 | gRPC | [消费模型](grpc/consumer-model.md) | Simple、Push 与 LitePush 分别适用于什么场景？为什么没有 gRPC PullConsumer？ |
 | Remoting | [传输与客户端角色](remoting/transport-and-client-roles.md) | NameServer 路由、Socket 传输和各类经典 Consumer 有什么边界？ |
 | 测试 | [本地与集成测试](testing/local-and-integration-testing.md) | 哪些测试不需要 Docker，哪些测试会启动完整 RocketMQ 环境？ |

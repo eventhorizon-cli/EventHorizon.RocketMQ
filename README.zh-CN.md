@@ -18,6 +18,10 @@ Consumer 和 Admin API，以及事务消息、定时/延迟消息、FIFO 消息�
 客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy
 链路。
 
+两个协议 Package 都内置 **OpenTelemetry tracing 和 metrics**。应用可以在 OpenTelemetry SDK pipeline 中添加
+协议专用的 `AddRocketMQGrpcInstrumentation` 或 `AddRocketMQRemotingInstrumentation` 扩展，再自行选择 exporter
+和可观测性后端。
+
 > **请先查看[可运行示例](samples/README.zh-CN.md)。** 每个示例目录都说明所需的 RocketMQ Broker 或 Proxy
 > 能力、资源准备、配置、运行命令和协议注意事项。
 
@@ -46,6 +50,7 @@ Consumer 和 Admin API，以及事务消息、定时/延迟消息、FIFO 消息�
 | Tag 和 SQL 过滤 | ✅ | SQL 过滤要求服务端启用相应配置。 |
 | 运行时订阅、重试和死信处理 | ✅ | 具体支持范围取决于所用 API，由 SimpleConsumer、PushConsumer 或 LitePushConsumer 提供。 |
 | Microsoft DI、Options、日志、Generic Host 生命周期，以及默认或 keyed 客户端注册 | ✅ | 使用 `AddRocketMQGrpc` 注册。 |
+| OpenTelemetry tracing 和 metrics | ✅ | 使用 `AddRocketMQGrpcInstrumentation` 注册；SDK processor 和 exporter 由应用选择。 |
 
 gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮询，并不是由 Broker 主动推送消息。
 
@@ -65,6 +70,7 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 | POPConsumer | ✅ | 可显式选择队列、使用 receipt 确认消息并续期不可见时长；仅适用于普通 topic。 |
 | PushConsumer | ✅ | 支持集群或广播模式、并发或 FIFO 分发、运行时订阅、重试和死信处理。 |
 | Microsoft DI、Options、日志、Generic Host 生命周期，以及默认或 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 注册。 |
+| OpenTelemetry tracing 和 metrics | ✅ | 使用 `AddRocketMQRemotingInstrumentation` 注册；SDK processor 和 exporter 由应用选择。 |
 
 经典 Push 同样由客户端发起长轮询。SQL 过滤需要 Broker 启用相应配置；POP 则要求 Broker 支持该功能。
 每个协议 Package 都有各自的 `RocketMQClientException` 基类。
@@ -85,6 +91,8 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 ## 相关资源
 
 - [可运行示例](samples/README.zh-CN.md)
+- [OpenTelemetry Web API 示例](samples/opentelemetry/README.zh-CN.md)
+- [OpenTelemetry 埋点设计](docs/zh-CN/architecture/opentelemetry-instrumentation.md)
 - [设计文档](docs/zh-CN/README.md)
 - [本地测试环境](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/README.zh-CN.md)
 - [贡献与编码说明](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/AGENTS.md)

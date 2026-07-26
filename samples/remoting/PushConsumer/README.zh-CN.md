@@ -16,8 +16,8 @@
 | `RocketMQ:PushConsumer:BatchSize` | `32` | 每个长轮询请求的最大消息数。 |
 | `RocketMQ:PushConsumer:LongPollingTimeout` | `00:00:05` | 空长轮询在 Broker 上的最大等待时间。 |
 | `RocketMQ:PushConsumer:RetryDelay` | `00:00:01` | 接收失败或 handler 返回失败结果后的重试等待时间。 |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | 默认订阅的普通 topic。 |
-| `Sample:Subscriptions[0]:Filter` | `*` | 订阅过滤条件。 |
+| 固定 topic | `eventhorizon-test-topic` | 共享订阅的普通 topic。 |
+| `Sample:Filter` | `*` | 订阅过滤条件。 |
 
 handler 记录消息并返回 `ConsumeResult.Success`。泛型注册会在 scoped DI scope 中解析 handler，因此它可以注入
 `ILogger<PushConsumerMessageHandler>`。
@@ -26,17 +26,14 @@ handler 记录消息并返回 `ConsumeResult.Success`。泛型注册会在 scope
 
 - 使用 classic Remoting NameServer 和 Broker。客户端通过 `NamesrvAddr` 发现路由，随后向公布的 Broker 建立长轮询
   连接，因此两个连接环节都必须可达。
-- 创建普通 topic `rocketmq-dotnet-manual`，并允许 group `remoting-sample-push-consumer` 消费，或同时修改两者。
-  启用 ACL 的 Broker 需要路由查询和消费权限；使用重试和死信路径时，也需要对应 topic 的权限。
+- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许 group
+  `remoting-sample-push-consumer` 消费。启用 ACL 的 Broker 需要路由查询和消费权限；使用重试和死信路径时，也需要
+  对应 topic 的权限。
 - 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机运行此普通 topic Remoting
-  Consumer。在仓库根目录准备资源：
+  Consumer。它会在启动时自动创建共享 topic：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-push-consumer
 ```
 
 此环境会公布宿主机可访问的 Broker 地址。位于其他容器中的进程必须使用网络可访问的 NameServer 和 Broker 地址，

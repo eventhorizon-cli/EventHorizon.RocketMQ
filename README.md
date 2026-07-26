@@ -18,6 +18,10 @@ logging, and provides a **modern, strongly typed API experience**.
 Client behavior is backed by high-coverage unit tests and Docker-backed integration tests that exercise real
 NameServer, Broker, and Proxy paths.
 
+Both protocol Packages include built-in **OpenTelemetry tracing and metrics**. Applications can add the
+protocol-specific `AddRocketMQGrpcInstrumentation` or `AddRocketMQRemotingInstrumentation` extension to their
+OpenTelemetry SDK pipeline, then choose their own exporter and observability backend.
+
 > **Start with the [runnable samples](samples/README.md).** Each sample directory explains its required
 > RocketMQ Broker or Proxy capabilities, resource setup, configuration, run command, and protocol caveats.
 
@@ -46,6 +50,7 @@ See the [gRPC guide](src/EventHorizon.RocketMQ.Grpc/README.md) and
 | Tag and SQL filtering | ✅ | SQL filtering requires the target server's filtering configuration. |
 | Runtime subscriptions, retry, and dead-letter handling | ✅ | Available through SimpleConsumer, PushConsumer, or LitePushConsumer as applicable. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQGrpc`. |
+| OpenTelemetry tracing and metrics | ✅ | Register with `AddRocketMQGrpcInstrumentation`; the application selects SDK processors and exporters. |
 
 gRPC Push and LitePush use client-initiated assignment and long polling; they are not protocol-level Broker push.
 
@@ -65,6 +70,7 @@ See the [Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md) and
 | POPConsumer | ✅ | Explicit queue selection, receipt acknowledgement, and invisibility renewal; normal topics only. |
 | PushConsumer | ✅ | Clustering or broadcasting, concurrent or FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQRemoting`. |
+| OpenTelemetry tracing and metrics | ✅ | Register with `AddRocketMQRemotingInstrumentation`; the application selects SDK processors and exporters. |
 
 Classic Push is also client-initiated long polling. SQL filtering requires Broker configuration, and POP requires a
 Broker that supports POP. Each protocol package provides its own `RocketMQClientException` base type.
@@ -86,6 +92,8 @@ The two packages can be referenced by the same application, but their API models
 ## Repository
 
 - [Runnable samples](samples/README.md)
+- [OpenTelemetry Web API sample](samples/opentelemetry/README.md)
+- [OpenTelemetry instrumentation design](docs/en-US/architecture/opentelemetry-instrumentation.md)
 - [Design notes](docs/README.md)
 - [Local test environments](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/test-environments/README.md)
 - [Contributing and coding instructions](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/AGENTS.md)

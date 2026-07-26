@@ -82,7 +82,8 @@ internal sealed class PopConsumer(
     {
         try
         {
-            return await consumer.GetMessageQueuesAsync(_options.Topic, cancellationToken).ConfigureAwait(false);
+            return await consumer.GetMessageQueuesAsync("eventhorizon-test-topic", cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -90,7 +91,7 @@ internal sealed class PopConsumer(
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Unable to discover POP message queues for {Topic}", _options.Topic);
+            logger.LogError(exception, "Unable to discover POP message queues for {Topic}", "eventhorizon-test-topic");
             return [];
         }
     }

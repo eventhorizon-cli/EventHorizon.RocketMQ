@@ -21,6 +21,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Protocol;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -833,7 +834,8 @@ public sealed class RemotingClientTests
 
     private static RemotingClient CreateClient(bool useTls = false) => new(
         new RemoteCommandSerializer(),
-        Options.Create(new RemotingClientOptions { UseTLS = useTls }));
+        Options.Create(new RemotingClientOptions { UseTLS = useTls }),
+        NullLogger<RemotingClient>.Instance);
 
     private static RemotingClient CreateTlsClient(
         X509Certificate2 trustedCertificate,
@@ -860,7 +862,8 @@ public sealed class RemotingClientTests
                         trustedCertificate.RawData);
                 };
             }
-        }));
+        }),
+        NullLogger<RemotingClient>.Instance);
 
     private static X509Certificate2 CreateLocalhostCertificate(RSA privateKey)
     {

@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Diagnostics;
+
 namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
 /// <summary>
@@ -128,4 +130,6 @@ public sealed class RemotingMessageView
     /// Gets the timestamp at which the broker stored the message.
     /// </summary>
     public DateTimeOffset StoreTimestamp { get; }
+
+    internal ActivityContext? ReceiveActivityContext { get; set; }
 }

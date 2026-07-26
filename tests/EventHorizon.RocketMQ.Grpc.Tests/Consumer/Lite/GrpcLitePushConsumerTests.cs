@@ -251,7 +251,8 @@ public sealed class GrpcLitePushConsumerTests
             new Dictionary<string, FilterExpression> { ["orders"] = FilterExpression.All },
             Proto.ClientType.LitePushConsumer,
             TimeSpan.FromSeconds(9),
-            NullLoggerFactory.Instance,
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance,
             (receivedEndpoint, command, _) =>
             {
                 telemetryEndpoint = receivedEndpoint;
@@ -554,7 +555,7 @@ public sealed class GrpcLitePushConsumerTests
             Options.Create(new GrpcClientOptions { Namespace = "tenant-a" }),
             client,
             routes,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcLiteSubscriptionManager>.Instance);
     }
 
     private static IGrpcRouteService CreateRouteService(Uri endpoint)

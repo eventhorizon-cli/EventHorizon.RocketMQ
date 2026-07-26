@@ -96,6 +96,7 @@ that API.
 | Protocol-level Broker push | — | Push and LitePush are not server-initiated Broker push. |
 | Direct NameServer or Broker connection | — | gRPC connects to a RocketMQ Proxy through `Endpoint`. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQGrpc`, then add the required roles. |
+| OpenTelemetry tracing and metrics | ✅ | Subscribe to `GrpcRocketMQInstrumentation` source and meter names from the application's OpenTelemetry SDK. |
 
 ## Client registration and connection
 
@@ -127,6 +128,26 @@ public sealed class OrderPublisher(
 A role can be registered only once per client registration. The default client registration uses ordinary constructor
 injection. When clients are resolved from a standalone `ServiceProvider` instead of a Generic Host,
 call their `StartAsync` and `StopAsync` methods explicitly.
+
+## OpenTelemetry
+
+The Package emits OpenTelemetry Activities and metrics without requiring a separate instrumentation Package. Configure
+the application's OpenTelemetry SDK to subscribe to the public names:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddRocketMQGrpcInstrumentation())
+    .WithMetrics(metrics => metrics
+        .AddRocketMQGrpcInstrumentation());
+```
+
+The application owns its resource attributes, sampler, processors, and exporter. The client emits Producer send,
+non-empty receive, automatic Push and LitePush process, and consumer-settlement telemetry. It injects distributed
+context into outbound message properties and preserves existing propagation fields. See the
+[OpenTelemetry instrumentation design](../../docs/en-US/architecture/opentelemetry-instrumentation.md) for the trace
+model and metrics, and the [OpenTelemetry web sample](../../samples/opentelemetry/README.md) for an OTLP/Grafana
+setup.
 
 ## Producer
 

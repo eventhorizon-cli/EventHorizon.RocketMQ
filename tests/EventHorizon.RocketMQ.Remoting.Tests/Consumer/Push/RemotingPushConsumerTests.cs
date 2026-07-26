@@ -23,7 +23,6 @@ using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -143,7 +142,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         try
         {
@@ -209,7 +208,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
         var body = Encoding.UTF8.GetBytes(
             """
             {"offsetTable":[[{"topic":"tenant-a%orders","brokerName":"broker-a","queueId":0},7]]}
@@ -294,7 +293,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
         var body = Encoding.UTF8.GetBytes(
             """
             {"offsetTable":[[{"topic":"tenant-a%orders","brokerName":"broker-a","queueId":0},7]]}
@@ -368,7 +367,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
         var body = Encoding.UTF8.GetBytes(
             """
             {"offsetTable":[[{"topic":"tenant-a%orders","brokerName":"broker-a","queueId":0},7]]}
@@ -447,7 +446,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
         var firstBody = Encoding.UTF8.GetBytes(
             """
             {"offsetTable":[[{"topic":"tenant-a%orders","brokerName":"broker-a","queueId":0},7]]}
@@ -632,7 +631,7 @@ public sealed class RemotingPushConsumerTests
             routes.Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForPullsAsync(2, cancellationToken);
@@ -716,7 +715,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForPullsAsync(2, cancellationToken);
@@ -1080,7 +1079,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await retryDelivered.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
@@ -1117,7 +1116,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForPullsAsync(2, cancellationToken);
@@ -1196,7 +1195,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await firstSecondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
@@ -1240,7 +1239,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForTopicPullsAsync("tenant-a%orders", 1, cancellationToken);
@@ -1308,7 +1307,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await Task.Delay(100, cancellationToken);
@@ -1376,7 +1375,7 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForTopicPullsAsync("orders", 2, cancellationToken);
@@ -1753,7 +1752,7 @@ public sealed class RemotingPushConsumerTests
             routes,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingPushConsumer>.Instance);
 
     private static RemotingPushConsumer CreateRemotingPushConsumer(
         IOptions<RemotingPushConsumerOptions> options,
@@ -1761,7 +1760,7 @@ public sealed class RemotingPushConsumerTests
         ITopicRouteService routes,
         IRemotingClient remoting,
         TimeProvider timeProvider,
-        ILoggerFactory loggerFactory)
+        ILogger<RemotingPushConsumer> logger)
     {
         var consumerEngine = CreateRemotingConsumerEngine(
             options.Value,
@@ -1772,15 +1771,14 @@ public sealed class RemotingPushConsumerTests
             routes,
             remoting,
             timeProvider);
-        return ActivatorUtilities.CreateInstance<RemotingPushConsumer>(
-            new Mock<IServiceProvider>().Object,
+        return new RemotingPushConsumer(
             options,
             clientOptions,
             consumerEngine,
             routes,
             remoting,
             timeProvider,
-            loggerFactory);
+            logger);
     }
 
     private static RemotingConsumerEngine CreateRemotingConsumerEngine(

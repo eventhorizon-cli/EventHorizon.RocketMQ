@@ -16,7 +16,6 @@
 using System.Collections.Concurrent;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -31,7 +30,7 @@ internal sealed class GrpcSessionManager : IAsyncDisposable
     private readonly Proto.ClientType _clientType;
     private readonly string? _group;
     private readonly Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? _telemetryHandler;
-    private readonly ILogger _logger;
+    private readonly ILogger<GrpcSessionManager> _logger;
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _reconnectRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -49,7 +48,7 @@ internal sealed class GrpcSessionManager : IAsyncDisposable
         IOptions<GrpcClientOptions> options,
         Proto.ClientType clientType,
         string? group,
-        ILoggerFactory? loggerFactory = null,
+        ILogger<GrpcSessionManager> logger,
         Func<Uri, Proto.TelemetryCommand, CancellationToken, Task>? telemetryHandler = null)
     {
         _client = client;
@@ -57,7 +56,7 @@ internal sealed class GrpcSessionManager : IAsyncDisposable
         _clientType = clientType;
         _group = group;
         _telemetryHandler = telemetryHandler;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<GrpcSessionManager>();
+        _logger = logger;
     }
 
     public void Start()

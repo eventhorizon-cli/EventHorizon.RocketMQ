@@ -14,9 +14,7 @@ the service through `SyncLiteSubscription`.
 | `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
 | `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
 | `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Consumer:GroupName` | `rocketmq-dotnet-grpc-lite-push-sample` | Consumer group, which must be bound to the LITE parent topic. |
-| `RocketMQ:Consumer:BindTopic` | `rocketmq-dotnet-lite-manual` | LITE parent topic used for routing and assignments. |
-| `RocketMQ:Consumer:LiteTopics:0` | `rocketmq-dotnet-lite-sample` | LiteTopic synchronized on startup. |
+| `RocketMQ:Consumer:GroupName` | `eventhorizon-test-lite-push-consumer` | Consumer group, which must be bound to the LITE parent topic. |
 | `RocketMQ:Consumer:BatchSize` | `16` | Maximum messages requested by each receive operation. |
 | `RocketMQ:Consumer:MaxConcurrency` | `4` | Maximum concurrent handler executions. |
 | `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | Fallback delivery-attempt limit before dead-lettering. |
@@ -24,8 +22,9 @@ the service through `SyncLiteSubscription`.
 | `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Maximum server wait for a receive operation. |
 | `RocketMQ:Consumer:SubscriptionSyncInterval` | `00:00:30` | Interval for reconciling the complete LiteTopic set with the service. |
 
-`BindTopic` is not one of the regular subscriptions. Do not add normal `Subscribe` calls for this
-role; configure LiteTopic names through `LiteTopics`, `SubscribeLiteAsync`, or
+The sample fixes its LITE parent topic to `eventhorizon-test-lite-parent-topic` and synchronizes
+`eventhorizon-test-lite-topic` on startup. These names are deliberately set in code. The parent topic is not a
+regular subscription; production applications can manage their LiteTopic set through `SubscribeLiteAsync` and
 `UnsubscribeLiteAsync` instead.
 
 ## Prerequisites
@@ -36,8 +35,8 @@ role; configure LiteTopic names through `LiteTopics`, `SubscribeLiteAsync`, or
 - Every Broker that stores the parent topic must enable `enableLmq=true` and
   `enableMultiDispatch=true`.
 - Use the dedicated LitePush environment. It enables the two Broker flags above, starts
-  `mqproxy -pm cluster` at `localhost:8081`, and automatically creates the LITE parent Topic and
-  Consumer Group that match this sample's defaults.
+  `mqproxy -pm cluster` at `localhost:8081`, and creates the fixed LITE parent Topic and Consumer Group during
+  startup.
 - Stop any environment that already publishes host port `8081` before starting this one.
 
 Start the dedicated environment from the repository root:
@@ -46,9 +45,9 @@ Start the dedicated environment from the repository root:
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 ```
 
-The completed `resource-init` service creates `rocketmq-dotnet-lite-manual` with `message.type=LITE` and binds
-`rocketmq-dotnet-grpc-lite-push-sample` to that parent Topic. `rocketmq-dotnet-lite-sample` remains the LiteTopic
-that this Consumer synchronizes when it starts.
+The completed `resource-init` service creates `eventhorizon-test-lite-parent-topic` with `message.type=LITE` and binds
+`eventhorizon-test-lite-push-consumer` to that parent Topic. `eventhorizon-test-lite-topic` is a logical LiteTopic,
+which this Consumer synchronizes when it starts rather than an independent ordinary Topic to create.
 
 See the [LitePush environment guide](../../../test-environments/rocketmq-litepush/README.md) for the topology,
 persistence behavior, and local port limits.
@@ -61,16 +60,16 @@ After the environment is ready, run from the repository root:
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-The host continues until Ctrl+C. It logs its configured LiteTopics on startup. To observe messages,
-publish Lite messages for `rocketmq-dotnet-lite-sample` under the
-`rocketmq-dotnet-lite-manual` parent topic with a compatible producer; the standard Producer sample
+The host continues until Ctrl+C. It logs its fixed LiteTopic on startup. To observe messages,
+publish Lite messages for `eventhorizon-test-lite-topic` under the
+`eventhorizon-test-lite-parent-topic` parent topic with a compatible producer; the standard Producer sample
 only sends ordinary messages and does not populate a LiteTopic.
 
 ## Semantics and common pitfalls
 
 - LiteTopics are service-managed logical subscriptions under the LITE parent topic. They are not
   independent ordinary topics and cannot be replaced by a normal tag filter.
-- The client sends the entire configured LiteTopic set on startup and every
+- The client sends its complete LiteTopic set on startup and every
   `SubscriptionSyncInterval`; the service can reject a subscription because of name or quota rules.
   A rejected change raises `GrpcServiceException` and does not update the local set.
 - Like standard PushConsumer, LitePush is client-initiated long polling, not Broker network push.

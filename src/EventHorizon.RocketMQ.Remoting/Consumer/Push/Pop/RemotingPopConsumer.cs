@@ -13,10 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Diagnostics;
 using System.Globalization;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Options;
 
@@ -29,6 +31,7 @@ internal sealed class RemotingPopConsumer : IRemotingPopConsumer
     private readonly IRemotingConsumerEngine _consumerEngine;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
+    private readonly IRemotingRocketMQTelemetry _telemetry;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private int _started;
     private int _disposed;
@@ -38,13 +41,15 @@ internal sealed class RemotingPopConsumer : IRemotingPopConsumer
         IOptions<RemotingClientOptions> clientOptions,
         IRemotingConsumerEngine consumerEngine,
         IRemotingClient remotingClient,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
         _consumerEngine = consumerEngine;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
+        _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
     }
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
@@ -129,33 +134,79 @@ internal sealed class RemotingPopConsumer : IRemotingPopConsumer
             Order = false,
             Bname = queue.BrokerName
         });
-        var response = await _remotingClient.InvokeAsync(
-            EndpointParser.Parse(brokerAddress),
-            request,
-            _clientOptions.RequestTimeout + _options.LongPollingTimeout,
-            cancellationToken).ConfigureAwait(false);
-        EnsureResponseBodyWithinLimit(response);
-        return LegacyPopMessageDecoder.Decode(response, queue, brokerAddress, _clientOptions.Namespace);
+        var parentContext = Activity.Current?.Context;
+        var startTime = DateTimeOffset.UtcNow;
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var response = await _remotingClient.InvokeAsync(
+                EndpointParser.Parse(brokerAddress),
+                request,
+                _clientOptions.RequestTimeout + _options.LongPollingTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureResponseBodyWithinLimit(response);
+            var result = LegacyPopMessageDecoder.Decode(response, queue, brokerAddress, _clientOptions.Namespace);
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic,
+                _options.GroupName,
+                result.Messages.Count,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.QueueId,
+                createActivity: result.Messages.Count > 0);
+            telemetry.Complete();
+            return result;
+        }
+        catch (Exception exception)
+        {
+            using var telemetry = _telemetry.StartReceive(
+                queue.Topic,
+                _options.GroupName,
+                0,
+                parentContext,
+                startTime,
+                startTimestamp,
+                queue.QueueId);
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public async Task AcknowledgeAsync(RemotingPopReceipt receipt, CancellationToken cancellationToken = default)
     {
         EnsureStarted();
         ArgumentNullException.ThrowIfNull(receipt);
-        var response = await _remotingClient.InvokeAsync(
-            EndpointParser.Parse(receipt.BrokerAddress),
-            new RemotingCommand(RequestCode.AckMessage, new AckMessageRequestHeader
-            {
-                ConsumerGroup = GetConsumerGroup(),
-                Topic = GetWireTopic(receipt.Topic),
-                QueueId = receipt.QueueId,
-                ExtraInfo = receipt.ExtraInfo,
-                Offset = receipt.QueueOffset,
-                Bname = receipt.BrokerName
-            }),
-            _clientOptions.RequestTimeout,
-            cancellationToken).ConfigureAwait(false);
-        EnsureSuccess(response, "acknowledge the POP message");
+        using var telemetry = _telemetry.StartSettle(
+            "ack",
+            receipt.Topic,
+            _options.GroupName,
+            null,
+            receipt.QueueId,
+            null);
+        try
+        {
+            var response = await _remotingClient.InvokeAsync(
+                EndpointParser.Parse(receipt.BrokerAddress),
+                new RemotingCommand(RequestCode.AckMessage, new AckMessageRequestHeader
+                {
+                    ConsumerGroup = GetConsumerGroup(),
+                    Topic = GetWireTopic(receipt.Topic),
+                    QueueId = receipt.QueueId,
+                    ExtraInfo = receipt.ExtraInfo,
+                    Offset = receipt.QueueOffset,
+                    Bname = receipt.BrokerName
+                }),
+                _clientOptions.RequestTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response, "acknowledge the POP message");
+            telemetry.Complete();
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public async Task<RemotingPopReceipt> ChangeInvisibleTimeAsync(
@@ -166,22 +217,39 @@ internal sealed class RemotingPopConsumer : IRemotingPopConsumer
         EnsureStarted();
         ArgumentNullException.ThrowIfNull(receipt);
         var invisibleTimeMilliseconds = ToPositiveMilliseconds(invisibleDuration, nameof(invisibleDuration));
-        var response = await _remotingClient.InvokeAsync(
-            EndpointParser.Parse(receipt.BrokerAddress),
-            new RemotingCommand(RequestCode.ChangeMessageInvisibleTime, new ChangeInvisibleTimeRequestHeader
-            {
-                ConsumerGroup = GetConsumerGroup(),
-                Topic = GetWireTopic(receipt.Topic),
-                QueueId = receipt.QueueId,
-                ExtraInfo = receipt.ExtraInfo,
-                Offset = receipt.QueueOffset,
-                InvisibleTime = invisibleTimeMilliseconds,
-                Bname = receipt.BrokerName
-            }),
-            _clientOptions.RequestTimeout,
-            cancellationToken).ConfigureAwait(false);
-        EnsureSuccess(response, "change the POP message invisibility");
-        return RenewReceipt(receipt, response);
+        using var telemetry = _telemetry.StartSettle(
+            "nack",
+            receipt.Topic,
+            _options.GroupName,
+            null,
+            receipt.QueueId,
+            null);
+        try
+        {
+            var response = await _remotingClient.InvokeAsync(
+                EndpointParser.Parse(receipt.BrokerAddress),
+                new RemotingCommand(RequestCode.ChangeMessageInvisibleTime, new ChangeInvisibleTimeRequestHeader
+                {
+                    ConsumerGroup = GetConsumerGroup(),
+                    Topic = GetWireTopic(receipt.Topic),
+                    QueueId = receipt.QueueId,
+                    ExtraInfo = receipt.ExtraInfo,
+                    Offset = receipt.QueueOffset,
+                    InvisibleTime = invisibleTimeMilliseconds,
+                    Bname = receipt.BrokerName
+                }),
+                _clientOptions.RequestTimeout,
+                cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response, "change the POP message invisibility");
+            var renewedReceipt = RenewReceipt(receipt, response);
+            telemetry.Complete();
+            return renewedReceipt;
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
+        }
     }
 
     public async ValueTask DisposeAsync()

@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 using Microsoft.Extensions.Configuration;
@@ -30,13 +31,7 @@ sampleSection.Bind(sampleOptions);
 
 builder.Services.AddOptions<PushConsumerSampleOptions>()
     .Bind(sampleSection)
-    .Validate(static options => options.Subscriptions.Count > 0, "At least one subscription is required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Topic)),
-        "Each subscription requires a topic.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Filter)),
-        "Each subscription requires a filter.")
+    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "A subscription filter is required.")
     .ValidateOnStart();
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
@@ -44,7 +39,7 @@ var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
 {
     consumerSection.Bind(options);
-    sampleOptions.ApplySubscriptions(options);
+    options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
 });
 
 await builder.Build().RunAsync();

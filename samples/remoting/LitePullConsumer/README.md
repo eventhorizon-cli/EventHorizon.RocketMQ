@@ -15,8 +15,8 @@ feature.
 | `RocketMQ:LitePullConsumer:BatchSize` | `32` | Maximum messages requested by one poll. |
 | `RocketMQ:LitePullConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty poll. |
 | `RocketMQ:LitePullConsumer:InitialOffset` | `End` | Position used only for a newly assigned queue without a committed group offset. |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | Default subscribed normal topic. |
-| `Sample:Subscriptions[0]:Filter` | `*` | Subscription filter. |
+| Fixed topic | `eventhorizon-test-topic` | Shared subscribed normal topic. |
+| `Sample:Filter` | `*` | Subscription filter. |
 | `Sample:RetryDelay` | `00:00:01` | Delay after assignment or polling failures. |
 
 The API supports subscription mode and manual-assignment mode, but the sample uses subscriptions. It polls the
@@ -26,18 +26,14 @@ client's current assignment, logs every returned message, then calls `CommitAsyn
 
 - Use a classic Remoting NameServer and Broker. The process must reach the configured NameServer and the Broker
   addresses returned by its route data; `NamesrvAddr` is not a Proxy endpoint.
-- Create the normal topic `rocketmq-dotnet-manual` and permit the clustered group
-  `remoting-sample-lite-pull-consumer`, or change both values. If ACL is enabled, grant route-query and consume
-  permissions.
+- Create the normal topic `eventhorizon-test-topic` and permit the clustered group
+  `remoting-sample-lite-pull-consumer` when using an external Broker. If ACL is enabled, grant route-query and
+  consume permissions.
 - The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-  classic normal-topic example when it runs on the host. Prepare the default resources from the repository root:
+  classic normal-topic example when it runs on the host. It initializes the shared topic automatically:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-lite-pull-consumer
 ```
 
 The bundled Broker advertises a host-reachable address. Use a reachable NameServer and Broker advertisement when
@@ -62,4 +58,4 @@ logs a debug message and retries while no queue is assigned.
 - `InitialOffset` applies only when the group has no committed position for an assigned queue. Reusing the same
   group preserves committed offsets; it does not re-read history merely because `InitialOffset` changes.
 - Subscription mode and explicit `AssignAsync` mode are mutually exclusive. Do not add manual assignments while
-  retaining the `Sample:Subscriptions` configuration.
+  retaining the fixed sample subscription.

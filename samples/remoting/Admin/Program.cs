@@ -90,11 +90,9 @@ await app.RunAsync();
 static async Task<IResult> GetMessageQueuesAsync(
     string topic,
     IRemotingAdmin admin,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
-
     try
     {
         var queues = await admin.GetMessageQueuesAsync(topic, cancellationToken).ConfigureAwait(false);
@@ -123,10 +121,9 @@ static async Task<IResult> GetQueueOffsetsAsync(
     int queueId,
     bool? committed,
     IRemotingAdmin admin,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
     // The default reads the committed maximum; false requests the Broker's in-flight maximum.
     var useCommittedOffset = committed ?? true;
 
@@ -170,10 +167,9 @@ static async Task<IResult> SearchQueueOffsetAsync(
     DateTimeOffset timestamp,
     RemotingOffsetBoundary? boundary,
     IRemotingAdmin admin,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
     var selectedBoundary = boundary ?? RemotingOffsetBoundary.Lower;
 
     try
@@ -204,11 +200,9 @@ static async Task<IResult> GetConsumerOffsetAsync(
     string brokerName,
     int queueId,
     IRemotingAdmin admin,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
-
     try
     {
         var queue = new RemotingMessageQueue(topic, brokerName, queueId);
@@ -235,11 +229,9 @@ static async Task<IResult> ViewMessageAsync(
     string topic,
     string offsetMessageId,
     IRemotingAdmin admin,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Remoting.Admin");
-
     try
     {
         // OffsetMessageId embeds the target Broker endpoint, so this physical-message lookup bypasses

@@ -153,7 +153,7 @@ internal sealed class RemotingRocketMQTelemetry : IRemotingRocketMQTelemetry
             consumerGroup,
             messages.Count,
             bodySize,
-            null,
+            messages.Count == 1 ? first.MessageId : null,
             parentMessageIndex < 0
                 ? messages.Select(static message => message.Properties)
                 : messages.Where((_, index) => index != parentMessageIndex).Select(static message => message.Properties),

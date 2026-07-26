@@ -330,6 +330,29 @@ public sealed class RemotingRocketMQTelemetryTests
     }
 
     [Fact]
+    public void StartProcessBatch_PreservesMessageIdForSingleMessage()
+    {
+        using var listener = CreateActivityListener();
+        using var provider = CreateServiceProvider();
+        var telemetry = CreateTelemetry(provider);
+        var messages = new[]
+        {
+            CreateMessage(
+                "message-1",
+                [1, 2],
+                new Dictionary<string, string>(),
+                default)
+        };
+
+        using var process = telemetry.StartProcessBatch("orders", "orders-consumer", messages);
+        var processActivity = Assert.IsType<Activity>(process.Activity);
+        process.Complete();
+
+        Assert.Equal("message-1", processActivity.GetTagItem("messaging.message.id"));
+        Assert.Equal(1, processActivity.GetTagItem("messaging.batch.message_count"));
+    }
+
+    [Fact]
     public void Complete_RecordsMetricsForFailedOperation()
     {
         var measurements = new List<(string InstrumentName, long Value, KeyValuePair<string, object?>[] Tags)>();

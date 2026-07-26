@@ -13,11 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Grpc.PushConsumer;
+namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi;
 
-internal sealed class PushConsumerSubscriptionOptions
-{
-    public string Topic { get; set; } = string.Empty;
-
-    public string Filter { get; set; } = "*";
-}
+internal sealed record ConsumerStatusResponse(string Topic, string GrpcConsumer, string RemotingConsumer);

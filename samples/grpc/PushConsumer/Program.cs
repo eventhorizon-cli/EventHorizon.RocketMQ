@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Grpc;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Samples.Grpc.PushConsumer;
 using Microsoft.Extensions.Configuration;
@@ -30,13 +31,7 @@ sampleSection.Bind(sampleOptions);
 builder.Services
     .AddOptions<PushConsumerSampleOptions>()
     .Bind(sampleSection)
-    .Validate(static options => options.Subscriptions.Count > 0, "At least one subscription is required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Topic)),
-        "Subscription topics are required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Filter)),
-        "Subscription filters are required.")
+    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "Subscription filter is required.")
     .ValidateOnStart();
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
@@ -48,7 +43,7 @@ builder.Services
     .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         consumerSection.Bind(options);
-        sampleOptions.ApplySubscriptions(options);
+        options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
     });
 
 await builder.Build().RunAsync();

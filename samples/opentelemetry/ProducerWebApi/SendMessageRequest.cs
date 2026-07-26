@@ -13,11 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Remoting.PullConsumer;
+namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi;
 
-internal sealed class PullConsumerSubscriptionOptions
+internal sealed class SendMessageRequest
 {
-    public string Topic { get; set; } = string.Empty;
-
-    public string Filter { get; set; } = "*";
+    public string? Message { get; init; }
 }

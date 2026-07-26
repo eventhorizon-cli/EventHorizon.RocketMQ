@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -96,6 +97,9 @@ public static class GrpcRocketMQServiceCollectionExtensions
                 static options => options.HeartbeatInterval > TimeSpan.Zero,
                 "Heartbeat interval must be positive.");
 
+        services.AddLogging();
+        services.AddMetrics();
+        services.TryAddSingleton<IGrpcRocketMQTelemetry, GrpcRocketMQTelemetry>();
         services.TryAddSingleton(TimeProvider.System);
         return new GrpcRocketMQBuilder(services, optionsName, registrationName);
     }

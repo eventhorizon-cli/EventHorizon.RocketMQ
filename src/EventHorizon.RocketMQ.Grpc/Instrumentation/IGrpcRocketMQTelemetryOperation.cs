@@ -13,11 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Remoting.PopConsumer;
+using System.Diagnostics;
 
-internal sealed class PopConsumerSubscriptionOptions
+namespace EventHorizon.RocketMQ.Grpc.Instrumentation;
+
+internal interface IGrpcRocketMQTelemetryOperation : IDisposable
 {
-    public string Topic { get; set; } = string.Empty;
+    Activity? Activity { get; }
 
-    public string Filter { get; set; } = "*";
+    void Complete();
+
+    void Complete(bool success, string? outcome = null);
+
+    void Complete(Exception exception);
 }

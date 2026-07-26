@@ -18,7 +18,6 @@ using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
@@ -32,7 +31,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     private readonly IRemotingConsumerEngine _consumerEngine;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
-    private readonly ILogger _logger;
+    private readonly ILogger<RemotingLitePullConsumer> _logger;
     private readonly string _clientId;
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -46,7 +45,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         IRemotingConsumerEngine consumerEngine,
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<RemotingLitePullConsumer> logger)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
@@ -57,7 +56,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
             _options.Subscriptions,
             StringComparer.Ordinal);
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<RemotingLitePullConsumer>();
+        _logger = logger;
         _consumerIdsChangedRegistration = _remotingClient.RegisterRequestHandler(
             RequestCode.NotifyConsumerIdsChanged,
             HandleConsumerIdsChangedAsync);

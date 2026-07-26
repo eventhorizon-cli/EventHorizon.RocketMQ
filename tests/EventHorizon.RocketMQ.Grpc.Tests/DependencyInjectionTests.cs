@@ -17,6 +17,7 @@ using System.Reflection;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Producer.Transactions;
 using EventHorizon.RocketMQ.Grpc.Protocol;
@@ -30,6 +31,17 @@ namespace EventHorizon.RocketMQ.Grpc.Tests;
 
 public sealed class DependencyInjectionTests
 {
+    [Fact]
+    public void AddRocketMQGrpc_RegistersTelemetryWithTheDefaultServiceProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081");
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        Assert.NotNull(provider.GetRequiredService<IGrpcRocketMQTelemetry>());
+    }
+
     [Fact]
     public void AddRocketMQGrpc_RejectsBlankEndpoint()
     {

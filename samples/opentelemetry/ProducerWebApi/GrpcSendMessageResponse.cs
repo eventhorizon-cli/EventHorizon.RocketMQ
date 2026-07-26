@@ -13,11 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer;
+namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi;
 
-internal sealed class LitePullConsumerSubscriptionOptions
-{
-    public string Topic { get; set; } = string.Empty;
-
-    public string Filter { get; set; } = "*";
-}
+internal sealed record GrpcSendMessageResponse(string MessageId, string Topic, long Offset);

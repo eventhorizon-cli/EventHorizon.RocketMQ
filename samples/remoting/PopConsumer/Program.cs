@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 using EventHorizon.RocketMQ.Samples.Remoting.PopConsumer;
 using Microsoft.Extensions.Configuration;
@@ -29,13 +30,7 @@ sampleSection.Bind(sampleOptions);
 
 builder.Services.AddOptions<PopConsumerSampleOptions>()
     .Bind(sampleSection)
-    .Validate(static options => options.Subscriptions.Count == 1, "Exactly one subscription is required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Topic)),
-        "Each subscription requires a topic.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Filter)),
-        "Each subscription requires a filter.")
+    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "A subscription filter is required.")
     .Validate(static options => options.RetryDelay > TimeSpan.Zero, "The retry delay must be positive.")
     .ValidateOnStart();
 
@@ -43,7 +38,7 @@ var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingPopConsumer(options =>
 {
     consumerSection.Bind(options);
-    sampleOptions.ApplySubscriptions(options);
+    options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
 });
 builder.Services.AddHostedService<PopConsumer>();
 

@@ -6,8 +6,9 @@ mqadmin=/home/rocketmq/rocketmq-5.5.0/bin/mqadmin
 nameserver_address=nameserver:9876
 cluster_name=DefaultCluster
 broker_name=broker-litepush
-parent_topic=rocketmq-dotnet-lite-manual
-consumer_group=rocketmq-dotnet-grpc-lite-push-sample
+standard_topic=eventhorizon-test-topic
+parent_topic=eventhorizon-test-lite-parent-topic
+consumer_group=eventhorizon-test-lite-push-consumer
 
 attempt=1
 while [ "$attempt" -le 60 ]; do
@@ -29,6 +30,11 @@ fi
 $mqadmin updateTopic \
     -n "$nameserver_address" \
     -c "$cluster_name" \
+    -t "$standard_topic"
+
+$mqadmin updateTopic \
+    -n "$nameserver_address" \
+    -c "$cluster_name" \
     -t "$parent_topic" \
     -a +message.type=LITE
 
@@ -38,6 +44,7 @@ $mqadmin updateSubGroup \
     -g "$consumer_group" \
     --attributes +lite.bind.topic="$parent_topic"
 
+$mqadmin topicRoute -n "$nameserver_address" -t "$standard_topic"
 $mqadmin topicRoute -n "$nameserver_address" -t "$parent_topic"
 
-echo "LitePush resources are ready: parent topic $parent_topic; consumer group $consumer_group."
+echo "Sample resources are ready: standard topic $standard_topic; Lite parent topic $parent_topic; Lite consumer group $consumer_group."

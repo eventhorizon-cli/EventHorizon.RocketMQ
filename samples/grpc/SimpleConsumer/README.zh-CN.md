@@ -16,28 +16,28 @@
 | `RocketMQ:Consumer:GroupName` | `rocketmq-dotnet-grpc-simple-sample` | 保存确认和重试状态的 consumer group。 |
 | `RocketMQ:Consumer:AwaitDuration` | `00:00:05` | 服务端 Receive 长轮询时长。 |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | 收到消息后的初始租约时长。 |
-| `Sample:Subscriptions:0:Topic` | `rocketmq-dotnet-manual` | 要接收的标准 topic。 |
-| `Sample:Subscriptions:0:Filter` | `sample` | Tag 过滤表达式。 |
+| `Sample:Filter` | `sample` | 固定标准 topic 的 Tag 过滤表达式。 |
 | `Sample:BatchSize` | `16` | 每次 Receive 请求的最大消息数量。 |
 | `Sample:MaxDeliveryAttempts` | `16` | 转发损坏消息到死信队列时传入的投递次数阈值。 |
 
-Producer 示例的默认 tag 为 `sample`，因此其默认消息会匹配此订阅。
+本示例始终订阅写死在代码中的 `eventhorizon-test-topic`。Producer 示例固定使用 `sample` tag，因此发送的消息会匹配该过滤条件。
 
 ## 前置条件
 
 - `RocketMQ:Client:Endpoint` 必须指向可访问的 RocketMQ 5 Proxy；客户端不会直接连接 NameServer。
-- 标准 topic 和 consumer group 必须存在，或者 Broker 必须允许自动创建。禁用此策略时，请显式创建：
+- 标准 topic 和 consumer group 必须存在，或者 Broker 必须允许自动创建。本仓库提供的环境会在启动时创建固定 Topic。
+  使用禁用自动资源创建的其他 Broker 时，请显式创建这两个资源：
 
   ```shell
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
   docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
     -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-simple-sample
   ```
 
-- 本仓库提供的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持 SimpleConsumer。其 Broker 开启了自动建
-  topic 和 subscription group；但生产部署通常应先由管理员创建这两个资源。
+- 本仓库提供的 RocketMQ 5.5.0 Compose 环境在 `localhost:8081` 支持 SimpleConsumer。一次性资源初始化服务会在启动命令返回前
+  创建固定 Topic；但生产部署通常仍应先由管理员创建这两个资源。
 
 在仓库根目录启动本仓库提供的环境：
 
@@ -54,7 +54,7 @@ dotnet run --project samples/grpc/SimpleConsumer
 ```
 
 示例会持续运行直到按下 Ctrl+C。使用 Producer 示例发送消息，或通过其他客户端向
-`rocketmq-dotnet-manual` 发布 tag 为 `sample` 的标准消息。
+`eventhorizon-test-topic` 发布 tag 为 `sample` 的标准消息。
 
 ## 语义与常见误解
 

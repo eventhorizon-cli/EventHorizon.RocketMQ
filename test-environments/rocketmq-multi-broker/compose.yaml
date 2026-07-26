@@ -221,6 +221,18 @@ services:
     networks:
       - rocketmq
 
+  resource-init:
+    image: *rocketmq-image
+    command: ["sh", "/opt/rocketmq/init-resources.sh"]
+    depends_on:
+      proxy:
+        condition: service_healthy
+    volumes:
+      - ./init-resources.sh:/opt/rocketmq/init-resources.sh:ro
+    restart: "no"
+    networks:
+      - rocketmq
+
   dashboard:
     image: apacherocketmq/rocketmq-dashboard:2.1.0
     environment:

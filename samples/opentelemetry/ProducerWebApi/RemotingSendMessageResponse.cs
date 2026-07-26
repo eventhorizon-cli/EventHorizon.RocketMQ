@@ -13,11 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer;
+namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi;
 
-internal sealed class SimpleConsumerSubscriptionOptions
-{
-    public string Topic { get; set; } = string.Empty;
-
-    public string Filter { get; set; } = "*";
-}
+internal sealed record RemotingSendMessageResponse(
+    string MessageId,
+    string Topic,
+    string BrokerName,
+    int QueueId,
+    long QueueOffset,
+    string Status);

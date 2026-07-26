@@ -19,10 +19,10 @@ using System.Threading.Channels;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
+using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
@@ -40,7 +40,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     private readonly ITopicRouteService _routes;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
-    private readonly ILogger _logger;
+    private readonly IRemotingRocketMQTelemetry _telemetry;
+    private readonly ILogger<RemotingPushConsumer> _logger;
     private readonly string _clientId;
     private readonly IDisposable? _consumerIdsChangedRegistration;
     private readonly IDisposable? _resetConsumerOffsetRegistration;
@@ -58,8 +59,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         ITopicRouteService routes,
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
-        ILoggerFactory? loggerFactory = null,
-        Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null)
+        ILogger<RemotingPushConsumer> logger,
+        Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
+        IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _messageHandler = messageHandler ?? _options.MessageHandler ??
@@ -69,6 +71,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         _routes = routes;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
+        _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
         _clientId = _clientOptions.BuildRemotingClientId();
         _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
             _options.Subscriptions,
@@ -81,7 +84,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 LegacyNamespace.Wrap(_clientOptions.Namespace, _options.GroupName));
         }
 
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<RemotingPushConsumer>();
+        _logger = logger;
         if (remotingClient is IRemotingRequestHandlerRegistry requestHandlers)
         {
             _consumerIdsChangedRegistration = requestHandlers.RegisterRequestHandler(
@@ -1171,7 +1174,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             await run.OrderlyConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
+                result = await InvokeMessageHandlerAsync(message, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1463,7 +1466,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             ConsumeResult result;
             try
             {
-                result = await _messageHandler(delivery.Message, cancellationToken).ConfigureAwait(false);
+                result = await InvokeMessageHandlerAsync(delivery.Message, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1491,6 +1494,31 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
             attempt++;
             await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask<ConsumeResult> InvokeMessageHandlerAsync(
+        RemotingMessageView message,
+        CancellationToken cancellationToken)
+    {
+        using var telemetry = _telemetry.StartProcess(
+            message.Topic,
+            _options.GroupName,
+                message.MessageId,
+                message.QueueId,
+                message.Body.LongLength,
+                message.Properties,
+                message.ReceiveActivityContext);
+        try
+        {
+            var result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
+            telemetry.Complete(true, result.ToString());
+            return result;
+        }
+        catch (Exception exception)
+        {
+            telemetry.Complete(exception);
+            throw;
         }
     }
 

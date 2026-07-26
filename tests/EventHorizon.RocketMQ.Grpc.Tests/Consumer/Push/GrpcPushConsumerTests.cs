@@ -366,7 +366,8 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.SimpleConsumer,
             options.AwaitDuration,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
         await using var consumer = new GrpcSimpleConsumer(
             Options.Create(options),
             engine);
@@ -440,7 +441,7 @@ public sealed class GrpcPushConsumerTests
         var firstReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var replacementStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var phase = 0;
-        var loggerFactory = new RecordingLoggerFactory();
+        var logger = new RecordingLogger();
         var client = new FakeGrpcClient
         {
             QueryAssignmentHandler = (_, _) => Task.FromResult(
@@ -463,7 +464,7 @@ public sealed class GrpcPushConsumerTests
             client,
             static (_, _) => ValueTask.FromResult(ConsumeResult.Success),
             routes: CreateRouteService(queues[0]),
-            loggerFactory: loggerFactory);
+            engineLogger: logger);
 
         await consumer.StartAsync(cancellationToken);
         await firstReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
@@ -472,7 +473,7 @@ public sealed class GrpcPushConsumerTests
         await Task.Delay(100, cancellationToken);
 
         Assert.DoesNotContain(
-            loggerFactory.Messages,
+            logger.Messages,
             static message => message.Contains("Failed to refresh assignments", StringComparison.Ordinal));
         await consumer.StopAsync(cancellationToken).AsTask()
             .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
@@ -823,7 +824,8 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.PushConsumer,
             options.LongPollingTimeout,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
 
         await engine.StartAsync(cancellationToken);
         var assignments = await engine.GetAssignmentsAsync("orders", cancellationToken);
@@ -937,7 +939,8 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.PushConsumer,
             options.LongPollingTimeout,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
 
         await engine.StartAsync(cancellationToken);
         await engine.GetAssignmentsAsync("orders", cancellationToken);
@@ -993,7 +996,8 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.SimpleConsumer,
             options.AwaitDuration,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
 
         await engine.StartAsync(cancellationToken);
         var messages = await engine.ReceiveAsync(
@@ -1018,9 +1022,9 @@ public sealed class GrpcPushConsumerTests
         Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> handler,
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null)
     {
-        return CreateConsumer(client, handler, out _, configure, routes, loggerFactory);
+        return CreateConsumer(client, handler, out _, configure, routes, engineLogger);
     }
 
     private static GrpcPushConsumer CreateConsumer(
@@ -1029,7 +1033,7 @@ public sealed class GrpcPushConsumerTests
         out GrpcReceiveConsumerEngine engine,
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
-        ILoggerFactory? loggerFactory = null)
+        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null)
     {
         var options = PushOptions(handler);
         configure?.Invoke(options);
@@ -1041,11 +1045,12 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.PushConsumer,
             options.LongPollingTimeout,
-            loggerFactory ?? NullLoggerFactory.Instance);
+            engineLogger ?? NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
         return new GrpcPushConsumer(
             Options.Create(options),
             engine,
-            loggerFactory ?? NullLoggerFactory.Instance);
+            NullLogger<GrpcPushConsumer>.Instance);
     }
 
     private static GrpcReceiveConsumerEngine CreateEngine(FakeGrpcClient client)
@@ -1059,7 +1064,8 @@ public sealed class GrpcPushConsumerTests
             options.Subscriptions,
             Proto.ClientType.PushConsumer,
             options.LongPollingTimeout,
-            NullLoggerFactory.Instance);
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
     }
 
     private static IGrpcRouteService CreateRouteService(Proto.MessageQueue queue)
@@ -1380,25 +1386,18 @@ public sealed class GrpcPushConsumerTests
         return session.Object;
     }
 
-    private sealed class RecordingLoggerFactory : ILoggerFactory
+    private sealed class RecordingLogger : ILogger<GrpcReceiveConsumerEngine>
     {
         public ConcurrentQueue<string> Messages { get; } = [];
-        public void AddProvider(ILoggerProvider provider) { }
-        public ILogger CreateLogger(string categoryName) => new RecordingLogger(Messages);
-        public void Dispose() { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
 
-        private sealed class RecordingLogger(ConcurrentQueue<string> messages) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter) =>
-                messages.Enqueue(formatter(state, exception));
-        }
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Enqueue(formatter(state, exception));
     }
 }

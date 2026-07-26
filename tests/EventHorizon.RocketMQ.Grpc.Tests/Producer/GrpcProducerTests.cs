@@ -773,14 +773,8 @@ public sealed class GrpcProducerTests
     private static GrpcProducer CreateProducer(
         FakeGrpcClient client,
         GrpcProducerOptions options,
-        IGrpcRouteService? routes = null)
-    {
-        var serviceProvider = new Mock<IServiceProvider>();
-        serviceProvider
-            .Setup(provider => provider.GetService(typeof(ILoggerFactory)))
-            .Returns(NullLoggerFactory.Instance);
-        return ActivatorUtilities.CreateInstance<GrpcProducer>(
-            serviceProvider.Object,
+        IGrpcRouteService? routes = null) =>
+        new(
             Options.Create(options),
             Options.Create(new GrpcClientOptions
             {
@@ -789,8 +783,9 @@ public sealed class GrpcProducerTests
                 HeartbeatInterval = TimeSpan.FromHours(1)
             }),
             client,
-            routes ?? CreateRouteService(client.BrokerEndpoint));
-    }
+            routes ?? CreateRouteService(client.BrokerEndpoint),
+            NullLogger<GrpcProducer>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
 
     private static IGrpcRouteService CreateRouteService(Uri endpoint)
     {

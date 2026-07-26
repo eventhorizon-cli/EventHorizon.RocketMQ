@@ -16,8 +16,8 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using EventHorizon.RocketMQ.Grpc.Consumer;
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -28,6 +28,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private readonly GrpcPushConsumerOptions _options;
     private readonly Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> _messageHandler;
     private readonly IGrpcReceiveConsumerEngine _engine;
+    private readonly IGrpcRocketMQTelemetry _telemetry;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _fifoGate = new();
@@ -50,14 +51,16 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     public GrpcPushConsumer(
         IOptions<GrpcPushConsumerOptions> options,
         IGrpcReceiveConsumerEngine engine,
-        ILoggerFactory? loggerFactory = null,
-        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null)
+        ILogger<GrpcPushConsumer> logger,
+        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _messageHandler = messageHandler ?? _options.MessageHandler ??
             throw new ArgumentException("A message handler is required.", nameof(options));
         _engine = engine;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<GrpcPushConsumer>();
+        _telemetry = telemetry ?? GrpcRocketMQTelemetry.Disabled;
+        _logger = logger;
         _messages = CreateMessageChannel();
         _messageByteCapacity = new ByteCapacityGate(_options.MaxCachedMessageBytes);
     }
@@ -749,16 +752,27 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         while (true)
         {
             ConsumeResult result;
+            using var telemetry = _telemetry.StartProcess(
+                message.Topic,
+                _options.GroupName,
+                message.MessageId,
+                message.QueueId,
+                message.Body.LongLength,
+                message.Properties,
+                message.ReceiveActivityContext);
             try
             {
                 result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
+                telemetry.Complete(true, result.ToString());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                telemetry.Complete(new OperationCanceledException(cancellationToken));
                 throw;
             }
             catch (Exception exception)
             {
+                telemetry.Complete(exception);
                 _logger.LogError(exception, "Message handler failed for message {MessageId}", message.MessageId);
                 result = ConsumeResult.Retry;
             }

@@ -30,13 +30,7 @@ sampleSection.Bind(sampleOptions);
 
 builder.Services.AddOptions<PullConsumerSampleOptions>()
     .Bind(sampleSection)
-    .Validate(static options => options.Subscriptions.Count == 1, "Exactly one subscription is required.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Topic)),
-        "Each subscription requires a topic.")
-    .Validate(
-        static options => options.Subscriptions.All(static subscription => !string.IsNullOrWhiteSpace(subscription.Filter)),
-        "Each subscription requires a filter.")
+    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "A subscription filter is required.")
     .Validate(
         static options => options.InitialOffset != QueryOffsetPolicy.Timestamp || options.InitialTimestamp.HasValue,
         "An initial timestamp is required for timestamp-based offset selection.")
@@ -46,7 +40,7 @@ var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingPullConsumer(options =>
 {
     consumerSection.Bind(options);
-    sampleOptions.ApplySubscriptions(options);
+    options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
 });
 builder.Services.AddHostedService<PullConsumer>();
 

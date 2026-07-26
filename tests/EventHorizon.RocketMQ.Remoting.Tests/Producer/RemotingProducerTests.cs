@@ -20,8 +20,6 @@ using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -664,19 +662,13 @@ public sealed class RemotingProducerTests
         configure?.Invoke(producerOptions);
         var clientOptions = new RemotingClientOptions();
         configureClient?.Invoke(clientOptions);
-        var serviceProvider = new Mock<IServiceProvider>();
-        serviceProvider
-            .Setup(provider => provider.GetService(typeof(TimeProvider)))
-            .Returns(TimeProvider.System);
-        serviceProvider
-            .Setup(provider => provider.GetService(typeof(ILoggerFactory)))
-            .Returns(NullLoggerFactory.Instance);
-        return ActivatorUtilities.CreateInstance<RemotingProducer>(
-            serviceProvider.Object,
+        return new RemotingProducer(
             Options.Create(producerOptions),
             Options.Create(clientOptions),
             routeService,
-            remotingClient);
+            remotingClient,
+            TimeProvider.System,
+            NullLogger<RemotingProducer>.Instance);
     }
 
     private static TopicRouteData Route(string brokerName, string address) => new()

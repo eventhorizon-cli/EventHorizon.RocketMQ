@@ -20,7 +20,6 @@ using EventHorizon.RocketMQ.Samples.Grpc.Producer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 
 // A registration name identifies an independent client registration and doubles as its keyed-service key;
@@ -43,14 +42,6 @@ var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
 var producerSection = builder.Configuration.GetRequiredSection("RocketMQ:Producer");
 var auditClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Client");
 var auditProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Producer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-
-builder.Services
-    .AddOptions<ProducerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Topic), "RocketMQ topic is required.")
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Message), "Message body is required.")
-    .ValidateOnStart();
 
 // Endpoints must target RocketMQ Proxies; gRPC clients do not connect directly to Brokers.
 // The first call creates the default unkeyed registration; the second creates an independent keyed registration.
@@ -72,6 +63,7 @@ app.MapPost("/messages", SendMessageAsync)
         "Uses the default RocketMQ gRPC producer configured in " +
         "RocketMQ:Client and RocketMQ:Producer.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithName("SendAuditMessage")
@@ -79,30 +71,33 @@ app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithDescription(
         "Uses the RocketMQ gRPC producer registered with registration name 'audit' and configured in RocketMQ:Audit.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 await app.RunAsync();
 
 static async Task<IResult> SendMessageAsync(
     SendMessageRequest? request,
     IGrpcProducer producer,
-    IOptions<ProducerSampleOptions> sampleOptions,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
-    request ??= new SendMessageRequest();
-    var settings = sampleOptions.Value;
-    var topic = string.IsNullOrWhiteSpace(request.Topic) ? settings.Topic : request.Topic;
-    var body = request.Body ?? settings.Message;
-    var tag = request.Tag is null
-        ? string.IsNullOrWhiteSpace(settings.Tag) ? null : settings.Tag
-        : string.IsNullOrWhiteSpace(request.Tag) ? null : request.Tag;
-    var message = new Message(topic, Encoding.UTF8.GetBytes(body))
+    var messageBody = request?.Message;
+    if (string.IsNullOrWhiteSpace(messageBody))
     {
-        Tag = tag
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["message"] = ["A message is required."]
+        });
+    }
+
+    var message = new Message(
+        "eventhorizon-test-topic",
+        Encoding.UTF8.GetBytes(messageBody))
+    {
+        Tag = "sample"
     };
     message.Keys.Add(Guid.NewGuid().ToString("N"));
 
-    var logger = loggerFactory.CreateLogger("EventHorizon.RocketMQ.Samples.Grpc.Producer");
     try
     {
         var receipt = await producer.SendAsync(message, cancellationToken).ConfigureAwait(false);
@@ -131,7 +126,6 @@ static async Task<IResult> SendMessageAsync(
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
     [FromKeyedServices(AuditRegistrationName)] IGrpcProducer producer,
-    IOptions<ProducerSampleOptions> sampleOptions,
-    ILoggerFactory loggerFactory,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
-    SendMessageAsync(request, producer, sampleOptions, loggerFactory, cancellationToken);
+    SendMessageAsync(request, producer, logger, cancellationToken);

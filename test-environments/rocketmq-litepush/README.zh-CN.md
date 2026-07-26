@@ -19,11 +19,11 @@ RocketMQ Dashboard 的访问地址为 `http://localhost:8082`。它的浏览器�
 
 | 资源 | 名称 | 必需设置 |
 | --- | --- | --- |
-| LITE parent Topic | `rocketmq-dotnet-lite-manual` | `message.type=LITE` |
-| Consumer Group | `rocketmq-dotnet-grpc-lite-push-sample` | `lite.bind.topic=rocketmq-dotnet-lite-manual` |
-| 示例使用的 LiteTopic | `rocketmq-dotnet-lite-sample` | 示例启动时由 `IGrpcLitePushConsumer` 通过 `SyncLiteSubscription` 同步。 |
+| LITE parent Topic | `eventhorizon-test-lite-parent-topic` | `message.type=LITE` |
+| Consumer Group | `eventhorizon-test-lite-push-consumer` | `lite.bind.topic=eventhorizon-test-lite-parent-topic` |
+| 示例使用的 LiteTopic | `eventhorizon-test-lite-topic` | 示例启动时由 `IGrpcLitePushConsumer` 通过 `SyncLiteSubscription` 同步。 |
 
-`rocketmq-dotnet-lite-sample` 是 LITE parent Topic 下的逻辑 LiteTopic，并不是 `resource-init` 需要创建的独立普通
+`eventhorizon-test-lite-topic` 是 LITE parent Topic 下的逻辑 LiteTopic，并不是 `resource-init` 需要创建的独立普通
 Topic。
 
 Broker 已启用 `enableLmq=true` 和 `enableMultiDispatch=true`。Proxy 作为独立进程以 `mqproxy -pm cluster` 启动；
@@ -98,8 +98,8 @@ docker compose logs --no-color resource-init
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-Consumer 启动时会同步 `rocketmq-dotnet-lite-sample`。要收到消息，需要使用支持 Lite message 的 gRPC Producer 向
-`rocketmq-dotnet-lite-manual` 发送 Lite message，并指定该 LiteTopic；标准 Producer 示例发送的是普通消息，不会
+Consumer 启动时会同步 `eventhorizon-test-lite-topic`。要收到消息，需要使用支持 Lite message 的 gRPC Producer 向
+`eventhorizon-test-lite-parent-topic` 发送 Lite message，并指定该 LiteTopic；标准 Producer 示例发送的是普通消息，不会
 写入 LiteTopic。
 
 ## 端点与限制

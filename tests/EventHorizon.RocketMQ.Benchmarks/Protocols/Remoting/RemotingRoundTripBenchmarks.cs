@@ -19,6 +19,7 @@ using System.Net.Sockets;
 using BenchmarkDotNet.Attributes;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Protocol;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Benchmarks.Protocols.Remoting;
@@ -58,7 +59,8 @@ public class RemotingRoundTripBenchmarks
         _serverTask = RunServerAsync(_listener, _shutdown.Token);
         _client = new RemotingClient(
             new RemoteCommandSerializer(),
-            Options.Create(new RemotingClientOptions()));
+            Options.Create(new RemotingClientOptions()),
+            NullLogger<RemotingClient>.Instance);
 
         try
         {

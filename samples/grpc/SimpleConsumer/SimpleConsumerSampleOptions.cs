@@ -13,25 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Grpc.Consumer;
-
 namespace EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer;
 
 internal sealed class SimpleConsumerSampleOptions
 {
-    public List<SimpleConsumerSubscriptionOptions> Subscriptions { get; set; } = [];
+    public string Filter { get; set; } = "*";
 
     public int BatchSize { get; set; } = 16;
 
     public int MaxDeliveryAttempts { get; set; } = 16;
-
-    public void ApplySubscriptions(ConsumerOptions consumerOptions)
-    {
-        ArgumentNullException.ThrowIfNull(consumerOptions);
-
-        foreach (var subscription in Subscriptions)
-        {
-            consumerOptions.Subscribe(subscription.Topic, new FilterExpression(subscription.Filter));
-        }
-    }
 }

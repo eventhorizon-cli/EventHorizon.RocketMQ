@@ -298,7 +298,7 @@ public sealed class GrpcSessionManagerTests
             }),
             Proto.ClientType.Producer,
             group,
-            NullLoggerFactory.Instance,
+            NullLogger<GrpcSessionManager>.Instance,
             telemetryHandler);
     }
 

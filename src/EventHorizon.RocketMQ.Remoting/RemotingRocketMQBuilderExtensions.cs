@@ -25,7 +25,6 @@ using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting;
@@ -476,10 +475,10 @@ public static class RemotingRocketMQBuilderExtensions
     {
         services.TryAddSingleton<IRemoteCommandSerializer, RemoteCommandSerializer>();
         services.AddKeyedSingleton<IRemotingClient>(roleKey, (provider, _) =>
-            new RemotingClient(
+            ActivatorUtilities.CreateInstance<RemotingClient>(
+                provider,
                 provider.GetRequiredService<IRemoteCommandSerializer>(),
-                RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-                provider.GetService<ILoggerFactory>()));
+                RemotingRocketMQRegistration.GetClientOptions(provider, roleKey)));
         services.AddKeyedSingleton<INameServer>(roleKey, (provider, _) =>
             new NameServer(
                 provider.GetRequiredKeyedService<IRemotingClient>(roleKey),

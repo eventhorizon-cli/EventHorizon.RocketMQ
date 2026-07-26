@@ -13,21 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Consumer;
-
 namespace EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 
 internal sealed class PushConsumerSampleOptions
 {
-    public List<PushConsumerSubscriptionOptions> Subscriptions { get; set; } = [];
-
-    public void ApplySubscriptions(ConsumerOptions consumerOptions)
-    {
-        ArgumentNullException.ThrowIfNull(consumerOptions);
-
-        foreach (var subscription in Subscriptions)
-        {
-            consumerOptions.Subscribe(subscription.Topic, new FilterExpression(subscription.Filter));
-        }
-    }
+    public string Filter { get; set; } = "*";
 }

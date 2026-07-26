@@ -13,29 +13,25 @@
 | `RocketMQ:PullConsumer:GroupName` | `remoting-sample-pull-consumer` | 示例读取和写入其位点的 consumer group。 |
 | `RocketMQ:PullConsumer:BatchSize` | `32` | 每次 pull 请求的最大消息数。 |
 | `RocketMQ:PullConsumer:LongPollingTimeout` | `00:00:05` | 空 pull 请求在 Broker 上的最大等待时间。 |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | 示例读取的唯一 topic。 |
-| `Sample:Subscriptions[0]:Filter` | `*` | 该 topic 的订阅过滤条件。 |
+| 固定 topic | `eventhorizon-test-topic` | 示例读取的共享普通 topic。 |
+| `Sample:Filter` | `*` | 该 topic 的订阅过滤条件。 |
 | `Sample:InitialOffset` | `End` | 仅在 group 没有已提交位点时使用的位置。 |
 | `Sample:InitialTimestamp` | 未设置 | 当 `InitialOffset` 为 `Timestamp` 时必填。 |
 
-示例会验证 `Sample:Subscriptions` 恰好有一项。它发现所有可读物理队列，对每一个队列以显式位点调用
-`PullAsync`，并以每次响应返回的下一个位点调用 `UpdateOffsetAsync`。
+示例始终订阅固定的共享 topic，并验证过滤条件。它发现所有可读物理队列，对每一个队列以显式位点调用 `PullAsync`，
+并以每次响应返回的下一个位点调用 `UpdateOffsetAsync`。
 
 ## Broker 和网络前置条件
 
 - 使用 classic Remoting NameServer 和 Broker。`NamesrvAddr` 不是 Proxy 端点：客户端从 NameServer 获取路由，进程
   还必须能够访问每个公布的 Broker 地址。
-- 创建普通 topic `rocketmq-dotnet-manual`，并允许 group `remoting-sample-pull-consumer` 消费，或同时修改这两项
-  设置。启用 ACL 的 Broker 还需要授予此 group 路由查询和消费权限。
+- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许 group
+  `remoting-sample-pull-consumer` 消费。启用 ACL 的 Broker 还需要授予此 group 路由查询和消费权限。
 - 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机上运行此普通 topic 示例。
-  在仓库根目录准备默认资源：
+  它会在启动时自动创建共享 topic：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-pull-consumer
 ```
 
 本地栈会公布宿主机可访问的 Broker。容器化应用应配置容器可访问的 NameServer 和 Broker 公布地址，而不是保留

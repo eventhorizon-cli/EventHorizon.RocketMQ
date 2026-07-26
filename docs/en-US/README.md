@@ -21,6 +21,7 @@ guides contain the complete public API and compatibility references:
 | [RocketMQ deployment and client architecture](architecture/rocketmq-architecture.md) | NameServer, Broker, Proxy, the gRPC and Remoting paths, LitePush, and the bundled Compose topology. |
 | [Protocol boundaries and type ownership](architecture/protocol-boundaries.md) | Why gRPC and Remoting physically own their API models and can be consumed together. |
 | [Dependency-injection client registrations and lifetimes](architecture/dependency-injection-and-lifetimes.md) | Default and keyed client registrations, hosted lifecycle, and per-role consumer engines. |
+| [OpenTelemetry instrumentation](architecture/opentelemetry-instrumentation.md) | Protocol-owned tracing and metrics, context propagation, and application-owned exporters. |
 | [gRPC consumer model](grpc/consumer-model.md) | Proxy-backed Simple, Push, and LitePush consumers, including the absence of a public gRPC Pull API. |
 | [Classic Remoting transport and client roles](remoting/transport-and-client-roles.md) | NameServer routing, the built-in pipeline transport, and the Remoting Admin role. |
 | [Local and integration testing](testing/local-and-integration-testing.md) | Testcontainers isolation, the manual Compose environment, and when to use each. |

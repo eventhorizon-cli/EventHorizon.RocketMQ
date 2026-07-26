@@ -39,7 +39,7 @@ Override it with normal .NET configuration, for example
   then connects directly to the Broker addresses returned by route discovery.
 - The process running this API must reach `NamesrvAddr` and every advertised Broker host and port. A reachable
   NameServer alone is not sufficient.
-- Create the queried topic, such as `rocketmq-dotnet-manual`, before using production Brokers that disable automatic
+- Create the queried topic, such as `eventhorizon-test-topic`, before using production Brokers that disable automatic
   topic creation. The read-only Admin role itself does not need a Producer or consumer group. The consumer-offset
   route can query an existing group and returns `null` when it has no committed offset.
 - Grant route-query and read/admin permissions when ACL or topic permissions are enabled.
@@ -56,7 +56,7 @@ runs on the host. Start it and create the topic from the repository root:
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
+  -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 ```
 
 The local stack exposes the NameServer on `localhost:9876` and advertises a host-reachable Broker on
@@ -75,12 +75,12 @@ For a predictable command-line address, disable the launch profile:
 ASPNETCORE_URLS=http://localhost:5000 \
   dotnet run --no-launch-profile --project samples/remoting/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj
 
-curl http://localhost:5000/topics/rocketmq-dotnet-manual/queues
+curl http://localhost:5000/topics/eventhorizon-test-topic/queues
 ```
 
 Use the returned `brokerName` and `queueId` to call the offset routes. To exercise the message-view route, first
 send a message with the [Remoting Producer sample](../Producer/README.md), then use its returned
-`OffsetMessageId` in `/topics/rocketmq-dotnet-manual/messages/{offsetMessageId}`.
+`OffsetMessageId` in `/topics/eventhorizon-test-topic/messages/{offsetMessageId}`.
 
 ## Important behavior
 

@@ -15,16 +15,17 @@ independent keyed client registration with registration name `audit`. That regis
 | `POST /clients/audit/messages` | Keyed service: `IRemotingProducer` (registration name `audit`) | Sends one normal message through the audit keyed service. |
 
 Swagger UI is available at `/swagger`; the checked-in HTTP launch profile opens
-`http://localhost:5184/swagger` when the launcher honors it. Both routes accept an optional JSON body with
-`topic`, `tag`, and `body`. Supplied values override the matching `Sample` value.
+`http://localhost:5184/swagger` when the launcher honors it. Both routes accept an optional JSON body with only a
+`message`. They always send to the shared normal topic `eventhorizon-test-topic` with the fixed `sample` tag.
 
 ```json
 {
-  "topic": "rocketmq-dotnet-manual",
-  "tag": "sample",
-  "body": "Hello from the Remoting producer."
+  "message": "Hello from the Remoting producer."
 }
 ```
+
+The `message` property is required. An omitted or blank value returns a standard validation problem response with
+HTTP 400.
 
 ## Default configuration
 
@@ -36,9 +37,6 @@ The sample reads these sections from `appsettings.json`.
 | `RocketMQ:Producer:GroupName` | `remoting-sample-producer` | Default producer identity. |
 | `RocketMQ:Audit:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used by the keyed client registration with registration name `audit`. |
 | `RocketMQ:Audit:Producer:GroupName` | `remoting-sample-audit-producer` | Audit producer identity. |
-| `Sample:Topic` | `rocketmq-dotnet-manual` | Topic used when the request omits `topic`. |
-| `Sample:Tag` | `sample` | Tag used when the request omits `tag`. |
-| `Sample:Message` | `Hello from the RocketMQ Remoting producer sample.` | Body used when the request omits `body`. |
 
 Set values with normal .NET configuration overrides, for example
 `RocketMQ__Remoting__NamesrvAddr=broker-nameserver:9876`.
@@ -49,19 +47,17 @@ Set values with normal .NET configuration overrides, for example
   **NameServer**, not a Proxy endpoint.
 - The client asks the NameServer for routes and then connects directly to the advertised Broker address. The
   machine running this API must therefore reach both `NamesrvAddr` and every returned Broker host and port.
-- Create a writable normal topic named `rocketmq-dotnet-manual`, or change `Sample:Topic` and the request. Do not
-  depend on production Brokers allowing automatic topic creation.
+- Create a writable normal topic named `eventhorizon-test-topic` when using an external Broker. Do not depend on
+  production Brokers allowing automatic topic creation.
 - A producer group is a client identity; this sample does not require a consumer group or `updateSubGroup` call.
   If ACL or topic permissions are enabled, grant the configured producer groups permission to query routes and
   send to the topic.
 
 The bundled [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-sample when it runs on the host. Start it and create the default topic from the repository root:
+sample when it runs on the host. It initializes the shared topic automatically when it starts:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
 ```
 
 That environment advertises a host-reachable Broker address. A sample running inside another container needs a
@@ -81,14 +77,14 @@ ASPNETCORE_URLS=http://localhost:5000 \
 
 curl --request POST http://localhost:5000/messages \
   --header 'Content-Type: application/json' \
-  --data '{"body":"Hello from curl."}'
+  --data '{"message":"Hello from curl."}'
 ```
 
 ## Important behavior
 
 - The audit route is not a mirror or an automatic audit of `/messages`. It resolves only the keyed service for
   registration name `audit`, so call that route explicitly when a message should use the audit keyed service.
-- Both client registrations use the same top-level `Sample` defaults. Configure the audit `Remoting` and `Producer` sections
+- Both client registrations use the same fixed topic and tag. Configure the audit `Remoting` and `Producer` sections
   separately only when it must use a different cluster or producer identity.
 - This is a normal-message example. It does not demonstrate transactions, delayed delivery, request-reply, or
   one-way sends.

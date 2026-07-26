@@ -97,6 +97,7 @@ await app.RunAsync();
 | 队列有序 Push 消费 | ✅ | 使用可选的 Broker 队列锁实现有序消费；仅在目标 Broker 支持经典锁定流程时配置。 |
 | 内置 Socket 传输 | ✅ | 基于 `System.IO.Pipelines`，支持可选 TLS、多个 NameServer 地址、Broker 故障转移、ACL 签名、命名空间和可配置帧限制；不依赖 Bedrock Framework。 |
 | 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 创建客户端注册，再添加所需角色。 |
+| OpenTelemetry tracing 和 metrics | ✅ | 在应用的 OpenTelemetry SDK 中订阅 `RemotingRocketMQInstrumentation` 提供的 source 和 meter 名称。 |
 | RocketMQ 5 Proxy gRPC 和 `SimpleConsumer` API | — | 需要通过 Proxy 使用 protobuf/gRPC API 时，请使用 `EventHorizon.RocketMQ.Grpc`。 |
 
 ## 连接与安全
@@ -156,6 +157,24 @@ builder.Services.AddRocketMQRemoting(options =>
 ```
 
 该回调可能被并发调用，并且每次连接都会收到一个新的 `SslClientAuthenticationOptions` 实例。
+
+## OpenTelemetry
+
+该 Package 会发出 OpenTelemetry Activity 和 metrics，不需要安装单独的 instrumentation Package。在应用的
+OpenTelemetry SDK 中订阅公开名称：
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddRocketMQRemotingInstrumentation())
+    .WithMetrics(metrics => metrics
+        .AddRocketMQRemotingInstrumentation());
+```
+
+资源属性、采样器、processor 和 exporter 由应用负责。客户端会为 Producer send、非空 receive、自动 Push process
+以及 Consumer 完结操作发出 telemetry；它会把分布式上下文注入出站消息属性，且不会覆盖已有传播字段。trace 模型和
+metrics 请参阅 [OpenTelemetry 埋点设计](../../docs/zh-CN/architecture/opentelemetry-instrumentation.md)，通过 OTLP
+接入 Grafana 的方式请参阅 [OpenTelemetry Web 示例](../../samples/opentelemetry/README.zh-CN.md)。
 
 ## Producer
 

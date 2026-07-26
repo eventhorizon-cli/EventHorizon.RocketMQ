@@ -17,9 +17,5 @@ namespace EventHorizon.RocketMQ.Samples.Remoting.Producer;
 
 internal sealed class SendMessageRequest
 {
-    public string? Topic { get; set; }
-
-    public string? Tag { get; set; }
-
-    public string? Body { get; set; }
+    public string? Message { get; init; }
 }

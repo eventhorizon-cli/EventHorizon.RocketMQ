@@ -13,13 +13,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Samples.Remoting.Producer;
+namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi;
 
 internal sealed class ProducerSampleOptions
 {
-    public string Topic { get; set; } = string.Empty;
+    public string ServiceName { get; set; } = "eventhorizon-rocketmq-otel-producer";
 
-    public string? Tag { get; set; }
+    public string OtlpEndpoint { get; set; } = "http://127.0.0.1:4317";
 
-    public string Message { get; set; } = string.Empty;
+    public Uri GetOtlpEndpoint()
+    {
+        if (!Uri.TryCreate(OtlpEndpoint, UriKind.Absolute, out var endpoint) ||
+            (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps) ||
+            string.IsNullOrWhiteSpace(endpoint.Host))
+        {
+            throw new InvalidOperationException("Sample:OtlpEndpoint must be an absolute HTTP or HTTPS URI.");
+        }
+
+        return endpoint;
+    }
+
+    public void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ServiceName);
+        _ = GetOtlpEndpoint();
+    }
 }

@@ -194,7 +194,7 @@ public sealed class RemotingTransactionTests
             routeService.Object,
             remoting,
             TimeProvider.System,
-            NullLoggerFactory.Instance);
+            NullLogger<RemotingProducer>.Instance);
     }
 
     private static TopicRouteData CreateRoute() => new()

@@ -15,8 +15,8 @@ receipt.
 | `RocketMQ:PopConsumer:BatchSize` | `32` | Maximum messages per POP request; a classic Broker accepts at most 32. |
 | `RocketMQ:PopConsumer:InvisibleDuration` | `00:00:30` | Default time a returned message remains hidden from other POP consumers. |
 | `RocketMQ:PopConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty POP request. |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | Normal topic whose queues the sample rotates through. |
-| `Sample:Subscriptions[0]:Filter` | `*` | Default filter passed to POP operations. |
+| Fixed topic | `eventhorizon-test-topic` | Shared normal topic whose queues the sample rotates through. |
+| `Sample:Filter` | `*` | Default filter passed to POP operations. |
 | `Sample:RetryDelay` | `00:00:01` | Delay before route or POP retry after a failure. |
 
 The public API exposes `GetMessageQueuesAsync`, `PopAsync`, `AcknowledgeAsync`, and
@@ -28,19 +28,15 @@ assignment or a receive loop.
 - Use a RocketMQ 5-era classic Broker with `POP_MESSAGE`, acknowledgement, and visibility-change command support.
   A NameServer alone is not enough, and the configured `NamesrvAddr` is not a Proxy endpoint.
 - The process must reach the NameServer and the Broker addresses returned by route discovery.
-- Create the normal topic `rocketmq-dotnet-manual` and allow the group `remoting-sample-pop-consumer`, or change
-  both values. With ACL enabled, give the group route-query, POP, acknowledgement, and visibility-change
+- Create the normal topic `eventhorizon-test-topic` and allow the group `remoting-sample-pop-consumer` when using
+  an external Broker. With ACL enabled, give the group route-query, POP, acknowledgement, and visibility-change
   permissions.
 - The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) runs RocketMQ 5.5.0 and
-  is suitable for this normal-topic POP example when it runs on the host. Prepare the default resources from the
-  repository root:
+  is suitable for this normal-topic POP example when it runs on the host. It initializes the shared topic
+  automatically:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-pop-consumer
 ```
 
 The bundled Broker advertises a host-reachable address. Replace `localhost:9876` and the Broker advertisement for

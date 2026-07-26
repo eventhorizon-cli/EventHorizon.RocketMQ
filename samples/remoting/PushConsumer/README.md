@@ -17,8 +17,8 @@ offset handling.
 | `RocketMQ:PushConsumer:BatchSize` | `32` | Maximum messages requested by each long poll. |
 | `RocketMQ:PushConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty long poll. |
 | `RocketMQ:PushConsumer:RetryDelay` | `00:00:01` | Delay before retrying a failed receive or handler result. |
-| `Sample:Subscriptions[0]:Topic` | `rocketmq-dotnet-manual` | Default subscribed normal topic. |
-| `Sample:Subscriptions[0]:Filter` | `*` | Subscription filter. |
+| Fixed topic | `eventhorizon-test-topic` | Shared subscribed normal topic. |
+| `Sample:Filter` | `*` | Subscription filter. |
 
 The handler logs the message and returns `ConsumeResult.Success`. The typed registration lets the handler receive
 its `ILogger<PushConsumerMessageHandler>` from the application service provider with a scoped lifetime.
@@ -27,18 +27,14 @@ its `ILogger<PushConsumerMessageHandler>` from the application service provider 
 
 - Use a classic Remoting NameServer and Broker. The client discovers routes through `NamesrvAddr` and then opens
   long-poll connections to the advertised Brokers, so both hops must be reachable.
-- Create the normal topic `rocketmq-dotnet-manual` and allow the group
-  `remoting-sample-push-consumer`, or change both values. ACL-enabled Brokers require route-query and consume
-  permissions, including retry and dead-letter-topic permissions when those paths are used.
+- Create the normal topic `eventhorizon-test-topic` and allow the group `remoting-sample-push-consumer` when using
+  an external Broker. ACL-enabled Brokers require route-query and consume permissions, including retry and
+  dead-letter-topic permissions when those paths are used.
 - The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-  normal-topic Remoting consumer when it runs on the host. Prepare its resources from the repository root:
+  normal-topic Remoting consumer when it runs on the host. It initializes the shared topic automatically:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-  -n nameserver:9876 -c DefaultCluster -t rocketmq-dotnet-manual
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g remoting-sample-push-consumer
 ```
 
 The supplied stack advertises a host-reachable Broker address. A process in another container must use network

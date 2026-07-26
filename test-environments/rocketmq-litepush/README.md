@@ -21,11 +21,11 @@ creates or updates the following idempotently:
 
 | Resource | Name | Required setting |
 | --- | --- | --- |
-| LITE parent Topic | `rocketmq-dotnet-lite-manual` | `message.type=LITE` |
-| Consumer Group | `rocketmq-dotnet-grpc-lite-push-sample` | `lite.bind.topic=rocketmq-dotnet-lite-manual` |
-| LiteTopic used by the sample | `rocketmq-dotnet-lite-sample` | Synchronized by `IGrpcLitePushConsumer` through `SyncLiteSubscription` when the sample starts. |
+| LITE parent Topic | `eventhorizon-test-lite-parent-topic` | `message.type=LITE` |
+| Consumer Group | `eventhorizon-test-lite-push-consumer` | `lite.bind.topic=eventhorizon-test-lite-parent-topic` |
+| LiteTopic used by the sample | `eventhorizon-test-lite-topic` | Synchronized by `IGrpcLitePushConsumer` through `SyncLiteSubscription` when the sample starts. |
 
-`rocketmq-dotnet-lite-sample` is a logical LiteTopic below the LITE parent Topic. It is not an independent ordinary
+`eventhorizon-test-lite-topic` is a logical LiteTopic below the LITE parent Topic. It is not an independent ordinary
 Topic that `resource-init` needs to create.
 
 The Broker enables `enableLmq=true` and `enableMultiDispatch=true`. The Proxy starts separately with
@@ -101,8 +101,8 @@ Run the sample from the repository root without changing its default `appsetting
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-The Consumer synchronizes `rocketmq-dotnet-lite-sample` at startup. To receive a message, a compatible gRPC
-Producer must send a Lite message under `rocketmq-dotnet-lite-manual` with that LiteTopic; the standard Producer
+The Consumer synchronizes `eventhorizon-test-lite-topic` at startup. To receive a message, a compatible gRPC
+Producer must send a Lite message under `eventhorizon-test-lite-parent-topic` with that LiteTopic; the standard Producer
 sample sends ordinary messages and therefore does not populate the LiteTopic.
 
 ## Endpoints and limits

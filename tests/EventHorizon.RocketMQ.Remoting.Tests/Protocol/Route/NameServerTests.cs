@@ -15,6 +15,7 @@
 
 using System.Net;
 using System.Text;
+using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Options;
@@ -25,6 +26,25 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol.Route;
 
 public sealed class NameServerTests
 {
+    [Fact]
+    public async Task GetTopicRouteInfoAsync_RejectsMissingNameServerAddresses()
+    {
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        var nameServer = new NameServer(remoting.Object, Options.Create(new RemotingClientOptions
+        {
+            NamesrvAddr = " ; "
+        }));
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(
+            () => nameServer.GetTopicRouteInfoAsync(
+                "orders",
+                TimeSpan.FromSeconds(1),
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("No NameServer address", exception.Message, StringComparison.Ordinal);
+        remoting.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task GetTopicRouteInfoAsync_FailsOverAcrossConfiguredNameServers()
     {
@@ -62,5 +82,64 @@ public sealed class NameServerTests
         Assert.Equal(2, requests.Count);
         Assert.Equal(2, requests.Select(static request => request.Opaque).Distinct().Count());
         remoting.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetTopicRouteInfoAsync_ReportsLastFailureAfterAllNameServersRejectRoute()
+    {
+        var calls = 0;
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() => Task.FromResult(++calls == 1
+                ? new RemotingCommand
+                {
+                    Code = ResponseCodes.ResNoPermission,
+                    Remark = "denied"
+                }
+                : new RemotingCommand
+                {
+                    Code = ResponseCodes.ResSuccess
+                }));
+        var nameServer = new NameServer(remoting.Object, Options.Create(new RemotingClientOptions
+        {
+            NamesrvAddr = "127.0.0.1:19876;127.0.0.1:29876"
+        }));
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(
+            () => nameServer.GetTopicRouteInfoAsync(
+                "orders",
+                TimeSpan.FromSeconds(1),
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal(2, calls);
+        Assert.IsType<InvalidDataException>(exception.InnerException);
+        Assert.Contains("any configured NameServer", exception.Message, StringComparison.Ordinal);
+        remoting.VerifyAll();
+        remoting.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetTopicRouteInfoAsync_PropagatesCallerCancellationWithoutCallingNameServer()
+    {
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        var nameServer = new NameServer(remoting.Object, Options.Create(new RemotingClientOptions
+        {
+            NamesrvAddr = "127.0.0.1:19876"
+        }));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => nameServer.GetTopicRouteInfoAsync(
+                "orders",
+                TimeSpan.FromSeconds(1),
+                cancellationToken: cancellation.Token));
+
+        remoting.VerifyNoOtherCalls();
     }
 }

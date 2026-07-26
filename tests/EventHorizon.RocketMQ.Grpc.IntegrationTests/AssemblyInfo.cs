@@ -16,10 +16,4 @@
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using Xunit;
 
-namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
-
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class RocketMQCollection : ICollectionFixture<RocketMQContainerFixture>
-{
-    public const string Name = "RocketMQ Remoting integration";
-}
+[assembly: AssemblyFixture(typeof(RocketMQContainerFixtureRegistry))]

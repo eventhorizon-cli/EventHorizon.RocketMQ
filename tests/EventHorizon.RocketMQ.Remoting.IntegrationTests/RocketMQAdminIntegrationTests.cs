@@ -24,38 +24,32 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQAdminIntegrationTests
+public sealed class RocketMQAdminIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQAdminIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
     [Fact]
     [Trait("Category", "Integration")]
     public async Task AdminReadsQueueOffsetsAndConsumerCommit()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
         var suffix = Guid.NewGuid().ToString("N");
-        var group = $"remoting-admin-consumer-{suffix}";
+        var group = scope.CreateConsumerGroupName("remoting-admin-consumer");
         var tag = $"remoting-admin-{suffix}";
         var body = $"admin-offset-{suffix}";
         var services = new ServiceCollection();
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = fixture.NameServerAddress;
             })
             .AddRemotingAdmin()
-            .AddRemotingProducer(options => options.GroupName = $"remoting-admin-producer-{suffix}")
+            .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-admin-producer"))
             .AddRemotingPullConsumer(options =>
             {
                 options.GroupName = group;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
             });
 
         await using var provider = services.BuildServiceProvider(
@@ -68,12 +62,12 @@ public sealed class RocketMQAdminIntegrationTests
         try
         {
             var adminQueues = await admin.GetMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 cancellationToken);
             Assert.NotEmpty(adminQueues);
 
             var pullQueues = await consumer.GetMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 cancellationToken);
             var initialOffsets = new Dictionary<(string BrokerName, int QueueId), long>();
             foreach (var queue in pullQueues)
@@ -85,14 +79,14 @@ public sealed class RocketMQAdminIntegrationTests
             }
 
             var sent = await producer.SendAsync(
-                new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
                 cancellationToken);
             var viewed = await admin.ViewMessageAsync(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 sent.OffsetMessageId,
                 cancellationToken);
 
-            Assert.Equal(RocketMQContainerFixture.TestTopic, viewed.Topic);
+            Assert.Equal(scope.Topic, viewed.Topic);
             Assert.Equal(body, Encoding.UTF8.GetString(viewed.Body));
             Assert.Equal(tag, viewed.Tag);
             Assert.Equal(sent.OffsetMessageId, viewed.OffsetMessageId);

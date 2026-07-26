@@ -24,36 +24,32 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQTransactionIntegrationTests
+public sealed class RocketMQTransactionIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQTransactionIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
     public async Task GrpcTransactionRollbackKeepsMessageInvisible()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Transaction, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-transaction-rollback-consumer");
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer(options =>
             {
-                options.Topics.Add(RocketMQContainerFixture.TransactionTopic);
+                options.Topics.Add(scope.Topic);
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(TransactionResolution.Rollback);
             })
             .AddGrpcSimpleConsumer(options =>
             {
-                options.GroupName = "grpc-transaction-rollback-consumer-it";
+                options.GroupName = consumerGroup;
                 options.AwaitDuration = TimeSpan.FromSeconds(5);
                 options.Subscribe(
-                    RocketMQContainerFixture.TransactionTopic,
+                    scope.Topic,
                     new FilterExpression("transaction-rollback"));
             });
 
@@ -66,7 +62,7 @@ public sealed class RocketMQTransactionIntegrationTests
         {
             var body = $"transaction-rollback-{Guid.NewGuid():N}";
             var transaction = await producer.SendTransactionAsync(new Message(
-                RocketMQContainerFixture.TransactionTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(body))
             {
                 Tag = "transaction-rollback"

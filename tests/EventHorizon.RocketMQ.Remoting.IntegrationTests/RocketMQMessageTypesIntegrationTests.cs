@@ -24,21 +24,16 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQMessageTypesIntegrationTests
+public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQMessageTypesIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
     [Fact]
     [Trait("Category", "Integration")]
     public async Task KeyedClientRegistrationCombinesRemotingDelayProducerAndConsumer()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Delay, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-delay-consumer");
         var tag = $"delay-{Guid.NewGuid():N}";
         var body = $"remoting-delay-{Guid.NewGuid():N}";
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,14 +41,14 @@ public sealed class RocketMQMessageTypesIntegrationTests
         services
             .AddRocketMQRemoting("remoting-delay", options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = fixture.NameServerAddress;
             })
-            .AddRemotingProducer(options => options.GroupName = "remoting-delay-producer-it")
+            .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-delay-producer"))
             .AddRemotingPushConsumer(options =>
             {
-                options.GroupName = "remoting-delay-consumer-it";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.DelayTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -75,7 +70,7 @@ public sealed class RocketMQMessageTypesIntegrationTests
         {
             var stopwatch = Stopwatch.StartNew();
             await producer.SendAsync(new Message(
-                RocketMQContainerFixture.DelayTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(body))
             {
                 Tag = tag,

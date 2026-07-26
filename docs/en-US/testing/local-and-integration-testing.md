@@ -56,9 +56,18 @@ that would be less clear with a mock.
 
 [`RocketMQContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
 creates an isolated Docker network, starts an Apache RocketMQ 5.5.0 NameServer and Broker, then
-starts a cluster-mode Proxy after the Broker registers. It creates the normal, FIFO, delayed,
-transactional, and Lite topic resources used by integration tests and prepares the required
-consumer groups.
+starts a cluster-mode Proxy after the Broker registers. A lazy xUnit v3 assembly-fixture registry
+owns one baseline fixture per integration-test assembly, so independent test classes can share the
+same Docker stack without serializing the whole project. The runner permits up to four parallel test
+collections; a filtered multi-Broker job does not initialize the baseline fixture.
+
+Each ordinary test scope receives a unique normal topic and consumer group. The fixture explicitly
+creates the topic before use because gRPC route lookup requires an existing route, while the Broker
+auto-creates ordinary subscription groups. Transactional, FIFO, delayed, and Lite topics remain
+preconfigured because their Broker semantics require that configuration; their tests use unique
+groups and message identifiers. The legacy Remoting container suite deliberately retains its
+dedicated topic and serial method execution because its cases exercise shared admin and offset
+semantics.
 
 The fixture obtains host ports dynamically, so parallel or repeated test runs are not tied to the
 manual Compose ports. The protocol-specific test projects are:
@@ -96,11 +105,12 @@ GitHub Actions runs the Docker-backed gRPC and Remoting integration-test project
 single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
 selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores
 and builds only its protocol-specific integration-test dependency graph, has its own timeout budget,
-and reuses the repository's NuGet package cache. Testcontainers still starts isolated Broker,
-NameServer, and Proxy fixtures for every job. All four jobs collect Cobertura reports and upload them
-to Codecov with distinct upload names under the shared `integration-tests` flag. Codecov combines
-those reports with the `unit-tests` reports; the repository configuration continues to exclude
-`samples` from coverage.
+and reuses the repository's NuGet package cache. Within a single-Broker job, isolated test classes
+run concurrently up to the runner limit; the legacy Remoting suite remains serial by design.
+Testcontainers still starts isolated Broker, NameServer, and Proxy fixtures for every job. All four
+jobs collect Cobertura reports and upload them to Codecov with distinct upload names under the shared
+`integration-tests` flag. Codecov combines those reports with the `unit-tests` reports; the repository
+configuration continues to exclude `samples` from coverage.
 
 ### Manual Compose environment
 

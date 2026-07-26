@@ -13,13 +13,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
-using Xunit;
+namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 
-namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
-
-[CollectionDefinition(Name)]
-public sealed class RocketMQMultiBrokerCollection : ICollectionFixture<RocketMQMultiBrokerRemotingContainerFixture>
+/// <summary>
+/// Specifies the RocketMQ message type configured for an isolated integration-test topic.
+/// </summary>
+public enum RocketMQTestTopicType
 {
-    public const string Name = "RocketMQ Remoting multi-Broker integration";
+    /// <summary>
+    /// A standard message topic.
+    /// </summary>
+    Normal,
+
+    /// <summary>
+    /// A transactional message topic.
+    /// </summary>
+    Transaction,
+
+    /// <summary>
+    /// A FIFO message topic.
+    /// </summary>
+    Fifo,
+
+    /// <summary>
+    /// A delay message topic.
+    /// </summary>
+    Delay,
+
+    /// <summary>
+    /// A LitePush parent topic.
+    /// </summary>
+    Lite
 }

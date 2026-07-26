@@ -16,10 +16,4 @@
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using Xunit;
 
-namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
-
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class RocketMQCollection : ICollectionFixture<RocketMQContainerFixture>
-{
-    public const string Name = "RocketMQ gRPC integration";
-}
+[assembly: AssemblyFixture(typeof(RocketMQContainerFixtureRegistry))]

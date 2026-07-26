@@ -24,15 +24,8 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQMessageTypesIntegrationTests
+public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQMessageTypesIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
@@ -40,19 +33,22 @@ public sealed class RocketMQMessageTypesIntegrationTests
     {
         const int messageCount = 8;
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Fifo, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-fifo-consumer");
         var tag = $"fifo-{Guid.NewGuid():N}";
         var messageGroup = $"account-{Guid.NewGuid():N}";
         var received = new ConcurrentQueue<int>();
         var allReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
-            .AddGrpcProducer(options => options.Topics.Add(RocketMQContainerFixture.FifoTopic))
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
+            .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
             .AddGrpcPushConsumer(options =>
             {
-                options.GroupName = "grpc-fifo-consumer-it";
+                options.GroupName = consumerGroup;
                 options.MaxConcurrency = 4;
-                options.Subscribe(RocketMQContainerFixture.FifoTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = (message, _) =>
                 {
                     if (message.Tag == tag && int.TryParse(Encoding.UTF8.GetString(message.Body), out var sequence))
@@ -78,7 +74,7 @@ public sealed class RocketMQMessageTypesIntegrationTests
             for (var sequence = 0; sequence < messageCount; sequence++)
             {
                 await producer.SendAsync(new Message(
-                    RocketMQContainerFixture.FifoTopic,
+                    scope.Topic,
                     Encoding.UTF8.GetBytes(sequence.ToString()))
                 {
                     Tag = tag,

@@ -24,32 +24,27 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQDeadLetterIntegrationTests
+public sealed class RocketMQDeadLetterIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private const string ConsumerGroup = "grpc-push-dlq-consumer-it";
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQDeadLetterIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
     public async Task GrpcPushConsumerForwardsMessageToDeadLetterQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-push-dlq-consumer");
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-dlq-{Guid.NewGuid():N}";
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer()
             .AddGrpcPushConsumer(options =>
             {
-                options.GroupName = ConsumerGroup;
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("grpc-dlq"));
+                options.GroupName = consumerGroup;
+                options.Subscribe(scope.Topic, new FilterExpression("grpc-dlq"));
                 options.MessageHandler = (message, _) =>
                 {
                     if (Encoding.UTF8.GetString(message.Body) == expected)
@@ -70,18 +65,18 @@ public sealed class RocketMQDeadLetterIntegrationTests
         try
         {
             await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(expected))
             {
                 Tag = "grpc-dlq"
             }, cancellationToken);
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
 
-            var deadLetterTopic = $"%DLQ%{ConsumerGroup}";
+            var deadLetterTopic = $"%DLQ%{consumerGroup}";
             var status = string.Empty;
             for (var attempt = 0; attempt < 20; attempt++)
             {
-                status = await _fixture.GetTopicStatusAsync(deadLetterTopic, cancellationToken);
+                status = await fixture.GetTopicStatusAsync(deadLetterTopic, cancellationToken);
                 if (HasMessage(status))
                 {
                     return;

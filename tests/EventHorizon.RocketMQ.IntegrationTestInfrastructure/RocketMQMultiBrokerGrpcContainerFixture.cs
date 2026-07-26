@@ -58,12 +58,16 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
     private readonly IContainer _brokerB;
     private readonly IContainer _brokerC;
     private readonly IContainer _proxy;
+    private readonly RocketMQHostPortReservation _portReservation;
+    private readonly int _proxyHostPort;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RocketMQMultiBrokerGrpcContainerFixture"/> class.
     /// </summary>
     public RocketMQMultiBrokerGrpcContainerFixture()
     {
+        _portReservation = RocketMQHostPortReservation.Reserve(1);
+        _proxyHostPort = _portReservation[0];
         _nameServer = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithNetworkAliases("nameserver")
@@ -86,7 +90,7 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
         _proxy = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithNetworkAliases("proxy")
-            .WithPortBinding(GrpcPort, true)
+            .WithPortBinding(_proxyHostPort, GrpcPort)
             .WithEnvironment("NAMESRV_ADDR", $"nameserver:{NameServerPort}")
             .WithEnvironment("JAVA_OPT_EXT", "-Duser.home=/home/rocketmq -Xms512m -Xmx512m")
             .WithResourceMapping(proxyConfiguration, "/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json")
@@ -128,12 +132,19 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
-        await _proxy.DisposeAsync().ConfigureAwait(false);
-        await _brokerC.DisposeAsync().ConfigureAwait(false);
-        await _brokerB.DisposeAsync().ConfigureAwait(false);
-        await _brokerA.DisposeAsync().ConfigureAwait(false);
-        await _nameServer.DisposeAsync().ConfigureAwait(false);
-        await _network.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _proxy.DisposeAsync().ConfigureAwait(false);
+            await _brokerC.DisposeAsync().ConfigureAwait(false);
+            await _brokerB.DisposeAsync().ConfigureAwait(false);
+            await _brokerA.DisposeAsync().ConfigureAwait(false);
+            await _nameServer.DisposeAsync().ConfigureAwait(false);
+            await _network.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _portReservation.Dispose();
+        }
     }
 
     /// <summary>

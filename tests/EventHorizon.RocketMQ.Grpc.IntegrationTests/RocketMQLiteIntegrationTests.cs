@@ -23,33 +23,28 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQLiteIntegrationTests
+public sealed class RocketMQLiteIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private const string ConsumerGroup = "grpc-lite-push-consumer-it";
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQLiteIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
     public async Task GrpcLitePushConsumerDispatchesLiteMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
+        var consumerGroup = await scope.CreateLiteConsumerGroupAsync("grpc-lite-push-consumer", cancellationToken);
         var liteTopic = $"lite-{Guid.NewGuid():N}";
         var expected = $"grpc-lite-{Guid.NewGuid():N}";
         var consumed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
-            .AddGrpcProducer(options => options.Topics.Add(RocketMQContainerFixture.LiteParentTopic))
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
+            .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
             .AddGrpcLitePushConsumer(options =>
             {
-                options.GroupName = ConsumerGroup;
-                options.BindTopic = RocketMQContainerFixture.LiteParentTopic;
+                options.GroupName = consumerGroup;
+                options.BindTopic = scope.Topic;
                 options.LiteTopics.Add(liteTopic);
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.MessageHandler = (message, _) =>
@@ -71,7 +66,7 @@ public sealed class RocketMQLiteIntegrationTests
         try
         {
             var receipt = await producer.SendAsync(new Message(
-                RocketMQContainerFixture.LiteParentTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(expected))
             {
                 LiteTopic = liteTopic

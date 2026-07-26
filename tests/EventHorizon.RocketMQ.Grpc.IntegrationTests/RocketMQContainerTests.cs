@@ -25,30 +25,26 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQContainerTests
+public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQContainerTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
     public async Task GrpcProducerAndSimpleConsumerRoundTrip()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-simple-consumer");
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer()
             .AddGrpcSimpleConsumer(options =>
             {
-                options.GroupName = "grpc-simple-consumer-it";
+                options.GroupName = consumerGroup;
                 options.AwaitDuration = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("grpc-simple"));
+                options.Subscribe(scope.Topic, new FilterExpression("grpc-simple"));
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -60,7 +56,7 @@ public sealed class RocketMQContainerTests
         {
             var body = $"grpc-simple-{Guid.NewGuid():N}";
             var receipt = await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(body))
             {
                 Tag = "grpc-simple"
@@ -94,20 +90,23 @@ public sealed class RocketMQContainerTests
     public async Task GrpcTransactionCommitMakesMessageVisible()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Transaction, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-transaction-consumer");
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer(options =>
             {
-                options.Topics.Add(RocketMQContainerFixture.TransactionTopic);
+                options.Topics.Add(scope.Topic);
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(TransactionResolution.Unknown);
             })
             .AddGrpcSimpleConsumer(options =>
             {
-                options.GroupName = "grpc-transaction-consumer-it";
+                options.GroupName = consumerGroup;
                 options.AwaitDuration = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TransactionTopic, new FilterExpression("transaction"));
+                options.Subscribe(scope.Topic, new FilterExpression("transaction"));
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -119,7 +118,7 @@ public sealed class RocketMQContainerTests
         {
             var body = $"transaction-{Guid.NewGuid():N}";
             var transaction = await producer.SendTransactionAsync(new Message(
-                RocketMQContainerFixture.TransactionTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(body))
             {
                 Tag = "transaction"
@@ -152,17 +151,20 @@ public sealed class RocketMQContainerTests
     public async Task GrpcPushConsumerDispatchesAndAcknowledgesMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("grpc-push-consumer");
         var consumed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-push-{Guid.NewGuid():N}";
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer()
             .AddGrpcPushConsumer(options =>
             {
-                options.GroupName = "grpc-push-consumer-it";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("grpc-push"));
+                options.Subscribe(scope.Topic, new FilterExpression("grpc-push"));
                 options.MessageHandler = (message, _) =>
                 {
                     var body = Encoding.UTF8.GetString(message.Body);
@@ -183,7 +185,7 @@ public sealed class RocketMQContainerTests
         try
         {
             var sent = await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                scope.Topic,
                 Encoding.UTF8.GetBytes(expected))
             {
                 Tag = "grpc-push"

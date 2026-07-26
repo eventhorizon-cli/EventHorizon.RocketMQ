@@ -18,7 +18,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-[CollectionDefinition(Name, DisableParallelization = true)]
+[CollectionDefinition(Name)]
 public sealed class RocketMQMultiBrokerCollection : ICollectionFixture<RocketMQMultiBrokerGrpcContainerFixture>
 {
     public const string Name = "RocketMQ gRPC multi-Broker integration";

@@ -33,14 +33,18 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQContainerTests
+public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry registry) : IAsyncLifetime
 {
-    private readonly RocketMQContainerFixture _fixture;
+    private RocketMQContainerFixture _fixture = null!;
 
-    public RocketMQContainerTests(RocketMQContainerFixture fixture)
+    public async ValueTask InitializeAsync()
     {
-        _fixture = fixture;
+        _fixture = await registry.GetFixtureAsync(TestContext.Current.CancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return ValueTask.CompletedTask;
     }
 
     [Fact]
@@ -315,6 +319,7 @@ public sealed class RocketMQContainerTests
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = "legacy-push-consumer-it";
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("legacy-push"));

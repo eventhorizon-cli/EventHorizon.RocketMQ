@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -27,30 +25,51 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";
     private const int NameServerPort = 9876;
+
+    /// <summary>
+    /// Gets the shared topic used only by the legacy serial Remoting integration-test suite.
+    /// </summary>
     public const string TestTopic = "rocketmq-dotnet-it";
+
+    /// <summary>
+    /// Gets the shared transaction topic used by isolated transaction tests.
+    /// </summary>
     public const string TransactionTopic = "rocketmq-dotnet-transaction-it";
+
+    /// <summary>
+    /// Gets the shared FIFO topic used by isolated FIFO tests.
+    /// </summary>
     public const string FifoTopic = "rocketmq-dotnet-fifo-it";
+
+    /// <summary>
+    /// Gets the shared delay topic used by isolated delay tests.
+    /// </summary>
     public const string DelayTopic = "rocketmq-dotnet-delay-it";
+
+    /// <summary>
+    /// Gets the shared LitePush parent topic used by isolated LitePush tests.
+    /// </summary>
     public const string LiteParentTopic = "rocketmq-dotnet-lite-parent-it";
 
+    private readonly SemaphoreSlim _administrationGate = new(4, 4);
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly IContainer _nameServer;
     private readonly IContainer _broker;
+    private readonly RocketMQHostPortReservation _portReservation;
+    private readonly int _nameServerHostPort;
     private readonly int _brokerPort;
     private readonly int _grpcPort;
 
     public RocketMQContainerFixture()
     {
-        _brokerPort = GetAvailablePort();
-        do
-        {
-            _grpcPort = GetAvailablePort();
-        }
-        while (Math.Abs(_grpcPort - _brokerPort) <= 10);
+        _portReservation = RocketMQHostPortReservation.Reserve(3, minimumPortDistance: 10);
+        _nameServerHostPort = _portReservation[0];
+        _brokerPort = _portReservation[1];
+        _grpcPort = _portReservation[2];
         _nameServer = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithNetworkAliases("nameserver")
-            .WithPortBinding(NameServerPort, true)
+            .WithPortBinding(_nameServerHostPort, NameServerPort)
             .WithEnvironment("JAVA_OPT_EXT", "-Duser.home=/home/rocketmq -Xms256m -Xmx256m")
             .WithCommand("sh", "mqnamesrv")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(NameServerPort))
@@ -64,6 +83,7 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
             $"namesrvAddr=nameserver:{NameServerPort}\n" +
             $"listenPort={_brokerPort}\n" +
             "autoCreateTopicEnable=true\n" +
+            "autoCreateSubscriptionGroup=true\n" +
             "enableLmq=true\n" +
             "enableMultiDispatch=true\n" +
             "recallMessageEnable=true\n");
@@ -105,6 +125,41 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
     public string BrokerAddress => $"{_broker.Hostname}:{_broker.GetMappedPublicPort(_brokerPort)}";
 
     public string GrpcEndpoint => $"{_broker.Hostname}:{_broker.GetMappedPublicPort(_grpcPort)}";
+
+    /// <summary>
+    /// Creates a test-specific topic and group-name scope for one integration test.
+    /// </summary>
+    /// <param name="topicType">The message type configured for the topic.</param>
+    /// <param name="cancellationToken">The token used to cancel Broker administration requests.</param>
+    /// <returns>The isolated integration-test scope.</returns>
+    public Task<RocketMQTestScope> CreateTestScopeAsync(
+        RocketMQTestTopicType topicType,
+        CancellationToken cancellationToken = default)
+    {
+        return CreateTestScopeCoreAsync(topicType, cancellationToken);
+    }
+
+    private async Task<RocketMQTestScope> CreateTestScopeCoreAsync(
+        RocketMQTestTopicType topicType,
+        CancellationToken cancellationToken)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var topic = topicType switch
+        {
+            RocketMQTestTopicType.Normal => $"rocketmq-dotnet-it-{suffix}",
+            RocketMQTestTopicType.Transaction => TransactionTopic,
+            RocketMQTestTopicType.Fifo => FifoTopic,
+            RocketMQTestTopicType.Delay => DelayTopic,
+            RocketMQTestTopicType.Lite => LiteParentTopic,
+            _ => throw new ArgumentOutOfRangeException(nameof(topicType), topicType, null)
+        };
+        if (topicType == RocketMQTestTopicType.Normal)
+        {
+            await CreateTopicAsync(topic, GetMessageType(topicType), cancellationToken).ConfigureAwait(false);
+        }
+
+        return new RocketMQTestScope(this, topic, suffix);
+    }
 
     public async Task<string> GetTopicListAsync(CancellationToken cancellationToken)
     {
@@ -172,28 +227,45 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
         await _nameServer.StartAsync().ConfigureAwait(false);
         await _broker.StartAsync().ConfigureAwait(false);
 
-        await CreateTopicAsync(TestTopic, "NORMAL").ConfigureAwait(false);
-        await CreateTopicAsync(TransactionTopic, "TRANSACTION").ConfigureAwait(false);
-        await CreateTopicAsync(FifoTopic, "FIFO").ConfigureAwait(false);
-        await CreateTopicAsync(DelayTopic, "DELAY").ConfigureAwait(false);
-        await CreateTopicAsync(LiteParentTopic, "LITE").ConfigureAwait(false);
-
+        await Task.WhenAll(
+            CreateTopicAsync(TestTopic, "NORMAL", CancellationToken.None),
+            CreateTopicAsync(TransactionTopic, "TRANSACTION", CancellationToken.None),
+            CreateTopicAsync(FifoTopic, "FIFO", CancellationToken.None),
+            CreateTopicAsync(DelayTopic, "DELAY", CancellationToken.None),
+            CreateTopicAsync(LiteParentTopic, "LITE", CancellationToken.None)).ConfigureAwait(false);
         foreach (var group in new[]
                  {
-                     "grpc-simple-consumer-it",
                      "remoting-pull-consumer-it",
-                     "grpc-push-consumer-it",
-                     "grpc-trace-propagation-consumer-it",
                      "legacy-push-consumer-it",
-                     "remoting-trace-propagation-consumer-it",
-                     "legacy-push-cluster-it",
-                     "grpc-transaction-consumer-it",
-                     "grpc-transaction-rollback-consumer-it",
-                     "grpc-push-dlq-consumer-it",
-                     "grpc-fifo-consumer-it",
-                     "grpc-lite-push-consumer-it",
-                     "remoting-delay-consumer-it"
+                     "legacy-push-cluster-it"
                  })
+        {
+            await CreateConsumerGroupAsync(group, null, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _broker.DisposeAsync().ConfigureAwait(false);
+            await _nameServer.DisposeAsync().ConfigureAwait(false);
+            await _network.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _administrationGate.Dispose();
+            _portReservation.Dispose();
+        }
+    }
+
+    internal async Task CreateConsumerGroupAsync(
+        string group,
+        string? liteParentTopic,
+        CancellationToken cancellationToken)
+    {
+        await _administrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             var createGroupCommand = new List<string>
             {
@@ -202,33 +274,23 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
                 "-c", "DefaultCluster",
                 "-g", group
             };
-            if (string.Equals(group, "grpc-lite-push-consumer-it", StringComparison.Ordinal))
+            if (liteParentTopic is not null)
             {
                 createGroupCommand.Add("--attributes");
-                createGroupCommand.Add($"+lite.bind.topic={LiteParentTopic}");
+                createGroupCommand.Add($"+lite.bind.topic={liteParentTopic}");
             }
 
-            var createGroup = await _broker.ExecAsync(createGroupCommand).ConfigureAwait(false);
+            var createGroup = await _broker.ExecAsync(createGroupCommand, cancellationToken).ConfigureAwait(false);
             if (createGroup.ExitCode != 0)
             {
                 throw new InvalidOperationException(
                     $"Unable to create integration-test consumer group '{group}'. stdout: {createGroup.Stdout} stderr: {createGroup.Stderr}");
             }
         }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        await _broker.DisposeAsync().ConfigureAwait(false);
-        await _nameServer.DisposeAsync().ConfigureAwait(false);
-        await _network.DisposeAsync().ConfigureAwait(false);
-    }
-
-    private static int GetAvailablePort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
+        finally
+        {
+            _administrationGate.Release();
+        }
     }
 
     private static bool HasZeroLag(string progress, string topic, string brokerName, int queueId)
@@ -254,30 +316,51 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
         return false;
     }
 
-    private async Task CreateTopicAsync(string topic, string messageType)
+    private async Task CreateTopicAsync(string topic, string messageType, CancellationToken cancellationToken)
     {
-        var createTopic = await _broker.ExecAsync([
-            "sh", "mqadmin", "updateTopic",
-            "-n", $"nameserver:{NameServerPort}",
-            "-c", "DefaultCluster",
-            "-t", topic,
-            "-a", $"+message.type={messageType}"
-        ]).ConfigureAwait(false);
-        if (createTopic.ExitCode != 0)
+        await _administrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            throw new InvalidOperationException(
-                $"Unable to create integration-test topic '{topic}'. stdout: {createTopic.Stdout} stderr: {createTopic.Stderr}");
-        }
+            var createTopic = await _broker.ExecAsync([
+                "sh", "mqadmin", "updateTopic",
+                "-n", $"nameserver:{NameServerPort}",
+                "-c", "DefaultCluster",
+                "-t", topic,
+                "-a", $"+message.type={messageType}"
+            ], cancellationToken).ConfigureAwait(false);
+            if (createTopic.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Unable to create integration-test topic '{topic}'. stdout: {createTopic.Stdout} stderr: {createTopic.Stderr}");
+            }
 
-        var topicRoute = await _broker.ExecAsync([
-            "sh", "mqadmin", "topicRoute",
-            "-n", $"nameserver:{NameServerPort}",
-            "-t", topic
-        ]).ConfigureAwait(false);
-        if (topicRoute.ExitCode != 0 || !topicRoute.Stdout.Contains("broker-a", StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Test topic '{topic}' has no route. stdout: {topicRoute.Stdout} stderr: {topicRoute.Stderr}");
+            var topicRoute = await _broker.ExecAsync([
+                "sh", "mqadmin", "topicRoute",
+                "-n", $"nameserver:{NameServerPort}",
+                "-t", topic
+            ], cancellationToken).ConfigureAwait(false);
+            if (topicRoute.ExitCode != 0 || !topicRoute.Stdout.Contains("broker-a", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Test topic '{topic}' has no route. stdout: {topicRoute.Stdout} stderr: {topicRoute.Stderr}");
+            }
         }
+        finally
+        {
+            _administrationGate.Release();
+        }
+    }
+
+    private static string GetMessageType(RocketMQTestTopicType topicType)
+    {
+        return topicType switch
+        {
+            RocketMQTestTopicType.Normal => "NORMAL",
+            RocketMQTestTopicType.Transaction => "TRANSACTION",
+            RocketMQTestTopicType.Fifo => "FIFO",
+            RocketMQTestTopicType.Delay => "DELAY",
+            RocketMQTestTopicType.Lite => "LITE",
+            _ => throw new ArgumentOutOfRangeException(nameof(topicType), topicType, null)
+        };
     }
 }

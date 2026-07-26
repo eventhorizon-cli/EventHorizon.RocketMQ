@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -56,6 +54,8 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
     private readonly IContainer _brokerA;
     private readonly IContainer _brokerB;
     private readonly IContainer _brokerC;
+    private readonly RocketMQHostPortReservation _portReservation;
+    private readonly int _nameServerHostPort;
     private readonly int _brokerAPort;
     private readonly int _brokerBPort;
     private readonly int _brokerCPort;
@@ -65,23 +65,16 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
     /// </summary>
     public RocketMQMultiBrokerRemotingContainerFixture()
     {
-        _brokerAPort = GetAvailablePort();
-        do
-        {
-            _brokerBPort = GetAvailablePort();
-        }
-        while (_brokerBPort == _brokerAPort);
-
-        do
-        {
-            _brokerCPort = GetAvailablePort();
-        }
-        while (_brokerCPort == _brokerAPort || _brokerCPort == _brokerBPort);
+        _portReservation = RocketMQHostPortReservation.Reserve(4);
+        _nameServerHostPort = _portReservation[0];
+        _brokerAPort = _portReservation[1];
+        _brokerBPort = _portReservation[2];
+        _brokerCPort = _portReservation[3];
 
         _nameServer = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithNetworkAliases("nameserver")
-            .WithPortBinding(NameServerPort, true)
+            .WithPortBinding(_nameServerHostPort, NameServerPort)
             .WithEnvironment("JAVA_OPT_EXT", "-Duser.home=/home/rocketmq -Xms256m -Xmx256m")
             .WithCommand("sh", "mqnamesrv")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(NameServerPort))
@@ -114,11 +107,18 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
-        await _brokerC.DisposeAsync().ConfigureAwait(false);
-        await _brokerB.DisposeAsync().ConfigureAwait(false);
-        await _brokerA.DisposeAsync().ConfigureAwait(false);
-        await _nameServer.DisposeAsync().ConfigureAwait(false);
-        await _network.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _brokerC.DisposeAsync().ConfigureAwait(false);
+            await _brokerB.DisposeAsync().ConfigureAwait(false);
+            await _brokerA.DisposeAsync().ConfigureAwait(false);
+            await _nameServer.DisposeAsync().ConfigureAwait(false);
+            await _network.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _portReservation.Dispose();
+        }
     }
 
     private IContainer CreateBroker(string brokerName, int port)
@@ -215,10 +215,4 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
             $"Multi-Broker test topic has an incomplete route. stdout: {topicRoute.Stdout} stderr: {topicRoute.Stderr}");
     }
 
-    private static int GetAvailablePort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
-    }
 }

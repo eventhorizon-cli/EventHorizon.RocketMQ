@@ -61,8 +61,16 @@ test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
             └── gRPC Proxy 端口
 ```
 
-基础 fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册，然后准备标准、事务、
-FIFO、延迟和 Lite parent topic 以及测试 group。
+基础 fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册。每个 integration-test
+assembly 通过惰性的 xUnit v3 assembly-fixture registry 共享一套基础容器，因此独立测试类可以复用 Docker stack，
+而不必让整个项目串行。runner 最多并行四个 test collection；被筛选出的 multi-Broker job 不会初始化这套基础
+fixture。
+
+普通测试 scope 会生成唯一的 normal topic 和 consumer group。fixture 会在使用前显式创建 topic，因为 gRPC 的
+route lookup 需要已有 route；普通 subscription group 则由 Broker 自动创建。事务、FIFO、延迟和 Lite topic 因为
+依赖相应的 Broker 语义而保持预配置，测试通过唯一 group 和 message identifier 隔离。保留的 legacy Remoting
+container suite 刻意继续使用专用 topic，且类内方法串行执行，因为这些 case 验证的是共享的 Admin 与 offset
+语义。
 
 端口由 Testcontainers 动态映射，测试不会依赖手工环境的固定端口。
 
@@ -123,9 +131,10 @@ GitHub Actions 在格式化、构建和单元测试验证通过后，于四个�
 驱动的 gRPC 与 Remoting integration test：每个协议各有一个 single-Broker 与一个 multi-Broker job。类级别
 的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；single-Broker job 运行其余测试。每个 job 只 restore
 和 build 对应协议的 integration-test 依赖图，使用独立超时预算，并复用仓库的 NuGet 包缓存。Testcontainers
-仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture。四个 job 都会生成 Cobertura 报告，
-以不同的上传名称归入共享的 `integration-tests` flag；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会
-排除 `samples`，不会将 sample 计入覆盖率。
+仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture。single-Broker job 内，已经隔离的测试类
+会在 runner 上限内并发执行；legacy Remoting suite 则按设计保持串行。四个 job 都会生成 Cobertura 报告，以不同
+的上传名称归入共享的 `integration-tests` flag；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会排除
+`samples`，不会将 sample 计入覆盖率。
 
 ### 5. 测试范围也体现支持边界
 

@@ -24,21 +24,16 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQTransactionRecallIntegrationTests
+public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQTransactionRecallIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
     [Fact]
     [Trait("Category", "Integration")]
     public async Task CommittedTransactionBecomesVisibleToPushConsumer()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Transaction, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-transaction-consumer");
         var suffix = Guid.NewGuid().ToString("N");
         var tag = $"remoting-transaction-{suffix}";
         var body = $"transaction-{suffix}";
@@ -47,12 +42,12 @@ public sealed class RocketMQTransactionRecallIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = fixture.NameServerAddress;
                 options.InstanceName = $"remoting-transaction-{suffix}";
             })
             .AddRemotingProducer(options =>
             {
-                options.GroupName = $"remoting-transaction-producer-{suffix}";
+                options.GroupName = scope.CreateProducerGroupName("remoting-transaction-producer");
                 options.LocalTransactionExecutor = static (_, _, _) =>
                     ValueTask.FromResult(RemotingTransactionResolution.Commit);
                 options.TransactionChecker = static (_, _) =>
@@ -60,9 +55,9 @@ public sealed class RocketMQTransactionRecallIntegrationTests
             })
             .AddRemotingPushConsumer(options =>
             {
-                options.GroupName = $"remoting-transaction-consumer-{suffix}";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TransactionTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -83,7 +78,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests
         try
         {
             var transaction = await producer.SendTransactionAsync(
-                new Message(RocketMQContainerFixture.TransactionTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
                 cancellationToken: cancellationToken);
 
             Assert.Equal(RemotingTransactionResolution.Commit, transaction.LocalTransactionResolution);
@@ -102,6 +97,9 @@ public sealed class RocketMQTransactionRecallIntegrationTests
     public async Task RecallHandleCancelsDelayedMessageBeforeDelivery()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Delay, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-recall-consumer");
         var suffix = Guid.NewGuid().ToString("N");
         var tag = $"remoting-recall-{suffix}";
         var body = $"recall-{suffix}";
@@ -111,15 +109,15 @@ public sealed class RocketMQTransactionRecallIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = fixture.NameServerAddress;
                 options.InstanceName = $"remoting-recall-{suffix}";
             })
-            .AddRemotingProducer(options => options.GroupName = $"remoting-recall-producer-{suffix}")
+            .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-recall-producer"))
             .AddRemotingPushConsumer(options =>
             {
-                options.GroupName = $"remoting-recall-consumer-{suffix}";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.DelayTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -140,7 +138,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests
         try
         {
             var sent = await producer.SendAsync(
-                new Message(RocketMQContainerFixture.DelayTopic, Encoding.UTF8.GetBytes(body))
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(body))
                 {
                     Tag = tag,
                     DeliveryTimestamp = deliveryTimestamp
@@ -150,7 +148,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests
             Assert.Equal(RemotingSendStatus.SendOk, sent.Status);
             var recallHandle = Assert.IsType<string>(sent.RecallHandle);
             var recalledMessageId = await producer.RecallAsync(
-                RocketMQContainerFixture.DelayTopic,
+                scope.Topic,
                 recallHandle,
                 cancellationToken);
 

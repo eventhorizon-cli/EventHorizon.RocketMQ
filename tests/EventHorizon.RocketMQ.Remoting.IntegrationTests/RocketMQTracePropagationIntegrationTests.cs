@@ -25,8 +25,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFixture fixture)
+public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
     [Fact]
     [Trait("Category", "Integration")]
@@ -34,18 +33,22 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
     {
         using var listener = CreateActivityListener();
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-trace-propagation-consumer");
+        var producerGroup = scope.CreateProducerGroupName("remoting-trace-propagation-producer");
         var tag = $"remoting-trace-propagation-{Guid.NewGuid():N}";
         var body = $"remoting-trace-propagation-{Guid.NewGuid():N}";
         var received = new TaskCompletionSource<TraceObservation>(TaskCreationOptions.RunContinuationsAsynchronously);
         var services = new ServiceCollection();
         services
             .AddRocketMQRemoting(options => options.NamesrvAddr = fixture.NameServerAddress)
-            .AddRemotingProducer(options => options.GroupName = "remoting-trace-propagation-producer-it")
+            .AddRemotingProducer(options => options.GroupName = producerGroup)
             .AddRemotingPushConsumer(options =>
             {
-                options.GroupName = "remoting-trace-propagation-consumer-it";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -69,7 +72,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
             using var producerActivity = new Activity("remoting-trace-propagation-test").Start();
             var producerTraceId = producerActivity.TraceId;
             await producer.SendAsync(
-                new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
                 cancellationToken);
 
             var observed = await received.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);

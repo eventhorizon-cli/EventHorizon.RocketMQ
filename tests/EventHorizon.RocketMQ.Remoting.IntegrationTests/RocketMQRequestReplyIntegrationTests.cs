@@ -23,21 +23,16 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-[Collection(RocketMQCollection.Name)]
-public sealed class RocketMQRequestReplyIntegrationTests
+public sealed class RocketMQRequestReplyIntegrationTests(RocketMQContainerFixtureRegistry registry)
 {
-    private readonly RocketMQContainerFixture _fixture;
-
-    public RocketMQRequestReplyIntegrationTests(RocketMQContainerFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
     [Fact]
     [Trait("Category", "Integration")]
     public async Task ProducerReceivesReplyFromPushConsumer()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("request-reply-consumer");
         var suffix = Guid.NewGuid().ToString("N");
         var requestBody = $"request-{suffix}";
         var replyBody = $"reply-{suffix}";
@@ -47,15 +42,15 @@ public sealed class RocketMQRequestReplyIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = fixture.NameServerAddress;
                 options.InstanceName = $"request-reply-{suffix}";
             })
-            .AddRemotingProducer(options => options.GroupName = $"request-reply-producer-{suffix}")
+            .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("request-reply-producer"))
             .AddRemotingPushConsumer(options =>
             {
-                options.GroupName = $"request-reply-consumer-{suffix}";
+                options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
                 options.MessageHandler = async (messages, _, token) =>
                 {
                     var message = Assert.Single(messages);
@@ -79,7 +74,7 @@ public sealed class RocketMQRequestReplyIntegrationTests
         try
         {
             var reply = await producer.RequestAsync(
-                new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(requestBody)) { Tag = tag },
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(requestBody)) { Tag = tag },
                 TimeSpan.FromSeconds(30),
                 cancellationToken);
 

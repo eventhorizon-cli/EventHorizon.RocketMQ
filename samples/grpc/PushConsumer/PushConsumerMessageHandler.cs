@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using Microsoft.Extensions.Logging;

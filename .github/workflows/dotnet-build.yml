@@ -1,0 +1,87 @@
+name: .NET Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+
+jobs:
+  validate:
+    name: Format, build, and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore EventHorizon.RocketMQ.sln
+
+      - name: Verify formatting
+        run: >-
+          dotnet format EventHorizon.RocketMQ.sln
+          --no-restore
+          --verify-no-changes
+          --verbosity diagnostic
+
+      - name: Build
+        run: >-
+          dotnet build EventHorizon.RocketMQ.sln
+          --configuration Release
+          --no-restore
+
+      - name: Test gRPC
+        run: >-
+          dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --collect:"XPlat Code Coverage"
+          --results-directory "${{ runner.temp }}/coverage/grpc"
+
+      - name: Test package compatibility
+        run: >-
+          dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --collect:"XPlat Code Coverage"
+          --results-directory "${{ runner.temp }}/coverage/compatibility"
+
+      - name: Test Remoting
+        run: >-
+          dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --collect:"XPlat Code Coverage"
+          --results-directory "${{ runner.temp }}/coverage/remoting"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          directory: ${{ runner.temp }}/coverage
+          fail_ci_if_error: true
+          flags: unit-tests
+          name: dotnet-unit-tests
+          token: ${{ secrets.CODECOV_TOKEN }}

@@ -16,7 +16,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Threading.Channels;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;

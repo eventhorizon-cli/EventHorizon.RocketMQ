@@ -31,10 +31,9 @@ public sealed class GrpcMetadataFactoryTests
     {
         var options = Options.Create(new GrpcClientOptions
         {
-            ClientIP = "127.0.0.1",
-            InstanceName = "metadata-test",
             AccessKey = "access-key",
-            AccessSecret = "secret-\u5bc6\u94a5"
+            AccessSecret = "secret-\u5bc6\u94a5",
+            SecurityToken = "session-token"
         });
         var factory = new GrpcMetadataFactory(options, "producer");
 
@@ -50,22 +49,38 @@ public sealed class GrpcMetadataFactoryTests
         Assert.Equal(
             $"MQv2-HMAC-SHA1 Credential=access-key//Rocketmq, SignedHeaders=x-mq-date-time, Signature={signature}",
             Value(metadata, "authorization"));
+        Assert.Equal("session-token", Value(metadata, "x-mq-session-token"));
     }
 
     [Fact]
     public void ClientId_IsStablePerFactoryAndUniqueAcrossLogicalClients()
     {
-        var options = Options.Create(new GrpcClientOptions
-        {
-            ClientIP = "127.0.0.1",
-            InstanceName = "metadata-test"
-        });
+        var options = Options.Create(new GrpcClientOptions());
         var producer = new GrpcMetadataFactory(options, "producer");
         var consumer = new GrpcMetadataFactory(options, "consumer");
         var producerClientId = Value(producer.Create(), "x-mq-client-id");
 
         Assert.Equal(producerClientId, Value(producer.Create(), "x-mq-client-id"));
         Assert.NotEqual(producerClientId, Value(consumer.Create(), "x-mq-client-id"));
+    }
+
+    [Fact]
+    public void Create_OmitsWhitespaceCredentials()
+    {
+        var options = Options.Create(new GrpcClientOptions
+        {
+            AccessKey = " ",
+            AccessSecret = "\t",
+            SecurityToken = "\r\n"
+        });
+        var factory = new GrpcMetadataFactory(options, "producer");
+
+        var metadata = factory.Create();
+
+        Assert.DoesNotContain(metadata, entry =>
+            string.Equals(entry.Key, "authorization", StringComparison.Ordinal));
+        Assert.DoesNotContain(metadata, entry =>
+            string.Equals(entry.Key, "x-mq-session-token", StringComparison.Ordinal));
     }
 
     private static string Value(Metadata metadata, string key) =>

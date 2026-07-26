@@ -16,7 +16,6 @@
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
-using EventHorizon.RocketMQ.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 

@@ -14,11 +14,21 @@ connect directly to a NameServer or Broker.
 
 ## Quick start
 
-Configure the package source used by your application, then install the gRPC package. The shared package is
-referenced transitively.
+Configure the package source used by your application, then install the gRPC package. It is self-contained as a
+client package: all public client models live in its own assembly, with no dependency on another
+EventHorizon.RocketMQ package.
 
 ```shell
 dotnet add package EventHorizon.RocketMQ.Grpc
+```
+
+All public client models use the `EventHorizon.RocketMQ.Grpc` namespace tree. The gRPC and Remoting packages can be
+installed together, but similarly named models in their protocol namespaces are distinct CLR types and are not
+interchangeable. When one file imports both protocol namespaces, use aliases for the duplicate short names:
+
+```csharp
+using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
+using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 ```
 
 With a reachable Proxy on `localhost:8081` and an existing `orders` topic, this ASP.NET Core Minimal API
@@ -28,7 +38,6 @@ registers the default Producer and injects it into an endpoint that sends one me
 using System.Text;
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Producer;
-using EventHorizon.RocketMQ.Producer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
@@ -90,8 +99,9 @@ that API.
 `Endpoint` accepts one or more semicolon-separated Proxy addresses. Access-point requests fail over
 within their request deadline. `RequestTimeout`, `RouteCacheDuration`, and `HeartbeatInterval` control
 request, route refresh, and heartbeat timing. Set `UseTLS` to use TLS. `AccessKey`, `AccessSecret`, and
-`SecurityToken` configure ACL credentials; `Namespace` qualifies topics and consumer groups. The
-`AddRocketMQGrpc` return value is the builder used to add Producer and Consumer roles.
+`SecurityToken` configure ACL credentials; a security token requires both the access key and secret.
+`Namespace` qualifies topics and consumer groups. The `AddRocketMQGrpc` return value is the builder
+used to add Producer and Consumer roles.
 
 When one host needs multiple clusters or multiple instances of the same role, add a keyed client registration.
 Its `registrationName` is also used as the .NET keyed-service key.
@@ -123,7 +133,6 @@ messages with richer metadata:
 ```csharp
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Producer;
-using EventHorizon.RocketMQ.Producer;
 
 public sealed class OrderPublisher(IGrpcProducer producer)
 {
@@ -165,7 +174,6 @@ durable local outcome when requested by the Broker.
 ```csharp
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Producer.Transactions;
-using EventHorizon.RocketMQ.Producer;
 
 rocketMQ.AddGrpcProducer(options =>
 {
@@ -215,7 +223,7 @@ Use `IGrpcSimpleConsumer` when the application should control receive and acknow
 Initial subscriptions are optional and can also be changed at runtime.
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 
 rocketMQ.AddGrpcSimpleConsumer(options =>
@@ -264,7 +272,6 @@ Use `IGrpcPushConsumer` when the client should receive and dispatch messages aut
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
@@ -304,7 +311,7 @@ the same long-poll, acknowledgement, retry, dead-letter, concurrency, and FIFO o
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
@@ -349,9 +356,8 @@ through `GrpcServiceException` and does not change the local subscription set.
 ## Errors
 
 An unsuccessful RocketMQ status returned by a completed gRPC call throws `GrpcServiceException`.
-Its `ResponseCode` retains the numeric RocketMQ service code. The exception derives from the shared
-`RocketMQClientException`, so callers can catch either the protocol-specific exception or the common
-base.
+Its `ResponseCode` retains the numeric RocketMQ service code. The exception derives from this package's
+`RocketMQClientException` base type.
 
 ## Local testing
 

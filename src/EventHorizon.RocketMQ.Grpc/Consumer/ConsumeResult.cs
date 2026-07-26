@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Consumer;
+namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 /// <summary>
 /// Specifies the outcome of processing a consumed message.

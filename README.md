@@ -60,7 +60,7 @@ See the [Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md) and
 | Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQRemoting`. |
 
 Classic Push is also client-initiated long polling. SQL filtering requires Broker configuration, and POP requires a
-Broker that supports POP. Protocol-specific exceptions derive from the shared `RocketMQClientException` base type.
+Broker that supports POP. Each protocol package provides its own `RocketMQClientException` base type.
 
 ## Packages
 
@@ -69,13 +69,12 @@ Broker that supports POP. Protocol-specific exceptions derive from the shared `R
 | `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, `IGrpcLitePushConsumer` | [gRPC guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
 | `EventHorizon.RocketMQ.Remoting` | NameServer and Brokers | `IRemotingProducer`, `IRemotingAdmin`, `IRemotingPullConsumer`, `IRemotingLitePullConsumer`, `IRemotingPopConsumer`, `IRemotingPushConsumer` | [Remoting guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
 
-Install only the protocol package used by the application. Both packages reference
-`EventHorizon.RocketMQ.Shared`, which contains protocol-neutral messages, filters, results, option bases, and the
-common exception type; applications normally receive it transitively.
+Install only the protocol package used by the application. Each protocol package is self-contained at the client API
+boundary: it owns its public models in its own assembly and has no dependency on another EventHorizon.RocketMQ
+package.
 
-The protocols intentionally have independent registrations, options, interfaces, results, and exceptions.
-Use `AddRocketMQGrpc` for a Proxy-backed client and `AddRocketMQRemoting` for a classic NameServer-backed
-client. One host may install and use both packages through independent client registrations.
+The two packages can be referenced by the same application, but their API models remain protocol-specific. See
+[Protocol Boundaries and Type Ownership](docs/en-US/architecture/protocol-boundaries.md) for details.
 
 ## Repository
 

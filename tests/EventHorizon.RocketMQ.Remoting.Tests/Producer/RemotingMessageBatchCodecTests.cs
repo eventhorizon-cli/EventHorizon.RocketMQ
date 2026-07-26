@@ -15,7 +15,6 @@
 
 using System.Buffers.Binary;
 using System.Text;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Xunit;

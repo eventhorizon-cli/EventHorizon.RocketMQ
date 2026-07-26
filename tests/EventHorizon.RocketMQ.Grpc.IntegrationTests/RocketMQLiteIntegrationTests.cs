@@ -14,11 +14,10 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
-using EventHorizon.RocketMQ.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 

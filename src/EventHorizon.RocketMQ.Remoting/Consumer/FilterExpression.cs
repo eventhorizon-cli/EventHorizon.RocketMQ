@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Consumer;
+namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
 /// <summary>
 /// Represents an expression used to filter messages in a topic subscription.
@@ -31,8 +31,12 @@ public sealed record FilterExpression
     /// <param name="expression">The filter expression text.</param>
     /// <param name="type">The syntax used by <paramref name="expression"/>.</param>
     /// <exception cref="ArgumentNullException"><paramref name="expression"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException"><paramref name="expression"/> is empty or consists only of white-space characters.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="type"/> is not a defined filter expression type.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="expression"/> is empty or consists only of white-space characters.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="type"/> is not a defined filter expression type.
+    /// </exception>
     public FilterExpression(string expression, FilterExpressionType type = FilterExpressionType.Tag)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(expression);

@@ -60,7 +60,7 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 | Microsoft DI、Options、日志、Generic Host 生命周期，以及默认或 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 注册。 |
 
 经典 Push 同样由客户端发起长轮询。SQL 过滤需要 Broker 启用相应配置；POP 则要求 Broker 支持该功能。
-各协议定义的异常均继承 `RocketMQClientException` 基类。
+每个协议 Package 都有各自的 `RocketMQClientException` 基类。
 
 ## Packages
 
@@ -69,12 +69,11 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 | `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer`、`IGrpcLitePushConsumer` | [gRPC 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md) |
 | `EventHorizon.RocketMQ.Remoting` | NameServer 和 Broker | `IRemotingProducer`、`IRemotingAdmin`、`IRemotingPullConsumer`、`IRemotingLitePullConsumer`、`IRemotingPopConsumer`、`IRemotingPushConsumer` | [Remoting 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md) |
 
-应用只需安装实际使用的协议 Package。两个协议 Package 都依赖 `EventHorizon.RocketMQ.Shared`；该 Package
-提供协议无关的消息、过滤器、结果、Options 基类和公共异常类型。应用通常无需单独安装，NuGet 会将其作为传递依赖一并引入。
+应用只需安装实际使用的协议 Package。两个协议 Package 在客户端 API 层面都完全自包含：公开模型位于
+各自的程序集，不依赖其他 EventHorizon.RocketMQ Package。
 
-gRPC 和 Remoting 各自提供独立的注册方法、Options、接口、结果类型和异常类型。连接 Proxy 时使用
-`AddRocketMQGrpc`，连接经典 NameServer 时使用 `AddRocketMQRemoting`。同一应用也可同时安装两个 Package，
-并在一个 Host 中通过各自独立的客户端注册使用两种协议。
+同一应用可以同时引用两个 Package，但各自的 API 模型仍属于对应协议，不能直接互换。详见
+[协议边界与类型归属](docs/zh-CN/architecture/protocol-boundaries.md)。
 
 ## 相关资源
 

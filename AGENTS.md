@@ -13,35 +13,38 @@ You are an AI coding assistant for this repository.
 
 ## Repository layout
 
-- `src/EventHorizon.RocketMQ.Shared` is the protocol-neutral .NET 8 class library. It contains `Message`, filters,
-  `ConsumeResult`, `QueryOffsetPolicy`, common option bases, and `RocketMQClientException`. It must not reference
-  either protocol project, Microsoft DI/options packages, or any transport-specific package.
-- `src/EventHorizon.RocketMQ.Grpc` owns the RocketMQ 5 gRPC boundary and references only
-  `EventHorizon.RocketMQ.Shared`. Its code is organized as `{Protocol,Consumer,Producer,Exceptions}`:
+- `src/EventHorizon.RocketMQ.Grpc` owns the complete RocketMQ 5 gRPC client boundary. Its code is organized as
+  `{Protocol,Consumer,Producer,Exceptions}`:
   - `Protocol` contains reusable endpoint and RPC clients, metadata, status handling, route services,
     telemetry sessions, body codecs, and protobuf definitions.
-  - `Consumer/{Lite,Push,Simple}` contains gRPC consumer contracts, options, and implementations.
-    `GrpcMessageView` is a protocol-owned consumer model. Shared gRPC receive orchestration for Push and Simple
-    consumers remains directly under `Consumer` as the internal `IGrpcReceiveConsumerEngine` and
-    `GrpcReceiveConsumerEngine`.
-  - `Producer` contains `IGrpcProducer`, `GrpcProducerOptions`, `GrpcSendReceipt`, the implementation, and
+  - `Consumer` owns `ConsumeResult`, `ConsumerOptions`, `FilterExpression`, and `FilterExpressionType` as well as
+    the receive engine and gRPC consumer features under `{Lite,Push,Simple}`. `GrpcMessageView` is a protocol-owned
+    consumer model. Receive orchestration used by Push and Simple consumers remains directly under `Consumer` as
+    the internal `IGrpcReceiveConsumerEngine` and `GrpcReceiveConsumerEngine`.
+  - `Producer` owns `Message`, `IGrpcProducer`, `GrpcProducerOptions`, `GrpcSendReceipt`, the implementation, and
     `Transactions`.
-  - `Exceptions` contains `GrpcServiceException`, which derives from `RocketMQClientException`.
-- `src/EventHorizon.RocketMQ.Remoting` owns classic Remoting and references only `EventHorizon.RocketMQ.Shared`. Its code is
-  organized as `{Protocol,Consumer,Producer,Exceptions}`:
+  - `Exceptions` owns `RocketMQClientException` and `GrpcServiceException`.
+  - `GrpcClientOptions` owns Proxy endpoints, credentials, namespace, TLS, and gRPC timing. gRPC client identifiers
+    are generated internally per role; do not add classic Remoting identity options to it. It does not derive from a
+    repository-defined client-options base class.
+- `src/EventHorizon.RocketMQ.Remoting` owns the complete classic Remoting client boundary. Its code is organized as
+  `{Protocol,Consumer,Producer,Exceptions}`:
   - `Protocol` contains reusable socket clients, connections, ACL, frame and JSON serialization,
-    shared wire types, and NameServer route services.
-  - `Consumer/{Pull,Push}` contains classic consumer contracts, options, implementations, and
-    feature-specific request headers or decoders. `RemotingMessageView`, `RemotingPullResult`, and
-    `RemotingPullStatus` are protocol-owned consumer models. Shared classic Pull and Push orchestration uses
-    the internal `IRemotingConsumerEngine` and `RemotingConsumerEngine` directly under `Consumer`.
-  - `Producer` contains `IRemotingProducer`, `RemotingProducerOptions`, `RemotingSendResult`,
+    reusable wire types, and NameServer route services.
+  - `Consumer` owns `ConsumeResult`, `ConsumerOptions`, `FilterExpression`, `FilterExpressionType`, and the
+    Remoting-only `QueryOffsetPolicy`, as well as classic consumer features under `{Pull,Push}`. It also owns
+    `RemotingMessageView`, `RemotingPullResult`, and `RemotingPullStatus`. Pull and Push orchestration uses the
+    internal `IRemotingConsumerEngine` and `RemotingConsumerEngine` directly under `Consumer`.
+  - `Producer` owns `Message`, `IRemotingProducer`, `RemotingProducerOptions`, `RemotingSendResult`,
     `RemotingSendStatus`, `RemotingMessageQueue`, the implementation, and request headers.
-  - `Exceptions` contains `RemotingCommandException`, which derives from `RocketMQClientException`.
-- The only allowed production dependency graph is `EventHorizon.RocketMQ.Grpc -> EventHorizon.RocketMQ.Shared <-
-  EventHorizon.RocketMQ.Remoting`. Never add a reference between the protocol projects or from Shared to a protocol.
+  - `Exceptions` owns `RocketMQClientException` and `RemotingCommandException`.
+  - `RemotingClientOptions` owns NameServer discovery, classic client identity, credentials, namespace, TLS,
+    transport limits, Remoting timing, and role-specific cloning. It does not derive from a repository-defined
+    client-options base class.
+- The production graph contains only the two protocol Projects, with no ProjectReference between them. Do not
+  introduce a third production Project, a transport-neutral root client, or a production dependency from one
+  protocol to the other.
 - Namespaces must reflect project ownership and the relative source directory:
-  - Shared uses `EventHorizon.RocketMQ` at the project root and appends `Consumer`, `Producer`, or `Exceptions`.
   - gRPC uses `EventHorizon.RocketMQ.Grpc` at the project root and appends directories such as `Consumer.Lite`,
     `Consumer.Push`, `Consumer.Simple`, `Producer.Transactions`, or `Protocol.Telemetry`.
   - Remoting uses `EventHorizon.RocketMQ.Remoting` at the project root and appends directories such as
@@ -49,18 +52,21 @@ You are an AI coding assistant for this repository.
   - Unit-test and benchmark namespaces mirror their project name and relative directory. Integration-test
     files at the project root use the integration-test project namespace.
   - Assembly attribute files and top-level `Program.cs` files do not require a namespace.
-- Keep only the protocol-neutral `Message` under `EventHorizon.RocketMQ.Producer`. Keep only filters,
-  `ConsumeResult`, `QueryOffsetPolicy`, and protocol-neutral option bases under `EventHorizon.RocketMQ.Consumer`.
-  Message views, pull results and statuses, send receipts and statuses, and Producer queue results belong to
-  their protocol project. Do not place protocol-owned APIs back into either shared namespace.
+- `Message`, `ConsumeResult`, `ConsumerOptions`, `FilterExpression`, `FilterExpressionType`, and
+  `RocketMQClientException` are physically declared in both protocol Projects under the matching protocol
+  namespace. They are distinct CLR types and are not interchangeable. `QueryOffsetPolicy` exists only in Remoting.
+- When changing one of the matching foundational models, review the counterpart in the other protocol Project.
+  Apply the same change only when the semantics remain valid for both protocols. Keep the files physically separate;
+  do not replace them with linked source, generated source, or a reintroduced Shared Project or Shared Package.
 - Keep each internal hosted lifecycle helper beside the Producer or Consumer role that it starts and stops.
   Each protocol project owns its client options, builder, service-collection entry point, and role-registration
   metadata at the project root. Do not introduce a generic `Internal` or `DependencyInjection` folder.
 - Construct each internal Consumer Engine in the matching protocol composition root and inject it through its
   protocol-specific internal interface. Each registered Consumer role owns one Engine instance and its lifecycle;
-  do not register Consumer Engines as shared global services or instantiate them inside Consumer implementations.
+  do not register Consumer Engines as protocol-wide global services or instantiate them inside Consumer
+  implementations.
 - Register gRPC client registrations with `AddRocketMQGrpc` and classic Remoting client registrations with
-  `AddRocketMQRemoting`. Do not introduce a transport selector, a shared builder, or a shared root
+  `AddRocketMQRemoting`. Do not introduce a transport selector, a common builder, or a common root
   registration method.
 - Place code under a protocol's `Protocol` folder only when it is communication infrastructure reused across
   features. Consumer scheduling, Producer sending, retries, transactions, and feature-specific headers or
@@ -79,12 +85,14 @@ You are an AI coding assistant for this repository.
   `RemotingProducerOptions`, `RemotingSendResult`, `RemotingSendStatus`, `RemotingMessageQueue`, and
   `AddRemotingProducer`. Do not introduce a transport-independent Producer interface, result, status, queue,
   options type, or registration method.
-- `tests/EventHorizon.RocketMQ.Shared.Tests`, `tests/EventHorizon.RocketMQ.Grpc.Tests`, and
-  `tests/EventHorizon.RocketMQ.Remoting.Tests` contain isolated xUnit unit tests for their matching production project.
+- `tests/EventHorizon.RocketMQ.Grpc.Tests` and `tests/EventHorizon.RocketMQ.Remoting.Tests` contain isolated xUnit
+  unit tests for their matching production Project.
+- `tests/EventHorizon.RocketMQ.Compatibility.Tests` references both protocol Projects. It verifies both public APIs,
+  distinct protocol namespaces, and the ability to consume both protocol assemblies together.
 - `tests/EventHorizon.RocketMQ.Grpc.IntegrationTests` and `tests/EventHorizon.RocketMQ.Remoting.IntegrationTests` contain
   protocol-isolated Docker-backed integration tests.
-- `tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure` contains shared Testcontainers infrastructure and is not a test
-  assembly. It must not reference a production protocol project.
+- `tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure` contains reusable Testcontainers infrastructure and is
+  not a test assembly. It must not reference a production protocol Project.
 - `tests/EventHorizon.RocketMQ.Benchmarks` contains BenchmarkDotNet benchmarks.
 - `test-environments` groups Docker Compose environments for manual local testing. Each environment includes a local
   RocketMQ Dashboard at `http://localhost:8082`:
@@ -206,6 +214,8 @@ constructors for straightforward dependency or state initialization.
 
 - Prefer the .NET base class libraries and existing dependencies before adding a package.
 - Explain the need and compatibility impact of any new production dependency.
+- Do not introduce an internal common Package or make either protocol Package depend on another repository client
+  Package. The gRPC and Remoting Packages must remain independently publishable.
 - The repository intentionally does not provide a `NuGet.config`; restore uses package sources configured by
   the current environment.
 - Do not add a repository-level `NuGet.config` or hard-code NuGet.org unless the task explicitly requires a
@@ -220,6 +230,8 @@ constructors for straightforward dependency or state initialization.
 - Keep a purpose-built fake or stub only when it models stateful streaming, protocol framing, concurrency, or
   another behavior that would be substantially less clear with Moq.
 - Unit tests must be deterministic and must not require an external RocketMQ installation or network access.
+- Changes to matching foundational models require both protocol unit-test Projects and
+  `EventHorizon.RocketMQ.Compatibility.Tests` to pass.
 - Put Docker-backed behavior in the matching protocol integration-test project and reuse
   `EventHorizon.RocketMQ.IntegrationTestInfrastructure` for Testcontainers infrastructure.
 - Add or update benchmarks only when the task affects a performance-sensitive path or explicitly requires a
@@ -234,9 +246,9 @@ are:
 dotnet format EventHorizon.RocketMQ.sln
 dotnet restore EventHorizon.RocketMQ.sln
 dotnet build EventHorizon.RocketMQ.sln --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Shared.Tests/EventHorizon.RocketMQ.Shared.Tests.csproj --no-restore
 dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
 dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
+dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
 ```
 
 Rules:

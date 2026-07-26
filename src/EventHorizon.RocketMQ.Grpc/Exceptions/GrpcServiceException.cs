@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Exceptions;
+using EventHorizon.RocketMQ.Grpc.Exceptions;
 
 namespace EventHorizon.RocketMQ.Grpc.Exceptions;
 

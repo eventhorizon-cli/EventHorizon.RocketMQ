@@ -124,5 +124,5 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
 - [gRPC project guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md)
 - [gRPC SimpleConsumer sample](../../../samples/grpc/SimpleConsumer/README.md)
 - [gRPC PushConsumer sample](../../../samples/grpc/PushConsumer/README.md)
-- [Protocol boundaries and dependencies](../architecture/protocol-boundaries.md)
+- [Protocol Boundaries and Type Ownership](../architecture/protocol-boundaries.md)
 - [Dependency-injection client registrations and lifetimes](../architecture/dependency-injection-and-lifetimes.md)

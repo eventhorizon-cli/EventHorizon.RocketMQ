@@ -280,7 +280,7 @@ checking whether RocketMQ is running:
 
 ## Related Reading
 
-- [Protocol boundaries and dependencies](protocol-boundaries.md)
+- [Protocol Boundaries and Type Ownership](protocol-boundaries.md)
 - [Dependency-injection client registrations and lifetimes](dependency-injection-and-lifetimes.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)

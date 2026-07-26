@@ -15,8 +15,9 @@ integration tests and Docker Compose for manual exploration and samples.
 ## Decision
 
 ```text
-Unit tests
+Unit and compatibility tests
     -> protocol-specific test projects
+    -> one project compiling against both protocol assemblies
     -> deterministic collaborators, no RocketMQ network
 
 Integration tests
@@ -29,7 +30,7 @@ Manual samples
     -> stable localhost ports and optional persistent volumes
 ```
 
-The shared Testcontainers project is infrastructure, not another protocol client. It must not
+The Testcontainers infrastructure Project is not another protocol client. It must not
 reference either production protocol project. The gRPC and Remoting integration-test assemblies
 reference it and keep their assertions protocol-specific.
 
@@ -37,16 +38,19 @@ reference it and keep their assertions protocol-specific.
 
 ### Unit tests
 
-The production projects have matching unit-test projects:
+Protocol behavior has matching unit-test projects, while one compatibility project references both
+protocol Projects:
 
-- [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests)
 - [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests)
 - [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests)
+- [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests)
 
 They validate isolated behavior such as serialization, route caching, client lifecycle, handler
-lifetimes, and public contracts without depending on a Broker. Replaceable collaborators normally
-use Moq; purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency
-behavior that would be less clear with a mock.
+lifetimes, and public contracts without depending on a Broker. The compatibility tests compile
+against both protocol Projects to verify both public APIs, namespace separation, and dual-Package
+consumption. Replaceable collaborators normally use Moq;
+purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
+that would be less clear with a mock.
 
 ### Integration tests and Testcontainers
 

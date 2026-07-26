@@ -33,7 +33,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../EventHorizon.RocketMQ.Shared/EventHorizon.RocketMQ.Shared.csproj" />
         <None Update="README.md" Pack="true" PackagePath="/" />
         <None Update="README.zh-CN.md" Pack="true" PackagePath="/" />
         <None Include="../../LICENSE" Pack="true" PackagePath="/" />

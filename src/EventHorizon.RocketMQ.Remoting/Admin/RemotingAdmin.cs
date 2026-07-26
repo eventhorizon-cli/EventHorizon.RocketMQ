@@ -15,7 +15,6 @@
 
 using System.Globalization;
 using System.Net;
-using EventHorizon.RocketMQ.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Producer;

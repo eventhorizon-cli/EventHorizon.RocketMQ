@@ -13,20 +13,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Consumer;
+namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
 /// <summary>
-/// Specifies the syntax of a RocketMQ filter expression.
+/// Specifies the outcome of processing a consumed message.
 /// </summary>
-public enum FilterExpressionType
+public enum ConsumeResult
 {
     /// <summary>
-    /// Uses RocketMQ tag-filter expression syntax.
+    /// Indicates that the message was processed successfully and can be acknowledged.
     /// </summary>
-    Tag,
+    Success,
 
     /// <summary>
-    /// Uses RocketMQ SQL92 filter expression syntax.
+    /// Indicates that message processing should be retried.
     /// </summary>
-    Sql
+    Retry,
+
+    /// <summary>
+    /// Indicates that the message should be forwarded to the dead-letter queue.
+    /// </summary>
+    DeadLetter
 }

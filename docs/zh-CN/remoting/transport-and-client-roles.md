@@ -104,8 +104,8 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 ACL、重连和 route 仍由本项目维护。修改这些代码时应配合 framing、并发和 Docker 集成测试，而不是仅看
 单个发送测试。
 
-**不要把经典类型搬进 Shared。** `RemotingMessageQueue`、`RemotingSendStatus`、POP receipt 和 route 数据
-都有经典协议语义。它们留在 Remoting Project 中，可以避免 gRPC 用户错误依赖无法实现的能力。
+**经典类型应留在 Remoting Project。** `RemotingMessageQueue`、`RemotingSendStatus`、POP receipt 和
+route 数据都有经典协议语义。把它们放进第三个通用 Project，会让 gRPC 用户错误依赖无法实现的能力。
 
 **服务端特性仍需验证。** SQL 过滤、POP、Lite、优先级、定时撤回、事务、请求-响应回调和队列锁均可能依赖
 Broker 版本、Broker 配置与网络策略。请使用[Remoting Project 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)

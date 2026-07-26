@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using System.Reflection;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 using EventHorizon.RocketMQ.Grpc.Producer;
@@ -79,6 +79,23 @@ public sealed class DependencyInjectionTests
             () => provider.GetRequiredService<IOptions<GrpcClientOptions>>().Value);
 
         Assert.Contains("access key and an access secret", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddRocketMQGrpc_RejectsSecurityTokenWithoutCredentials()
+    {
+        var services = new ServiceCollection();
+        services.AddRocketMQGrpc(options =>
+        {
+            options.Endpoint = "127.0.0.1:8081";
+            options.SecurityToken = "security-token";
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            () => provider.GetRequiredService<IOptions<GrpcClientOptions>>().Value);
+
+        Assert.Contains("security token", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -204,11 +221,7 @@ public sealed class DependencyInjectionTests
     {
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options =>
-            {
-                options.Endpoint = "127.0.0.1:8081";
-                options.InstanceName = "di-test";
-            })
+            .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
             .AddGrpcProducer()
             .AddGrpcSimpleConsumer(options =>
             {

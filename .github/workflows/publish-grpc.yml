@@ -1,0 +1,105 @@
+name: Publish gRPC NuGet Package
+
+# Publish with a tag such as grpc-v1.2.3.
+on:
+  push:
+    tags:
+      - "grpc-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuget-publish-grpc
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
+  PROTOCOL_PROJECT: src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj
+  PROTOCOL_TEST_PROJECT: tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+
+jobs:
+  publish:
+    name: Test, pack, and publish gRPC
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#grpc-v}"
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+
+          if [[ "$version" == "$TAG_NAME" || ! "$version" =~ $semver_pattern ]]; then
+            echo "::error title=Invalid gRPC release tag::Expected grpc-v<semver>, received '$TAG_NAME'."
+            exit 1
+          fi
+
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore "$PROTOCOL_TEST_PROJECT"
+
+      - name: Build unit tests
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          dotnet build "$PROTOCOL_TEST_PROJECT"
+          --configuration Release
+          --no-restore
+          -p:Version="$VERSION"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Test gRPC
+        run: >-
+          dotnet test "$PROTOCOL_TEST_PROJECT"
+          --configuration Release
+          --no-build
+          --no-restore
+
+      - name: Pack gRPC
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          dotnet pack "$PROTOCOL_PROJECT"
+          --configuration Release
+          --no-build
+          --no-restore
+          --output artifacts/packages
+          -p:Version="$VERSION"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: grpc-nuget-${{ steps.version.outputs.value }}
+          path: artifacts/packages/EventHorizon.RocketMQ.Grpc.*
+          if-no-files-found: error
+
+      - name: Publish gRPC
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          package="artifacts/packages/EventHorizon.RocketMQ.Grpc.$VERSION.nupkg"
+
+          if [[ ! -f "$package" ]]; then
+            echo "::error title=Missing gRPC package::Expected '$package'."
+            exit 1
+          fi
+
+          dotnet nuget push "$package" --api-key "$NUGET_API_KEY" --source "$NUGET_SOURCE"

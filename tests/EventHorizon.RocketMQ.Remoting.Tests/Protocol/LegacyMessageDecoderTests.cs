@@ -16,7 +16,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using K4os.Compression.LZ4.Streams;
 using Xunit;

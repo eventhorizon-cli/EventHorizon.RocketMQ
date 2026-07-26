@@ -1,0 +1,105 @@
+name: Publish Remoting NuGet Package
+
+# Publish with a tag such as remoting-v1.2.3.
+on:
+  push:
+    tags:
+      - "remoting-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuget-publish-remoting
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
+  PROTOCOL_PROJECT: src/EventHorizon.RocketMQ.Remoting/EventHorizon.RocketMQ.Remoting.csproj
+  PROTOCOL_TEST_PROJECT: tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj
+
+jobs:
+  publish:
+    name: Test, pack, and publish Remoting
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#remoting-v}"
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+
+          if [[ "$version" == "$TAG_NAME" || ! "$version" =~ $semver_pattern ]]; then
+            echo "::error title=Invalid Remoting release tag::Expected remoting-v<semver>, received '$TAG_NAME'."
+            exit 1
+          fi
+
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore "$PROTOCOL_TEST_PROJECT"
+
+      - name: Build unit tests
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          dotnet build "$PROTOCOL_TEST_PROJECT"
+          --configuration Release
+          --no-restore
+          -p:Version="$VERSION"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Test Remoting
+        run: >-
+          dotnet test "$PROTOCOL_TEST_PROJECT"
+          --configuration Release
+          --no-build
+          --no-restore
+
+      - name: Pack Remoting
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          dotnet pack "$PROTOCOL_PROJECT"
+          --configuration Release
+          --no-build
+          --no-restore
+          --output artifacts/packages
+          -p:Version="$VERSION"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: remoting-nuget-${{ steps.version.outputs.value }}
+          path: artifacts/packages/EventHorizon.RocketMQ.Remoting.*
+          if-no-files-found: error
+
+      - name: Publish Remoting
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          package="artifacts/packages/EventHorizon.RocketMQ.Remoting.$VERSION.nupkg"
+
+          if [[ ! -f "$package" ]]; then
+            echo "::error title=Missing Remoting package::Expected '$package'."
+            exit 1
+          fi
+
+          dotnet nuget push "$package" --api-key "$NUGET_API_KEY" --source "$NUGET_SOURCE"

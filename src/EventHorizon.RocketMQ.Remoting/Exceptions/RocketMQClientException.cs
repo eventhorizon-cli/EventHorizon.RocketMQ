@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Exceptions;
+namespace EventHorizon.RocketMQ.Remoting.Exceptions;
 
 /// <summary>
 /// Represents an error reported by a RocketMQ client transport.

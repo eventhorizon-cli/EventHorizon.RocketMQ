@@ -15,7 +15,7 @@
 
 using System.Collections.Concurrent;
 using System.Globalization;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;

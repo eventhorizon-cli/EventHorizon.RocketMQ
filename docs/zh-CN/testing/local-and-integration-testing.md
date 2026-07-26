@@ -16,16 +16,16 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 
 ## 决策
 
-测试项目与生产项目按协议一一对应：
+测试项目按协议和职责拆分：
 
 | 位置 | 类型 | 责任 |
 | --- | --- | --- |
-| [`tests/EventHorizon.RocketMQ.Shared.Tests`](../../../tests/EventHorizon.RocketMQ.Shared.Tests) | 单元测试 | 消息、过滤、公共配置选项和公共异常的协议无关语义。 |
 | [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
 | [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
+| [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
 | [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
 | [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
-| [`tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与共享环境，不引用任一生产协议项目。 |
+| [`tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
 | [`tests/EventHorizon.RocketMQ.Benchmarks`](../../../tests/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
 
 单元测试优先使用 `MockBehavior.Strict` 的 Moq，以明确可替换协作者的交互。对于流式 framing、竞争、
@@ -103,9 +103,9 @@ dotnet format EventHorizon.RocketMQ.sln
 dotnet restore EventHorizon.RocketMQ.sln
 dotnet build EventHorizon.RocketMQ.sln --no-restore
 
-dotnet test tests/EventHorizon.RocketMQ.Shared.Tests/EventHorizon.RocketMQ.Shared.Tests.csproj --no-restore
 dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
 dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
+dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
 ```
 
 涉及 Broker、NameServer、Proxy、wire interoperability 或实际协议行为时，再运行匹配的 integration test：

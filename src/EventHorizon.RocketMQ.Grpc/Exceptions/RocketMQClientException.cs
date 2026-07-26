@@ -13,25 +13,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Consumer;
+namespace EventHorizon.RocketMQ.Grpc.Exceptions;
 
 /// <summary>
-/// Specifies how a consumer queries an offset for a message queue.
+/// Represents an error reported by a RocketMQ client transport.
 /// </summary>
-public enum QueryOffsetPolicy
+public class RocketMQClientException : Exception
 {
     /// <summary>
-    /// Queries the earliest available offset in the queue.
+    /// Initializes a new instance of the <see cref="RocketMQClientException"/> class with an error message.
     /// </summary>
-    Beginning,
+    /// <param name="message">The message that describes the error.</param>
+    public RocketMQClientException(string message) : base(message)
+    {
+    }
 
     /// <summary>
-    /// Queries the offset after the latest available message in the queue.
+    /// Initializes a new instance of the <see cref="RocketMQClientException"/> class with an error message and the
+    /// exception that caused the error.
     /// </summary>
-    End,
-
-    /// <summary>
-    /// Queries the offset corresponding to a specified timestamp.
-    /// </summary>
-    Timestamp
+    /// <param name="message">The message that describes the error.</param>
+    /// <param name="innerException">The exception that caused the current exception, if one is available.</param>
+    public RocketMQClientException(string message, Exception? innerException) : base(message, innerException)
+    {
+    }
 }

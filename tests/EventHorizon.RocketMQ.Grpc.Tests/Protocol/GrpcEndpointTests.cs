@@ -63,8 +63,7 @@ public sealed class GrpcEndpointTests
     {
         var options = Options.Create(new GrpcClientOptions
         {
-            Endpoint = "proxy-a.example:8081;proxy-b.example:8082",
-            InstanceName = "multi-endpoint-test"
+            Endpoint = "proxy-a.example:8081;proxy-b.example:8082"
         });
         await using var client = new RocketMQGrpcClient(
             options,

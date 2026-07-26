@@ -13,10 +13,20 @@ Broker。
 
 ## 快速开始
 
-先配置应用所使用的 NuGet 源，再安装 gRPC Package。Shared Package 会作为传递依赖引入。
+先配置应用所使用的 NuGet 源，再安装 gRPC Package。该 Package 在客户端 API 层面完全自包含：所有公开
+模型都在自己的程序集内，不依赖其他 EventHorizon.RocketMQ Package。
 
 ```shell
 dotnet add package EventHorizon.RocketMQ.Grpc
+```
+
+所有公开客户端模型都位于 `EventHorizon.RocketMQ.Grpc` 命名空间树下。gRPC 与 Remoting Package 可以在
+同一应用中使用，但两套协议命名空间中的同名模型仍是不同的 CLR 类型，不能直接互换。如果同一个文件
+导入了两边的协议命名空间，应为重复的短类型名设置 alias：
+
+```csharp
+using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
+using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 ```
 
 假设 `localhost:8081` 上已有可访问的 Proxy，并且已创建 `orders` topic，下面的 ASP.NET Core
@@ -26,7 +36,6 @@ Minimal API 会注册默认 Producer，并将其注入发送消息的 endpoint�
 using System.Text;
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Producer;
-using EventHorizon.RocketMQ.Producer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
@@ -86,9 +95,9 @@ ASP.NET Core Host 会随应用启动和停止已注册的 Producer。完整应�
 
 `Endpoint` 接受一个或多个以分号分隔的 Proxy 地址。发往这些地址的请求会在请求截止时间内故障转移。
 `RequestTimeout`、`RouteCacheDuration` 和 `HeartbeatInterval` 可分别控制请求、路由刷新和心跳时序。
-启用 `UseTLS` 后使用 TLS；通过 `AccessKey`、`AccessSecret` 和 `SecurityToken` 配置 ACL 凭据；
-`Namespace` 用于限定 topic 和 consumer group。`AddRocketMQGrpc` 的返回值用于继续添加 Producer 和
-Consumer 角色。
+启用 `UseTLS` 后使用 TLS；通过 `AccessKey`、`AccessSecret` 和 `SecurityToken` 配置 ACL 凭据。配置
+`SecurityToken` 时必须同时提供 access key 和 secret。`Namespace` 用于限定 topic 和 consumer group。
+`AddRocketMQGrpc` 的返回值用于继续添加 Producer 和 Consumer 角色。
 
 当一个 Host 需要连接多个集群或注册同一角色的多个实例时，请使用 keyed 客户端注册。注册名称即
 `registrationName`；该 `registrationName` 同时作为 keyed service 的 key。
@@ -119,7 +128,6 @@ public sealed class OrderPublisher(
 ```csharp
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Producer;
-using EventHorizon.RocketMQ.Producer;
 
 public sealed class OrderPublisher(IGrpcProducer producer)
 {
@@ -158,7 +166,6 @@ public sealed class OrderPublisher(IGrpcProducer producer)
 ```csharp
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Producer.Transactions;
-using EventHorizon.RocketMQ.Producer;
 
 rocketMQ.AddGrpcProducer(options =>
 {
@@ -207,7 +214,7 @@ public sealed class TransactionalOrderWriter(IGrpcProducer producer)
 修改。
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 
 rocketMQ.AddGrpcSimpleConsumer(options =>
@@ -255,7 +262,6 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
@@ -293,7 +299,7 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
@@ -335,8 +341,8 @@ LiteTopic 名称和配额限制仍由服务端决定；订阅被拒绝时会抛�
 ## 错误处理
 
 已完成的 gRPC 调用如果返回不成功的 RocketMQ 状态，会抛出 `GrpcServiceException`。其
-`ResponseCode` 保留 RocketMQ 数字服务码。该异常派生自 Shared 中的
-`RocketMQClientException`，因此调用方可以捕获协议专用异常，也可以捕获公共基类。
+`ResponseCode` 保留 RocketMQ 数字服务码。该异常派生自当前 Package 中的
+`RocketMQClientException` 基类。
 
 ## 本地测试
 

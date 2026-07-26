@@ -14,8 +14,6 @@
 // limitations under the License.
 
 using System.Net;
-using EventHorizon.RocketMQ.Consumer;
-using EventHorizon.RocketMQ.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;

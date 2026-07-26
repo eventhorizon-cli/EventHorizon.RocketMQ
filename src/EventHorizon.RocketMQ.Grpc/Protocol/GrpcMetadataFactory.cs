@@ -33,12 +33,7 @@ internal sealed class GrpcMetadataFactory
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalClient);
         _options = options.Value;
-        var baseClientId = _options.BuildGrpcClientId();
-        var logicalSuffix = $"@{logicalClient}";
-        var suffix = baseClientId.EndsWith(logicalSuffix, StringComparison.Ordinal)
-            ? string.Empty
-            : logicalSuffix;
-        _clientId = $"{baseClientId}{suffix}@{Guid.NewGuid():N}";
+        _clientId = $"{Environment.MachineName}@{Environment.ProcessId}@{logicalClient}@{Guid.NewGuid():N}";
         _version = typeof(GrpcMetadataFactory).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
     }
@@ -58,12 +53,12 @@ internal sealed class GrpcMetadataFactory
             { dateHeader, timestamp }
         };
 
-        if (!string.IsNullOrEmpty(_options.SecurityToken))
+        if (!string.IsNullOrWhiteSpace(_options.SecurityToken))
         {
             metadata.Add("x-mq-session-token", _options.SecurityToken);
         }
 
-        if (!string.IsNullOrEmpty(_options.AccessKey) && !string.IsNullOrEmpty(_options.AccessSecret))
+        if (!string.IsNullOrWhiteSpace(_options.AccessKey) && !string.IsNullOrWhiteSpace(_options.AccessSecret))
         {
             using var hmac = new HMACSHA1(Encoding.UTF8.GetBytes(_options.AccessSecret));
             var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(timestamp)))

@@ -13,7 +13,7 @@
 | 主题 | 文章 | 适合解决的问题 |
 | --- | --- | --- |
 | 架构 | [RocketMQ 服务端与客户端路径](architecture/rocketmq-architecture.md) | NameServer、Broker、Proxy、两种协议路径、LitePush 与本地 Compose 拓扑如何配合？ |
-| 架构 | [协议边界](architecture/protocol-boundaries.md) | 为什么没有统一的跨协议 Producer、Consumer 或结果类型？ |
+| 架构 | [协议边界与类型归属](architecture/protocol-boundaries.md) | 为什么 gRPC 与 Remoting 分别保存自己的 API 模型，又能在同一应用中使用？ |
 | 架构 | [依赖注入与生命周期](architecture/dependency-injection-and-lifetimes.md) | 默认客户端注册、keyed 客户端注册、keyed service、Consumer Engine 和 handler 如何组成一个 Host？ |
 | gRPC | [消费模型](grpc/consumer-model.md) | Simple、Push 与 LitePush 分别适用于什么场景？为什么没有 gRPC PullConsumer？ |
 | Remoting | [传输与客户端角色](remoting/transport-and-client-roles.md) | NameServer 路由、Socket 传输和各类经典 Consumer 有什么边界？ |
@@ -21,12 +21,11 @@
 
 ## 快速定位
 
-- 协议无关的消息、过滤器和公共异常位于
-  [`src/EventHorizon.RocketMQ.Shared`](../../src/EventHorizon.RocketMQ.Shared)。
 - RocketMQ 5 protobuf/gRPC 客户端位于
   [`src/EventHorizon.RocketMQ.Grpc`](../../src/EventHorizon.RocketMQ.Grpc)，连接目标是 Proxy。
 - 经典 NameServer/Broker 客户端位于
   [`src/EventHorizon.RocketMQ.Remoting`](../../src/EventHorizon.RocketMQ.Remoting)。
+- 两个客户端 Project 分别保存自己的公开模型与实现，彼此没有生产 ProjectReference。
 - Docker Compose 手工环境位于 [`test-environments`](../../test-environments)。
 
 文档描述的是仓库当前实现，并不代表 RocketMQ 所有版本和部署形态的通用兼容性承诺。

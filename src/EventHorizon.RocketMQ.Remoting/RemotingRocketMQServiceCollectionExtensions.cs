@@ -83,6 +83,11 @@ public static class RemotingRocketMQServiceCollectionExtensions
                 static options => string.IsNullOrWhiteSpace(options.AccessKey) ==
                                   string.IsNullOrWhiteSpace(options.AccessSecret),
                 "RocketMQ ACL requires both an access key and an access secret.")
+            .Validate(
+                static options => string.IsNullOrWhiteSpace(options.SecurityToken) ||
+                                  (!string.IsNullOrWhiteSpace(options.AccessKey) &&
+                                   !string.IsNullOrWhiteSpace(options.AccessSecret)),
+                "A RocketMQ security token requires both an access key and an access secret.")
             .Validate(static options => options.RequestTimeout > TimeSpan.Zero, "Request timeout must be positive.")
             .Validate(
                 static options => options.PollNameServerInterval > TimeSpan.Zero,

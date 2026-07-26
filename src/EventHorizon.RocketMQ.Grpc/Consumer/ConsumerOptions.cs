@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Consumer;
+namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 /// <summary>
-/// Provides protocol-neutral configuration shared by RocketMQ consumers.
+/// Provides common configuration for RocketMQ consumers.
 /// </summary>
 public abstract class ConsumerOptions
 {
@@ -51,7 +51,9 @@ public abstract class ConsumerOptions
     /// The filter expression, or <see langword="null"/> to match every message in the topic.
     /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="topic"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException"><paramref name="topic"/> is empty or consists only of white-space characters.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="topic"/> is empty or consists only of white-space characters.
+    /// </exception>
     public void Subscribe(string topic, FilterExpression? expression = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);

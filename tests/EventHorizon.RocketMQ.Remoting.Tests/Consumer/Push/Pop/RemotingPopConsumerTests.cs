@@ -16,7 +16,6 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Text;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;

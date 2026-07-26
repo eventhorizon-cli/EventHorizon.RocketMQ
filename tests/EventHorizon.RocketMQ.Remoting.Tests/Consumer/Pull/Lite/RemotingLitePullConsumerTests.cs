@@ -15,7 +15,6 @@
 
 using System.Text;
 using System.Text.Json;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;

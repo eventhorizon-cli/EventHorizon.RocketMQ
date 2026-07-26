@@ -23,7 +23,17 @@
 dotnet add package EventHorizon.RocketMQ.Remoting
 ```
 
-`EventHorizon.RocketMQ.Shared` 会作为传递依赖引入，无需单独安装。
+该 Package 在客户端 API 层面完全自包含：所有公开模型都在自己的程序集内，不依赖其他
+EventHorizon.RocketMQ Package。
+
+所有公开客户端模型都位于 `EventHorizon.RocketMQ.Remoting` 命名空间树下。Remoting 与 gRPC Package 可以在
+同一应用中使用，但两套协议命名空间中的同名模型仍是不同的 CLR 类型，不能直接互换。如果同一个文件
+导入了两边的协议命名空间，应为重复的短类型名设置 alias：
+
+```csharp
+using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
+using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
+```
 
 ### 最小注册与使用
 
@@ -31,7 +41,6 @@ dotnet add package EventHorizon.RocketMQ.Remoting
 下面的 ASP.NET Core Minimal API 会在每次 `POST /messages` 请求时发送一条消息。
 
 ```csharp
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.AspNetCore.Builder;
@@ -103,7 +112,7 @@ await app.RunAsync();
 ### ACL
 
 同时设置 `AccessKey` 和 `AccessSecret` 后，客户端会对 NameServer 与 Broker 请求签名。
-`SecurityToken` 为可选配置，设置后会随请求发送。
+`SecurityToken` 为可选配置，设置后会随签名请求发送；使用它时必须同时提供 access key 和 secret。
 
 ```csharp
 builder.Services.AddRocketMQRemoting(options =>
@@ -152,7 +161,6 @@ builder.Services.AddRocketMQRemoting(options =>
 
 ```csharp
 using System.Text;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 
@@ -254,7 +262,6 @@ var reply = await producer.RequestAsync(
 `SEND_REPLY_MESSAGE` 命令，并不会让 Producer API 耦合 Consumer 实现。
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Producer;
 
@@ -313,8 +320,8 @@ var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancel
 `IRemotingPullConsumer` 将队列分配、消息处理和位点提交时机交给应用程序控制。
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 
 rocketMQ.AddRemotingPullConsumer(options =>
@@ -373,8 +380,8 @@ FilterExpressionType.Sql)`；目标 Broker 必须允许属性过滤。
 位点；只有显式调用 `CommitAsync` 才会将该位点写入 Broker。
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 
 rocketMQ.AddRemotingLitePullConsumer(options =>
@@ -419,8 +426,8 @@ Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长�
 经典 Broker 的单次 POP 最多接受 32 条消息；`BatchSize` 和每次调用的 `maxMessages` 参数均受该上限限制。
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 
 rocketMQ.AddRemotingPopConsumer(options =>
@@ -468,7 +475,6 @@ POP 命令码超出了 RocketMQ 可选二进制 command-header 格式保留的�
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
@@ -586,7 +592,7 @@ public sealed class AuditPublisher(
 - 本仓库提供的本地 Docker Compose 测试环境使用 Apache RocketMQ 5.5.0。SQL 过滤、TLS、ACL、优先级和 Lite 消息等能力
   仍取决于目标集群配置和服务端支持。
 - `RemotingCommandException` 表示 NameServer 或 Broker 拒绝了命令，并保留原始 `ResponseCode`；
-  它继承 `RocketMQClientException`，可用于协议无关的异常处理。
+  它继承当前 Package 中的 `RocketMQClientException` 基类。
 
 ## 本地测试
 

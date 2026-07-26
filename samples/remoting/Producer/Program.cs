@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Samples.Remoting.Producer;

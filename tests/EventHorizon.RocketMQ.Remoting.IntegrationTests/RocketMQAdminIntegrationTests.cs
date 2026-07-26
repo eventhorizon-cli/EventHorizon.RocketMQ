@@ -14,10 +14,9 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting.Admin;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;

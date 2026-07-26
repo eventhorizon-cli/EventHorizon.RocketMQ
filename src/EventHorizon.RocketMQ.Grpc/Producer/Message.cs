@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace EventHorizon.RocketMQ.Producer;
+namespace EventHorizon.RocketMQ.Grpc.Producer;
 
 /// <summary>
 /// Represents a message to publish to RocketMQ.
@@ -32,7 +32,9 @@ public class Message
     /// <exception cref="ArgumentNullException">
     /// <paramref name="topic"/> or <paramref name="body"/> is <see langword="null"/>.
     /// </exception>
-    /// <exception cref="ArgumentException"><paramref name="topic"/> is empty or consists only of white-space characters.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="topic"/> is empty or consists only of white-space characters.
+    /// </exception>
     public Message(string topic, byte[] body)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);

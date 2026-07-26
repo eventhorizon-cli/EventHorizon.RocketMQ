@@ -41,7 +41,7 @@ internal static class GrpcRocketMQRegistration
         {
             var configured = provider.GetRequiredService<IOptionsMonitor<GrpcClientOptions>>()
                 .Get(roleKey.OptionsName);
-            return Options.Create(configured.ForLogicalClient(roleKey.LogicalClientName));
+            return Options.Create(configured);
         });
         return roleKey;
     }

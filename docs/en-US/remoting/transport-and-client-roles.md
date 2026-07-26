@@ -104,7 +104,7 @@ network can be valid syntactically and still be unusable from the current networ
 - Remoting has a broader classic feature surface, but that surface relies on direct Broker access
   and classic server compatibility.
 - The client preserves route, queue, offset, receipt, and send-result types in the Remoting
-  namespace. They should not be moved into Shared or substituted with gRPC types.
+  namespace. They should not be moved into a third generic Project or substituted with gRPC types.
 - The Admin role performs read-only operations. It is not a general Broker-administration API and
   does not create topics or mutate consumer offsets.
 - ACL credentials, TLS settings, frame-size limits, and advertised Broker addresses are part of
@@ -117,5 +117,5 @@ network can be valid syntactically and still be unusable from the current networ
 - [classic Remoting project guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md)
 - [Remoting Admin sample](../../../samples/remoting/Admin/README.md)
 - [Remoting PullConsumer sample](../../../samples/remoting/PullConsumer/README.md)
-- [Protocol boundaries and dependencies](../architecture/protocol-boundaries.md)
+- [Protocol Boundaries and Type Ownership](../architecture/protocol-boundaries.md)
 - [Local and integration testing](../testing/local-and-integration-testing.md)

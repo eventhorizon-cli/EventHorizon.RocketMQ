@@ -26,7 +26,17 @@ Configure the package source used by your environment, then install the Remoting
 dotnet add package EventHorizon.RocketMQ.Remoting
 ```
 
-`EventHorizon.RocketMQ.Shared` is referenced transitively and does not need to be installed separately.
+The package is self-contained as a client package: all public client models live in its own assembly, with no
+dependency on another EventHorizon.RocketMQ package.
+
+All public client models use the `EventHorizon.RocketMQ.Remoting` namespace tree. The Remoting and gRPC packages can
+be installed together, but similarly named models in their protocol namespaces are distinct CLR types and are not
+interchangeable. When one file imports both protocol namespaces, use aliases for the duplicate short names:
+
+```csharp
+using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
+using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
+```
 
 ### Minimal registration and use
 
@@ -35,7 +45,6 @@ protocol-specific interface into an endpoint. The following ASP.NET Core Minimal
 `POST /messages` request.
 
 ```csharp
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.AspNetCore.Builder;
@@ -110,7 +119,7 @@ enable the applicable server-side feature.
 ### ACL
 
 Set both `AccessKey` and `AccessSecret` to sign NameServer and Broker requests. `SecurityToken` is
-optional and is included when configured.
+optional and is included with signed requests; configuring it requires both the access key and secret.
 
 ```csharp
 builder.Services.AddRocketMQRemoting(options =>
@@ -160,7 +169,6 @@ Register and inject `IRemotingProducer`; there is no transport-independent Produ
 
 ```csharp
 using System.Text;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 
@@ -266,7 +274,6 @@ sends it through `SendReplyAsync`. This sends the classic `SEND_REPLY_MESSAGE` c
 couple Producer APIs to the Consumer implementation.
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Producer;
 
@@ -328,8 +335,8 @@ For a runnable HTTP and Swagger interface, see the
 `IRemotingPullConsumer` leaves queue assignment, processing, and commit timing to the application.
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 
 rocketMQ.AddRemotingPullConsumer(options =>
@@ -389,8 +396,8 @@ queues. `PollAsync` advances only the local queue position; `CommitAsync` is the
 writes that position to the Broker.
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 
 rocketMQ.AddRemotingLitePullConsumer(options =>
@@ -437,8 +444,8 @@ Classic Brokers accept at most 32 messages in one POP request. Both `BatchSize` 
 `maxMessages` argument enforce that limit.
 
 ```csharp
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 
 rocketMQ.AddRemotingPopConsumer(options =>
@@ -489,7 +496,6 @@ offset reset.
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
@@ -620,7 +626,7 @@ standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and `S
   TLS, ACL, priority, and lite messages still depend on the target cluster configuration and server
   support.
 - `RemotingCommandException` reports a NameServer or Broker rejection and retains the raw
-  `ResponseCode`. It derives from `RocketMQClientException` for protocol-neutral error handling.
+  `ResponseCode`. It derives from this package's `RocketMQClientException` base type.
 
 ## Local testing
 

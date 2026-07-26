@@ -17,7 +17,6 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Producer.Transactions;
 using EventHorizon.RocketMQ.Remoting.Protocol;

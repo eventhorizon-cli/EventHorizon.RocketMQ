@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer;
 using Proto = Apache.Rocketmq.V2;
 
 namespace EventHorizon.RocketMQ.Grpc.Consumer;

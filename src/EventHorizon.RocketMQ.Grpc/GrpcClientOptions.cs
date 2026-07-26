@@ -18,12 +18,17 @@ namespace EventHorizon.RocketMQ.Grpc;
 /// <summary>
 /// Configures a RocketMQ 5 gRPC client.
 /// </summary>
-public sealed class GrpcClientOptions : RocketMQClientOptions
+public sealed class GrpcClientOptions
 {
     /// <summary>
     /// Gets or sets the RocketMQ 5 proxy endpoint.
     /// </summary>
     public string Endpoint { get; set; } = "localhost:8081";
+
+    /// <summary>
+    /// Gets or sets the base timeout for an individual request to RocketMQ.
+    /// </summary>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Gets or sets how long topic routes remain cached before they are refreshed.
@@ -35,8 +40,31 @@ public sealed class GrpcClientOptions : RocketMQClientOptions
     /// </summary>
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(30);
 
-    internal string BuildGrpcClientId() => BuildClientId();
+    /// <summary>
+    /// Gets or sets the access key used for access-control authentication.
+    /// </summary>
+    public string? AccessKey { get; set; }
 
-    internal GrpcClientOptions ForLogicalClient(string logicalClient) =>
-        (GrpcClientOptions)CloneForLogicalClient(logicalClient);
+    /// <summary>
+    /// Gets or sets the access secret used for access-control authentication.
+    /// </summary>
+    public string? AccessSecret { get; set; }
+
+    /// <summary>
+    /// Gets or sets the temporary security token included with authenticated requests.
+    /// </summary>
+    /// <remarks>
+    /// Configuring a security token also requires <see cref="AccessKey"/> and <see cref="AccessSecret"/>.
+    /// </remarks>
+    public string? SecurityToken { get; set; }
+
+    /// <summary>
+    /// Gets or sets the resource namespace applied to RocketMQ topics and consumer groups.
+    /// </summary>
+    public string? Namespace { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether client transport connections use TLS.
+    /// </summary>
+    public bool UseTLS { get; set; }
 }

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
-using EventHorizon.RocketMQ.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging;

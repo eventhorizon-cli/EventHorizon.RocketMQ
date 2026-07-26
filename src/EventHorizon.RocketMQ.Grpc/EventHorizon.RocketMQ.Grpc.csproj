@@ -35,10 +35,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../EventHorizon.RocketMQ.Shared/EventHorizon.RocketMQ.Shared.csproj" />
-    </ItemGroup>
-
-    <ItemGroup>
         <Protobuf Include="Protocol/Protos/apache/rocketmq/v2/definition.proto"
                   ProtoRoot="Protocol/Protos"
                   GrpcServices="Client"

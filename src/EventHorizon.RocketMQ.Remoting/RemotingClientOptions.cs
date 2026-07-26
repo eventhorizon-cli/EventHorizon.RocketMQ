@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Remoting;
 /// <summary>
 /// Provides connection, identity, security, and transport options for a RocketMQ classic remoting client.
 /// </summary>
-public sealed class RemotingClientOptions : RocketMQClientOptions
+public sealed class RemotingClientOptions
 {
     internal const int RemotingMessageFrameReserve = 64 * 1024;
     internal const int MinimumRemotingFrameSize = RemotingMessageFrameReserve + (2 * sizeof(int));
@@ -31,6 +31,11 @@ public sealed class RemotingClientOptions : RocketMQClientOptions
     /// Gets or sets the semicolon-separated NameServer addresses used to discover brokers.
     /// </summary>
     public string NamesrvAddr { get; set; } = "localhost:9876";
+
+    /// <summary>
+    /// Gets or sets the base timeout for an individual request to RocketMQ.
+    /// </summary>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Gets or sets the interval at which topic route information is refreshed from a NameServer.
@@ -48,6 +53,45 @@ public sealed class RemotingClientOptions : RocketMQClientOptions
     public TimeSpan HeartbeatBrokerInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Gets or sets the access key used for access-control authentication.
+    /// </summary>
+    public string? AccessKey { get; set; }
+
+    /// <summary>
+    /// Gets or sets the access secret used for access-control authentication.
+    /// </summary>
+    public string? AccessSecret { get; set; }
+
+    /// <summary>
+    /// Gets or sets the temporary security token included with authenticated requests.
+    /// </summary>
+    /// <remarks>
+    /// Configuring a security token also requires <see cref="AccessKey"/> and <see cref="AccessSecret"/>.
+    /// </remarks>
+    public string? SecurityToken { get; set; }
+
+    /// <summary>
+    /// Gets or sets the client IP segment used to construct the classic RocketMQ client identifier.
+    /// </summary>
+    /// <remarks>This value identifies the client to RocketMQ; it does not select a local bind address.</remarks>
+    public string ClientIP { get; set; } = "127.0.0.1";
+
+    /// <summary>
+    /// Gets or sets the instance name used to distinguish this client process.
+    /// </summary>
+    public string InstanceName { get; set; } = $"{Environment.ProcessId}-{Guid.NewGuid():N}";
+
+    /// <summary>
+    /// Gets or sets the resource namespace applied to RocketMQ topics and consumer groups.
+    /// </summary>
+    public string? Namespace { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether client transport connections use TLS.
+    /// </summary>
+    public bool UseTLS { get; set; }
+
+    /// <summary>
     /// Gets or sets whether classic remoting requests use RocketMQ unit mode.
     /// </summary>
     public bool UnitMode { get; set; }
@@ -61,7 +105,7 @@ public sealed class RemotingClientOptions : RocketMQClientOptions
     /// Gets or sets a callback that configures TLS for each new classic remoting connection.
     /// </summary>
     /// <remarks>
-    /// The callback is used when <see cref="RocketMQClientOptions.UseTLS"/> is enabled. The client supplies a fresh
+    /// The callback is used when <see cref="UseTLS"/> is enabled. The client supplies a fresh
     /// options instance whose target host is initialized from the broker endpoint. The callback may configure a
     /// different target host, custom trust, client certificates, certificate revocation, or enabled protocols. It may
     /// be invoked concurrently.
@@ -80,10 +124,15 @@ public sealed class RemotingClientOptions : RocketMQClientOptions
 
     internal string BuildRemotingClientId()
     {
-        var clientId = BuildClientId();
+        var clientId = $"{ClientIP}@{InstanceName}";
         return string.IsNullOrWhiteSpace(UnitName) ? clientId : $"{clientId}@{UnitName}";
     }
 
-    internal RemotingClientOptions ForLogicalClient(string logicalClient) =>
-        (RemotingClientOptions)CloneForLogicalClient(logicalClient);
+    internal RemotingClientOptions ForLogicalClient(string logicalClient)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(logicalClient);
+        var clone = (RemotingClientOptions)MemberwiseClone();
+        clone.InstanceName = $"{InstanceName}@{logicalClient}";
+        return clone;
+    }
 }

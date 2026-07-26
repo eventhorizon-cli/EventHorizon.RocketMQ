@@ -116,7 +116,7 @@ does not create an application DI scope for the caller.
 
 ## Related Reading
 
-- [Protocol boundaries and dependencies](protocol-boundaries.md)
+- [Protocol Boundaries and Type Ownership](protocol-boundaries.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
 - [Keyed client-registration examples](../../../samples/README.md#producer-web-api-and-swagger)

@@ -1,106 +1,112 @@
-# 协议边界：把 gRPC 和 classic Remoting 当作两个客户端
+# 协议边界与类型归属
 
 [English](../../en-US/architecture/protocol-boundaries.md) | [简体中文](protocol-boundaries.md)
 
-> 本文讨论的是代码边界，不是让应用在两种协议之间做运行时自动切换。协议选择应由应用的连接目标和
-> 需要的能力决定。
-
 ## 背景
 
-RocketMQ 5 的 protobuf/gRPC 客户端连接的是 Proxy；经典客户端则先向 NameServer 查询路由，再直接
-连接 Broker。这不仅是不同的连接字符串，还是两种不同的服务端能力集合、消息模型和失败语义。
+RocketMQ 5 protobuf/gRPC 客户端连接 Proxy；classic Remoting 客户端则先向 NameServer 查询路由，再连接
+Broker。两条路径的服务发现、wire contract、Consumer 语义、结果类型和服务端要求都不相同。
 
-早期把两条路径放在一个“通用客户端”之下看似方便，却会产生误导：一个在经典 Broker 中可用的队列、
-位点或回调 API，未必在 Proxy API 中有对应的服务端实现。反过来，gRPC 的 receipt、不可见时间和
-telemetry 也不应被伪装成 classic Remoting 的类型。
+两种协议仍有少量行为相近的模型，例如 `Message`、过滤表达式、`ConsumeResult`、`ConsumerOptions` 和客户端
+异常基类。如果为这些类型增加第三个生产 Project，就会为了很小的 API 范围引入额外的 MSBuild 边界、
+Package 版本和发布依赖。
 
 ## 决策
 
-项目把协议边界作为第一层架构边界，而不是在调用时才分支：
+生产代码只包含两个完全独立的客户端 Project：
 
 ```text
-EventHorizon.RocketMQ.Grpc ───┐
-                               ├── EventHorizon.RocketMQ.Shared
-EventHorizon.RocketMQ.Remoting ┘
++-----------------------------------+      +---------------------------------------+
+| EventHorizon.RocketMQ.Grpc        |      | EventHorizon.RocketMQ.Remoting        |
+| Proxy + protobuf/gRPC             |      | NameServer + classic wire             |
+| EventHorizon.RocketMQ.Grpc.*      |      | EventHorizon.RocketMQ.Remoting.*      |
++-----------------------------------+      +---------------------------------------+
+                     两边没有生产 ProjectReference
 ```
 
-- `EventHorizon.RocketMQ.Grpc` 和 `EventHorizon.RocketMQ.Remoting` 只依赖 Shared，彼此不引用。
-- Shared 只保存真正协议无关的概念：`Message`、过滤表达式、`ConsumeResult`、`QueryOffsetPolicy`、
-  公共选项基类与 `RocketMQClientException`。
-- 每个协议 Project 自行定义 Producer、Consumer、结果、状态、队列模型、配置选项、注册方法和异常类型。
-- 应用显式选择 `AddRocketMQGrpc` 或 `AddRocketMQRemoting`；没有隐藏的 transport selector，也没有
-  传输无关的 `IProducer` 或 `IConsumer`。
+- 每个 Project 都实际保存并负责所有参与自身编译的源码文件。
+- 两个 NuGet Package 在客户端 API 边界上都完全自包含，不依赖其他 EventHorizon.RocketMQ Package。
+- 两个协议 Project 彼此不引用，也不存在第三个生产 Project。
+- 项目不提供 transport selector、公共 client builder，也不提供跨协议的 Producer 或 Consumer 接口。
+- `GrpcClientOptions` 负责 Proxy 地址、凭据、namespace、TLS 和 gRPC 时序；gRPC client ID 由内部按每个
+  逻辑角色生成。
+- `RemotingClientOptions` 负责 NameServer 发现、凭据、namespace、TLS、Remoting 时序，以及 Broker
+  协调所需的 classic client identity，并为每个逻辑角色复制独立的身份。
+- 两个 Options 都不继承仓库自定义的客户端 Options 基类；协议需要的配置不同，它们的结构也无需保持一致。
 
-这种设计允许一个 Host 同时安装两个 Package，但要求调用方明确知道每个实例连接的是 Proxy 还是
-NameServer/Broker。
+保留少量重复源码是有意作出的取舍。这样可以让类型归属、编译内容、打包结果和发布边界在每个协议 Project
+中保持直观。
 
-## 如何工作
+## 类型归属
 
-### Shared 是最小语义交集
+少量基础模型在两种协议中分别声明：
 
-[`EventHorizon.RocketMQ.Shared`](../../../src/EventHorizon.RocketMQ.Shared) 不知道 endpoint、NameServer、
-Broker、gRPC stub 或经典 wire frame。它的 `Message` 是跨协议发送输入，但发送后的结果不是：
-
-- gRPC 返回 [`GrpcSendReceipt`](../../../src/EventHorizon.RocketMQ.Grpc/Producer/GrpcSendReceipt.cs)，
-  以 gRPC/Proxy 的确认语义表达消息 ID、位点和可选 handle。
-- Remoting 返回
-  [`RemotingSendResult`](../../../src/EventHorizon.RocketMQ.Remoting/Producer/RemotingSendResult.cs)，
-  其状态需要调用方检查，因为经典 Broker 可以返回非成功存储状态而不以异常结束调用。
-- 收到的消息也按协议建模为 `GrpcMessageView` 和 `RemotingMessageView`，避免把 receipt、物理队列或
-  协议保留属性错误地提升为公共模型。
-
-Shared 不是“以后再把所有类型放进来的公共文件夹”。只有两个协议均能以相同语义使用的概念才应进入这里。
-
-### gRPC 的公开角色以 Proxy 能力为准
-
-gRPC Project 公开 `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer` 和
-`IGrpcLitePushConsumer`。它们位于
-[`src/EventHorizon.RocketMQ.Grpc`](../../../src/EventHorizon.RocketMQ.Grpc)，并通过 `Endpoint` 连接
-RocketMQ Proxy。
-
-`IGrpcPullConsumer` 不再是公开角色。显式队列/位点的 Pull 工作流要求 Proxy 端提供与之配套的 Pull 和
-位点 RPC；本项目不会把缺少可用服务端路径的接口保留为看似可用的 API。需要这种语义的应用应使用
-`IRemotingPullConsumer`，或改用 gRPC SimpleConsumer/PushConsumer 所提供的接收模型。
-
-### Remoting 保留经典角色，而不是模拟 gRPC
-
-Remoting Project 公开的角色包括 `IRemotingAdmin`、`IRemotingProducer`、`IRemotingPullConsumer`、
-`IRemotingLitePullConsumer`、`IRemotingPopConsumer` 和 `IRemotingPushConsumer`。它们位于
-[`src/EventHorizon.RocketMQ.Remoting`](../../../src/EventHorizon.RocketMQ.Remoting)，并使用
-`NamesrvAddr` 发现 Broker。
-
-这条路径保留了经典协议真正具有的能力，例如指定 `RemotingMessageQueue`、经典 Pull 位点、Broker
-请求-响应回调和 POP receipt。它也承担经典协议的成本：应用网络必须能够到达 NameServer 及其返回的
-Broker 地址。
-
-### 目录表达所有权
-
-两个协议项目都按 `Protocol`、`Consumer`、`Producer` 和 `Exceptions` 组织：
-
-| 位置 | 责任 | 不应放入的内容 |
+| 概念 | gRPC 类型 | Remoting 类型 |
 | --- | --- | --- |
-| `Protocol` | 可由多个角色复用的通信基础设施，如 route、RPC/socket、序列化和 telemetry | 某一种 Consumer 的调度、重试或 handler 策略 |
-| `Consumer` | 消费模型、调度、确认、重试和 feature 专有 decoder/header | Producer 发送流程 |
-| `Producer` | 发送、事务、回执、队列选择和请求-响应 | Consumer 生命周期 |
-| `Exceptions` | 协议专用失败类型 | 通用业务异常 |
+| 发送消息 | `EventHorizon.RocketMQ.Grpc.Producer.Message` | `EventHorizon.RocketMQ.Remoting.Producer.Message` |
+| 消费结果 | `EventHorizon.RocketMQ.Grpc.Consumer.ConsumeResult` | `EventHorizon.RocketMQ.Remoting.Consumer.ConsumeResult` |
+| Consumer Options 基类 | `EventHorizon.RocketMQ.Grpc.Consumer.ConsumerOptions` | `EventHorizon.RocketMQ.Remoting.Consumer.ConsumerOptions` |
+| 过滤表达式 | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpression` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpression` |
+| 过滤类型 | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
+| 客户端异常基类 | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-这让一个新增的协议特性先回答“它归谁所有”，而不是先新建模糊的 `Common` 或 `Internal` 文件夹。
+`QueryOffsetPolicy` 只存在于 `EventHorizon.RocketMQ.Remoting.Consumer`，因为显式选择队列位点属于 classic
+Remoting Pull API。
+
+这些类型的完整类型名不同，因此两个 Package 可以在同一个应用中使用。不过，它们也是不同的 CLR 类型：gRPC
+的 `Message`、过滤器、Consumer Options 或异常基类不能直接传给 Remoting API。
+
+如果同一个文件导入了两边的协议命名空间，`Message` 这样的短类型名仍可能产生歧义。这只是普通的 C#
+namespace 解析问题（`CS0104`），不是 CLR 类型重复（`CS0433`）。同时使用两边类型时，应设置 alias：
+
+```csharp
+using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
+using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
+```
+
+## 协议负责的内容
+
+所有体现协议行为的实现仍留在对应 Project：
+
+| 关注点 | gRPC | Remoting |
+| --- | --- | --- |
+| Producer API 与发送结果 | `IGrpcProducer`、`GrpcSendReceipt` | `IRemotingProducer`、`RemotingSendResult`、`RemotingMessageQueue` |
+| Consumer 消息模型 | `GrpcMessageView` | `RemotingMessageView` |
+| Consumer 类型 | Simple、Push、LitePush | Pull、LitePull、POP、Push |
+| 路由与通信基础设施 | `Protocol` 中的 protobuf/gRPC service | `Protocol` 中的 Socket、frame、JSON 和 NameServer route |
+| 协议错误 | `GrpcServiceException` | `RemotingCommandException` |
+
+只在一种协议内部复用的通信基础设施放在该协议的 `Protocol` 目录。调度、重试、事务、Consumer Engine
+以及 feature 专用 header 仍放在对应的 Producer 或 Consumer 功能目录中，避免再出现职责模糊的 `Common`
+或 `Internal` 目录。
+
+公开注册方法也保留协议选择：
+
+```text
+AddRocketMQGrpc(options => options.Endpoint = "proxy:8081")
+AddRocketMQRemoting(options => options.NamesrvAddr = "nameserver:9876")
+```
+
+需要同时使用两种协议时，应用安装两个 Package 并分别注册客户端即可。通过 DI 解析的接口、Options 和模型
+仍然属于具体协议。
 
 ## 取舍与约束
 
-**显式优于自动降级。** 一个 gRPC 调用不会在失败后悄悄切换为 Remoting；这种切换会改变认证、网络路径、
-重试、消息结果和运维前提。需要双协议时，应用应分别注册 gRPC 和 Remoting 客户端，并在注入点选择正确接口。
-
-**类型会有重复。** `GrpcMessageView` 与 `RemotingMessageView`、两种 send result 以及两套 options 看起来
-相似，但它们保留了各自必要的语义。为了减少少量重复而抹平这些差异，长期会让 API 更难正确使用。
-
-**Shared 必须保持轻。** Shared 不引用 Microsoft DI、Options、gRPC、Socket 传输或任一协议 Project。这个约束
-避免了依赖反转，也使应用可只安装一个协议 Package。
+- 几个小型源码文件会在两个 Project 中各保留一份。这样减少了 MSBuild、打包和发布的复杂度，代价是修改
+  相同行为时需要检查两套实现。
+- 修改一边的基础模型时，必须同步审视另一个协议中的对应类型。只有相同语义仍适用于另一种协议时，才同步
+  修改另一边。
+- `EventHorizon.RocketMQ.Compatibility.Tests` 同时引用两个 Project，用于验证 API 行为、命名空间隔离和
+  双 Package 共存。
+- 看起来相似的传输结果、消息视图、队列和 service contract 仍然归对应协议所有，外观相似不是合并类型的
+  理由。
+- 一个 Project 增加功能，并不代表另一个 Project 自动获得该能力。文档和示例必须写清协议与服务端前提。
+- protobuf 文件里存在 RPC 声明，不等于 gRPC API 已经可用。还需要可工作的服务端实现、稳定的客户端契约、
+  测试和服务端版本说明。
 
 ## 延伸阅读
 
 - [依赖注入与生命周期](dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
 - [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)
-- [gRPC Project 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
-- [Remoting Project 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
+- [可运行示例](../../../samples/README.zh-CN.md)

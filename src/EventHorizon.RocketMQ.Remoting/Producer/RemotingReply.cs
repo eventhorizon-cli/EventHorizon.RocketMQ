@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using System.Globalization;
-using EventHorizon.RocketMQ.Producer;
+using EventHorizon.RocketMQ.Remoting.Producer;
 
 namespace EventHorizon.RocketMQ.Remoting.Producer;
 

@@ -16,7 +16,6 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
-using EventHorizon.RocketMQ.Producer;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;

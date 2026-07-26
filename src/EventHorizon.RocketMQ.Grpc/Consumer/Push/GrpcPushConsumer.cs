@@ -15,7 +15,6 @@
 
 using System.Collections.Concurrent;
 using System.Threading.Channels;
-using EventHorizon.RocketMQ.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;

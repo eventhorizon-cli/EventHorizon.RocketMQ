@@ -13,8 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Consumer;
-using EventHorizon.RocketMQ.Producer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
@@ -55,6 +54,23 @@ public sealed class DependencyInjectionTests
         Assert.Contains("NameServer request timeout", exception.Message, StringComparison.Ordinal);
         Assert.Contains("Broker heartbeat interval", exception.Message, StringComparison.Ordinal);
         Assert.Contains("frame size", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddRocketMQRemoting_RejectsSecurityTokenWithoutCredentials()
+    {
+        var services = new ServiceCollection();
+        services.AddRocketMQRemoting(options =>
+        {
+            options.NamesrvAddr = "127.0.0.1:9876";
+            options.SecurityToken = "security-token";
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            () => provider.GetRequiredService<IOptions<RemotingClientOptions>>().Value);
+
+        Assert.Contains("security token", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

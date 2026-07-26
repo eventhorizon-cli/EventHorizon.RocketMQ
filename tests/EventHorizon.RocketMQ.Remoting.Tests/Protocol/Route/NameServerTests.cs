@@ -142,4 +142,35 @@ public sealed class NameServerTests
 
         remoting.VerifyNoOtherCalls();
     }
+
+    [Fact]
+    public async Task GetTopicRouteInfoAsync_PropagatesCancellationRaisedDuringRequest()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                cancellation.Token))
+            .Returns(() =>
+            {
+                cancellation.Cancel();
+                return Task.FromCanceled<RemotingCommand>(cancellation.Token);
+            });
+        var nameServer = new NameServer(remoting.Object, Options.Create(new RemotingClientOptions
+        {
+            NamesrvAddr = "127.0.0.1:19876"
+        }));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => nameServer.GetTopicRouteInfoAsync(
+                "orders",
+                TimeSpan.FromSeconds(1),
+                cancellationToken: cancellation.Token));
+
+        remoting.VerifyAll();
+        remoting.VerifyNoOtherCalls();
+    }
 }

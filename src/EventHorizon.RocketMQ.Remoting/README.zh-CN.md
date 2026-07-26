@@ -9,6 +9,8 @@
 客户端先连接 RocketMQ NameServer，再根据路由信息发现 Broker 并直接建立连接。应用需要使用经典协议时，
 请使用该 Package；需要通过 Proxy 使用 RocketMQ 5 protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
 
+客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer 和 Broker 链路。
+
 > **请先阅读[仓库总览](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)和
 > [可运行示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.zh-CN.md)。**
 > 仓库总览说明两种协议各自支持的功能以及如何选择 Package；可运行示例展示各个客户端角色的实际接入方式。

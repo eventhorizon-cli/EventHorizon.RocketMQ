@@ -15,6 +15,9 @@ Consumer 和 Admin API，以及事务消息、定时/延迟消息、FIFO 消息�
 当前版本支持 **.NET 8 及更高版本**，原生集成 **Microsoft DI**，可直接接入 Generic Host、Options 和日志体系，
 提供**现代化、强类型的 API 编程体验**。
 
+客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy
+链路。
+
 > **请先查看[可运行示例](samples/README.zh-CN.md)。** 每个示例目录都说明所需的 RocketMQ Broker 或 Proxy
 > 能力、资源准备、配置、运行命令和协议注意事项。
 

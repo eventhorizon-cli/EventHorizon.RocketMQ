@@ -89,6 +89,15 @@ dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.R
 Docker must be available to run these tests. The manual Compose stack is not a prerequisite for
 them.
 
+### CI coverage
+
+GitHub Actions runs the Docker-backed gRPC and Remoting integration-test projects in a separate
+`ubuntu-latest` job after formatting, build, and unit-test validation complete. The job has its own
+timeout budget because Testcontainers must pull images and start the Broker, NameServer, and Proxy
+fixtures. Both integration projects collect Cobertura reports and upload them to Codecov with the
+`integration-tests` flag. Codecov combines those reports with the `unit-tests` reports; the
+repository configuration continues to exclude `samples` from coverage.
+
 ### Manual Compose environment
 
 `test-environments` groups self-contained manual Compose stacks. Choose

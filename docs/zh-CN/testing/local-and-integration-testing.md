@@ -117,7 +117,15 @@ dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.R
 
 Docker 不可用时，应报告没有运行哪一个 integration test 以及原因，不能用 unit test 的成功替代它。
 
-### 5. 测试矩阵也表达支持边界
+### 4.1 CI 也采集 integration coverage
+
+GitHub Actions 在格式化、构建和单元测试验证通过后，于独立的 `ubuntu-latest` job 运行 Docker 驱动的
+gRPC 与 Remoting integration test。该 job 使用独立超时预算，因为 Testcontainers 需要拉取镜像并启动
+Broker、NameServer 与 Proxy fixture。两个 integration 项目都会生成 Cobertura 报告，并以
+`integration-tests` flag 上传至 Codecov；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会排除
+`samples`，不会将 sample 计入覆盖率。
+
+### 5. 测试范围也体现支持边界
 
 集成测试只覆盖仓库真正公开且可由目标服务端运行的路径。gRPC 的 Simple、Push 和 LitePush 在匹配的
 Proxy/Broker 配置下覆盖；已移除的 gRPC PullConsumer 没有 sample 或 integration test，因为它不是当前

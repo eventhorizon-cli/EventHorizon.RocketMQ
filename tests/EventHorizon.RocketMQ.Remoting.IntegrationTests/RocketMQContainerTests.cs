@@ -343,7 +343,7 @@ public sealed class RocketMQContainerTests
             {
                 Tag = "legacy-push"
             }, cancellationToken);
-            await firstAttempt.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await firstAttempt.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
             var topics = await _fixture.GetTopicListAsync(cancellationToken);
             const string retryTopic = "%RETRY%legacy-push-consumer-it";
             Assert.Contains(retryTopic, topics);

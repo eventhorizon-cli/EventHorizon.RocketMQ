@@ -252,6 +252,155 @@ public sealed class RemoteCommandSerializerTests
         Assert.Equal(body, parsed.Body);
     }
 
+    [Fact]
+    public void ConstructorAndOperations_RejectUnsupportedSerializerAndFrameLimits()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RemoteCommandSerializer((SerializeType)99));
+
+        var serializer = new RemoteCommandSerializer();
+        var input = new ReadOnlySequence<byte>(ReadOnlyMemory<byte>.Empty);
+        var consumed = input.Start;
+        var examined = input.Start;
+        var maximumFrameLength = RemotingClientOptions.MinimumRemotingFrameSize - 1;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            serializer.TryParseMessage(input, ref consumed, ref examined, out _, maximumFrameLength));
+        Assert.Throws<ArgumentOutOfRangeException>(() => serializer.WriteMessage(
+            new RemotingCommand(),
+            new ArrayBufferWriter<byte>(),
+            maximumFrameLength));
+    }
+
+    [Fact]
+    public void TryParseMessage_RejectsInvalidFrameAndHeaderLengths()
+    {
+        var serializer = new RemoteCommandSerializer();
+        var invalidFrame = CreateFrame(3, 0);
+        var invalidFrameConsumed = invalidFrame.Start;
+        var invalidFrameExamined = invalidFrame.Start;
+
+        var frameException = Assert.Throws<InvalidDataException>(() => serializer.TryParseMessage(
+            invalidFrame,
+            ref invalidFrameConsumed,
+            ref invalidFrameExamined,
+            out _));
+
+        Assert.Contains("frame size", frameException.Message, StringComparison.OrdinalIgnoreCase);
+
+        var invalidHeader = CreateFrame(4, 1);
+        var invalidHeaderConsumed = invalidHeader.Start;
+        var invalidHeaderExamined = invalidHeader.Start;
+
+        var headerException = Assert.Throws<InvalidDataException>(() => serializer.TryParseMessage(
+            invalidHeader,
+            ref invalidHeaderConsumed,
+            ref invalidHeaderExamined,
+            out _));
+
+        Assert.Contains("header length", headerException.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryParseMessage_RejectsUnsupportedHeaderSerializationType()
+    {
+        var serializer = new RemoteCommandSerializer();
+        var input = CreateFrame(6, (2 << 24) | 2, [0, 0]);
+        var consumed = input.Start;
+        var examined = input.Start;
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            serializer.TryParseMessage(input, ref consumed, ref examined, out _));
+
+        Assert.Contains("Unsupported", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryParseMessage_RejectsMalformedRocketMqBinaryHeaders()
+    {
+        var serializer = new RemoteCommandSerializer();
+        var shortHeader = CreateFrame(5, (1 << 24) | 1, [0]);
+        var shortConsumed = shortHeader.Start;
+        var shortExamined = shortHeader.Start;
+
+        var shortException = Assert.Throws<InvalidDataException>(() => serializer.TryParseMessage(
+            shortHeader,
+            ref shortConsumed,
+            ref shortExamined,
+            out _));
+
+        Assert.Contains("at least", shortException.Message, StringComparison.OrdinalIgnoreCase);
+
+        var trailingHeader = new byte[22];
+        var trailing = CreateFrame(26, (1 << 24) | trailingHeader.Length, trailingHeader);
+        var trailingConsumed = trailing.Start;
+        var trailingExamined = trailing.Start;
+
+        var trailingException = Assert.Throws<InvalidDataException>(() => serializer.TryParseMessage(
+            trailing,
+            ref trailingConsumed,
+            ref trailingExamined,
+            out _));
+
+        Assert.Contains("trailing", trailingException.Message, StringComparison.OrdinalIgnoreCase);
+
+        var invalidExtensionLength = new byte[21];
+        BinaryPrimitives.WriteInt32BigEndian(invalidExtensionLength.AsSpan(17), -1);
+        var invalidExtension = CreateFrame(25, (1 << 24) | invalidExtensionLength.Length, invalidExtensionLength);
+        var extensionConsumed = invalidExtension.Start;
+        var extensionExamined = invalidExtension.Start;
+
+        var extensionException = Assert.Throws<InvalidDataException>(() => serializer.TryParseMessage(
+            invalidExtension,
+            ref extensionConsumed,
+            ref extensionExamined,
+            out _));
+
+        Assert.Contains("extension fields", extensionException.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RocketMqBinaryHeader_FormatsNullAndCustomExtensionValues()
+    {
+        var serializer = new RemoteCommandSerializer(SerializeType.RocketMQ);
+        var writer = new ArrayBufferWriter<byte>();
+        serializer.WriteMessage(new RemotingCommand
+        {
+            Code = RequestCode.GetRouteInfoByTopic,
+            ExtFields = new Dictionary<string, object>
+            {
+                ["empty"] = null!,
+                ["custom"] = new CustomValue()
+            }
+        }, writer);
+        var input = new ReadOnlySequence<byte>(writer.WrittenMemory);
+        var consumed = input.Start;
+        var examined = input.Start;
+
+        Assert.True(serializer.TryParseMessage(input, ref consumed, ref examined, out var command));
+        Assert.Equal(string.Empty, command.ExtFields["empty"]);
+        Assert.Equal("custom-value", command.ExtFields["custom"]);
+    }
+
+    [Fact]
+    public void RocketMqBinaryHeader_RejectsExtensionKeysAboveTheWireLimit()
+    {
+        var serializer = new RemoteCommandSerializer(SerializeType.RocketMQ);
+        var output = new ArrayBufferWriter<byte>();
+        var command = new RemotingCommand
+        {
+            Code = RequestCode.GetRouteInfoByTopic,
+            ExtFields = new Dictionary<string, object>
+            {
+                [new string('x', short.MaxValue + 1)] = "value"
+            }
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() => serializer.WriteMessage(command, output));
+
+        Assert.Contains("extension key", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, output.WrittenCount);
+    }
+
     private static ReadOnlySequence<byte> CreateSequence(params ReadOnlyMemory<byte>[] segments)
     {
         var first = new TestSegment(segments[0]);
@@ -262,6 +411,24 @@ public sealed class RemoteCommandSerializerTests
         }
 
         return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+    }
+
+    private static ReadOnlySequence<byte> CreateFrame(int frameSize, int markedHeaderLength, byte[]? header = null)
+    {
+        var frame = new byte[sizeof(int) + frameSize];
+        BinaryPrimitives.WriteInt32BigEndian(frame, frameSize);
+        if (frameSize >= sizeof(int))
+        {
+            BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(sizeof(int)), markedHeaderLength);
+            header?.CopyTo(frame, 2 * sizeof(int));
+        }
+
+        return new ReadOnlySequence<byte>(frame);
+    }
+
+    private sealed class CustomValue
+    {
+        public override string ToString() => "custom-value";
     }
 
     private sealed class TestHeader : CommandCustomHeader

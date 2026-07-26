@@ -17,6 +17,7 @@ using System.Buffers.Binary;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Xunit;
 
@@ -280,6 +281,104 @@ public sealed class LegacyPopMessageDecoderTests
         Assert.Contains("restNum", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Decode_MapsPollingFullAndRejectsUnknownResponseCodes()
+    {
+        var pollingFull = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
+            new RemotingCommand { Code = ResponseCodes.ResPollingFull },
+            CreateQueue());
+
+        Assert.Equal(global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopStatus.PollingFull, pollingFull.Status);
+        Assert.Empty(pollingFull.Messages);
+
+        var exception = Assert.Throws<RemotingCommandException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
+                new RemotingCommand { Code = 999_999, Remark = "unsupported" },
+                CreateQueue()));
+
+        Assert.Equal(999_999, exception.ResponseCode);
+    }
+
+    [Fact]
+    public void DecodeMessages_HandlesEmptyCollectionsAndRejectsMissingArguments()
+    {
+        var queue = CreateQueue();
+
+        Assert.Empty(global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
+            Array.Empty<RemotingMessageView>(),
+            queue));
+        Assert.Throws<ArgumentNullException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
+                null!,
+                queue));
+        Assert.Throws<ArgumentNullException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
+                Array.Empty<RemotingMessageView>(),
+                null!));
+    }
+
+    [Fact]
+    public void DecodeMessage_RejectsWhitespaceCheckpointsAndMismatchedQueues()
+    {
+        var whitespace = Assert.Throws<InvalidDataException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
+                CreateMessage(" "),
+                CreateQueue()));
+        Assert.Contains("valid", whitespace.Message, StringComparison.OrdinalIgnoreCase);
+
+        var mismatchedQueue = Assert.Throws<InvalidDataException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
+                CreateMessage(Checkpoint, queueId: 4),
+                CreateQueue()));
+        Assert.Contains("physical queue", mismatchedQueue.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("popTime", "9223372036854775807")]
+    [InlineData("invisibleTime", "9223372036854775807")]
+    public void Decode_RejectsOutOfRangeSynthesizedReceiptValues(string name, string value)
+    {
+        var fields = CreateNormalResponseFields();
+        fields[name] = value;
+
+        var exception = Assert.Throws<InvalidDataException>(() => DecodeSuccess(fields));
+
+        Assert.Contains("out-of-range", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("0 3", "0 3 42")]
+    [InlineData("0 3 invalid", "0 3 42")]
+    [InlineData("0 3 40", "0 3")]
+    [InlineData("0 3 40", "0 3 invalid")]
+    [InlineData("0 3 40;0 3 40", "0 3 42")]
+    [InlineData("0 3 40", "0 3 42,43")]
+    public void Decode_RejectsMalformedPhysicalQueueMappings(string startOffsetInfo, string messageOffsetInfo)
+    {
+        var fields = CreateNormalResponseFields();
+        fields["startOffsetInfo"] = startOffsetInfo;
+        fields["msgOffsetInfo"] = messageOffsetInfo;
+
+        var exception = Assert.Throws<InvalidDataException>(() => DecodeSuccess(fields));
+
+        Assert.Contains("mapping", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("40 9223372036854775807 60000 2 0 broker-a 3 42")]
+    [InlineData("40 1700000000000 9223372036854775807 2 0 broker-a 3 42")]
+    [InlineData("invalid 1700000000000 60000 2 0 broker-a 3 42")]
+    [InlineData("40 1700000000000 60000 invalid 0 broker-a 3 42")]
+    public void DecodeMessage_RejectsOutOfRangeAndNonNumericCheckpointValues(string checkpoint)
+    {
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
+                CreateMessage(checkpoint),
+                CreateQueue()));
+
+        Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
+    }
+
     private static global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopResult DecodeSuccess(
         Dictionary<string, object> fields,
         string? retryTopic = null,
@@ -310,7 +409,7 @@ public sealed class LegacyPopMessageDecoderTests
     private static RemotingPullMessageQueue CreateQueue(string brokerName = "broker-a") =>
         new("orders", 3, brokerName, "127.0.0.1:10911");
 
-    private static RemotingMessageView CreateMessage(string? checkpoint) =>
+    private static RemotingMessageView CreateMessage(string? checkpoint, int queueId = 3) =>
         new(
             "orders",
             [1, 2, 3],
@@ -323,7 +422,7 @@ public sealed class LegacyPopMessageDecoderTests
                 : new Dictionary<string, string>(StringComparer.Ordinal) { ["POP_CK"] = checkpoint },
             1,
             null,
-            3,
+            queueId,
             "broker-a",
             42,
             100,

@@ -7,6 +7,9 @@
 protobuf/gRPC Project 和 NuGet Package。它只通过 `Endpoint` 连接 RocketMQ Proxy，不会直接连接 NameServer 或
 Broker。
 
+客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy
+链路。
+
 > 请先通过[仓库总览](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)
 > 了解两种协议各自支持的功能以及如何选择 Package，完整应用请参考
 > [可运行的 gRPC 示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.zh-CN.md#grpc)。

@@ -11,6 +11,9 @@ The client connects to RocketMQ NameServer, then uses route data to discover Bro
 the selected Brokers. Use this package when an application needs the classic protocol. For the RocketMQ 5
 protobuf/gRPC API through a Proxy, use `EventHorizon.RocketMQ.Grpc` instead.
 
+Client behavior is covered by high-coverage unit tests and Docker-backed integration tests against real
+NameServer and Broker paths.
+
 > **[Read the repository overview](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.md) and
 > [runnable samples](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.md) first.**
 > The overview has the cross-protocol feature matrix and package-selection guidance; the samples demonstrate the

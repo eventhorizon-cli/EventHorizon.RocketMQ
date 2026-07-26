@@ -15,6 +15,9 @@ Consumer, and Admin APIs as well as transactional, timed/delay, FIFO, and priori
 Designed for **.NET 8 or later**, it integrates with **Microsoft dependency injection**, Generic Host, options, and
 logging, and provides a **modern, strongly typed API experience**.
 
+Client behavior is backed by high-coverage unit tests and Docker-backed integration tests that exercise real
+NameServer, Broker, and Proxy paths.
+
 > **Start with the [runnable samples](samples/README.md).** Each sample directory explains its required
 > RocketMQ Broker or Proxy capabilities, resource setup, configuration, run command, and protocol caveats.
 

@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
@@ -256,6 +257,266 @@ public sealed class RemotingLitePullConsumerTests
         engine.Verify(value => value.DisposeAsync(), Times.Once);
     }
 
+    [Fact]
+    public async Task GetMessageQueuesAsync_RequiresAnActiveRunAndDelegatesToTheEngine()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([queue]);
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration);
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.GetMessageQueuesAsync("orders", cancellationToken));
+
+        await consumer.StartAsync(cancellationToken);
+        var discovered = await consumer.GetMessageQueuesAsync("orders", cancellationToken);
+
+        Assert.Same(queue, Assert.Single(discovered));
+        engine.Verify(
+            value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ManualAssignment_RejectsSubscriptionChangesUntilItIsCleared()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(-1L);
+        engine
+            .Setup(value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.End,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0L);
+        engine.Setup(value => value.SetSubscription("orders", FilterExpression.All));
+        engine.Setup(value => value.RemoveSubscription("orders"));
+        engine
+            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration);
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.SubscribeAsync("orders", cancellationToken: cancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.UnsubscribeAsync("orders", cancellationToken));
+
+        await consumer.AssignAsync([], cancellationToken);
+        await consumer.SubscribeAsync("orders", cancellationToken: cancellationToken);
+        await consumer.UnsubscribeAsync("orders", cancellationToken);
+
+        Assert.Empty(consumer.Assignment);
+        engine.Verify(value => value.SetSubscription("orders", FilterExpression.All), Times.Once);
+        engine.Verify(value => value.RemoveSubscription("orders"), Times.Once);
+    }
+
+    [Fact]
+    public async Task SeekOperations_QueryTheRequestedPositionAndUpdateTheNextPoll()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1L);
+        engine
+            .Setup(value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.Beginning,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(3L);
+        engine
+            .Setup(value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.End,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(9L);
+        engine
+            .Setup(value => value.PullAsync(queue, 9L, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RemotingPullResult([], 10L, RemotingPullStatus.NoNewMessage));
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration);
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken);
+
+        await consumer.SeekToBeginningAsync(queue, cancellationToken);
+        await consumer.SeekToEndAsync(queue, cancellationToken);
+        var result = await consumer.PollAsync(cancellationToken: cancellationToken);
+
+        Assert.Equal(10, result.NextOffset);
+        engine.Verify(
+            value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.Beginning,
+                null,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        engine.Verify(
+            value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.End,
+                null,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task PollAsync_RejectsInvalidTimeoutAndCancelsThePullWhenItExpires()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var pullStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(-1L);
+        engine
+            .Setup(value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.End,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0L);
+        engine
+            .Setup(value => value.PullAsync(queue, 0L, null, It.IsAny<CancellationToken>()))
+            .Returns<RemotingPullMessageQueue, long, int?, CancellationToken>(async (_, _, _, token) =>
+            {
+                pullStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new RemotingPullResult([], 0L, RemotingPullStatus.NoNewMessage);
+            });
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration);
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            consumer.PollAsync(TimeSpan.Zero, cancellationToken));
+
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken);
+        var poll = consumer.PollAsync(TimeSpan.FromMilliseconds(50), cancellationToken);
+        await pullStarted.Task.WaitAsync(cancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poll);
+    }
+
+    [Fact]
+    public async Task StartAsync_RollsBackWhenInitialCoordinationFails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("route lookup failed"));
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration);
+        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
+        options.Subscribe("orders");
+
+        await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.StartAsync(cancellationToken).AsTask());
+
+        Assert.Equal("route lookup failed", exception.Message);
+        Assert.Empty(consumer.Assignment);
+        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConsumerIdsChangedNotification_HandlesOnlyTheConfiguredGroup()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        RemotingRequestHandler? handler = null;
+        var engine = CreateEngine();
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(
+            registration,
+            registerRequestHandler: value => handler = value);
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object);
+        var requestHandler = Assert.IsType<RemotingRequestHandler>(handler);
+
+        var ignored = await requestHandler(new RemotingRequestContext(
+            new IPEndPoint(IPAddress.Loopback, 10911),
+            new RemotingCommand(),
+            cancellationToken));
+
+        await consumer.StartAsync(cancellationToken);
+        var handled = await requestHandler(new RemotingRequestContext(
+            new IPEndPoint(IPAddress.Loopback, 10911),
+            new RemotingCommand
+            {
+                ExtFields = new Dictionary<string, object> { ["consumerGroup"] = "orders-consumer" }
+            },
+            cancellationToken));
+
+        Assert.False(ignored.IsHandled);
+        Assert.True(handled.IsHandled);
+        Assert.True(handled.SuppressResponse);
+    }
+
+    [Fact]
+    public async Task StartAsync_ContinuesWhenTheHeartbeatFailsAndThisClientIsNotInTheBrokerMembership()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([queue]);
+        var registration = CreateRegistration();
+        var remoting = CreateRemotingClient(registration, request => request.Code switch
+        {
+            RequestCode.HeartBeat => throw new InvalidOperationException("heartbeat failed"),
+            RequestCode.GetConsumerListByGroup => ConsumerListResponse(),
+            RequestCode.UnregisterClient => SuccessResponse(),
+            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
+        });
+        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
+        options.Subscribe("orders");
+
+        await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
+        await consumer.StartAsync(cancellationToken);
+
+        Assert.Empty(consumer.Assignment);
+    }
+
     private static Mock<IRemotingConsumerEngine> CreateEngine()
     {
         var engine = new Mock<IRemotingConsumerEngine>(MockBehavior.Strict);
@@ -274,14 +535,16 @@ public sealed class RemotingLitePullConsumerTests
 
     private static Mock<IRemotingClient> CreateRemotingClient(
         Mock<IDisposable> registration,
-        Func<RemotingCommand, RemotingCommand>? invoke = null)
+        Func<RemotingCommand, RemotingCommand>? invoke = null,
+        Action<RemotingRequestHandler>? registerRequestHandler = null)
     {
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         remoting
             .Setup(value => value.RegisterRequestHandler(
                 RequestCode.NotifyConsumerIdsChanged,
                 It.IsAny<RemotingRequestHandler>()))
-            .Returns(registration.Object);
+            .Returns(registration.Object)
+            .Callback<int, RemotingRequestHandler>((_, handler) => registerRequestHandler?.Invoke(handler));
         if (invoke is not null)
         {
             remoting

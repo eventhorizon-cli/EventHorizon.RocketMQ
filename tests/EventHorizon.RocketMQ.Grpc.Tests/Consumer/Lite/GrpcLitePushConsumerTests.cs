@@ -188,6 +188,12 @@ public sealed class GrpcLitePushConsumerTests
         Assert.Equal(
             timestamp.ToUnixTimeMilliseconds(),
             GrpcLiteOffsetOption.AtTimestamp(timestamp).ToProtobuf().Timestamp);
+        Assert.Equal(
+            Proto.OffsetOption.Types.Policy.Min,
+            GrpcLiteOffsetOption.Min.ToProtobuf().Policy);
+        Assert.Equal(
+            Proto.OffsetOption.Types.Policy.Max,
+            GrpcLiteOffsetOption.Max.ToProtobuf().Policy);
         Assert.Throws<ArgumentOutOfRangeException>(() => GrpcLiteOffsetOption.AtOffset(-1));
         Assert.Throws<ArgumentOutOfRangeException>(() => GrpcLiteOffsetOption.Tail(0));
     }
@@ -342,6 +348,177 @@ public sealed class GrpcLitePushConsumerTests
         consumer.Verify(value => value.StartAsync(start.Token), Times.Once);
         consumer.Verify(value => value.StopAsync(stop.Token), Times.Once);
         consumer.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task SubscriptionManager_IgnoresDuplicateTopicsAndUnrelatedTelemetryCommands()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var requests = new List<(Uri Endpoint, Proto.SyncLiteSubscriptionRequest Request)>();
+        var client = CreateSyncClient(requests);
+        await using var manager = CreateManager(
+            client.Object,
+            CreateRouteService(endpoint),
+            options => options.LiteTopics.Add("alpha"));
+
+        await manager.StartAsync(cancellationToken);
+        await manager.StartAsync(cancellationToken);
+        await manager.SubscribeAsync("alpha", null, cancellationToken);
+        await manager.UnsubscribeAsync("missing", cancellationToken);
+        await manager.HandleTelemetryCommandAsync(
+            endpoint,
+            new Proto.TelemetryCommand
+            {
+                PrintThreadStackTraceCommand = new Proto.PrintThreadStackTraceCommand { Nonce = "stack-1" }
+            },
+            cancellationToken);
+        await manager.HandleTelemetryCommandAsync(
+            endpoint,
+            new Proto.TelemetryCommand
+            {
+                NotifyUnsubscribeLiteCommand = new Proto.NotifyUnsubscribeLiteCommand()
+            },
+            cancellationToken);
+
+        Assert.Single(requests);
+        Assert.Equal(["alpha"], manager.LiteTopics);
+    }
+
+    [Fact]
+    public async Task SubscriptionManager_ContinuesPeriodicSynchronizationAfterANonFatalFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var secondSynchronization = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
+        client
+            .Setup(value => value.SyncLiteSubscriptionAsync(
+                endpoint,
+                It.IsAny<Proto.SyncLiteSubscriptionRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                if (Interlocked.Increment(ref calls) == 2)
+                {
+                    secondSynchronization.TrySetResult();
+                    return Task.FromResult(new Proto.SyncLiteSubscriptionResponse
+                    {
+                        Status = new Proto.Status { Code = Proto.Code.InternalError, Message = "temporary" }
+                    });
+                }
+
+                return Task.FromResult(new Proto.SyncLiteSubscriptionResponse { Status = OkStatus() });
+            });
+        await using var manager = CreateManager(
+            client.Object,
+            CreateRouteService(endpoint),
+            options => options.SubscriptionSyncInterval = TimeSpan.FromMilliseconds(10));
+
+        await manager.StartAsync(cancellationToken);
+        await secondSynchronization.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await manager.StopAsync(cancellationToken);
+
+        Assert.True(Volatile.Read(ref calls) >= 2);
+    }
+
+    [Fact]
+    public async Task SubscriptionManager_DisposeAsyncIsIdempotent()
+    {
+        var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
+        var routes = new Mock<IGrpcRouteService>(MockBehavior.Strict);
+        var manager = CreateManager(client.Object, routes.Object);
+
+        await manager.DisposeAsync();
+        await manager.DisposeAsync();
+
+        client.VerifyNoOtherCalls();
+        routes.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task LitePushConsumer_IsIdempotentAndDisposesStartedDependencies()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var requests = new List<(Uri Endpoint, Proto.SyncLiteSubscriptionRequest Request)>();
+        var client = CreateSyncClient(requests);
+        var manager = CreateManager(client.Object, CreateRouteService(endpoint));
+        var dispatcher = new Mock<IGrpcPushConsumer>(MockBehavior.Strict);
+        dispatcher.Setup(value => value.StartAsync(cancellationToken)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.StopAsync(CancellationToken.None)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var consumer = new GrpcLitePushConsumer(dispatcher.Object, manager);
+
+        await consumer.StopAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.DisposeAsync();
+        await consumer.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.SubscribeLiteAsync("alpha", cancellationToken: cancellationToken));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.UnsubscribeLiteAsync("alpha", cancellationToken));
+        dispatcher.Verify(value => value.StartAsync(cancellationToken), Times.Once);
+        dispatcher.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
+        dispatcher.Verify(value => value.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task LitePushConsumer_StopsTheDispatcherWhenSubscriptionStartupFails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
+        client
+            .Setup(value => value.SyncLiteSubscriptionAsync(
+                endpoint,
+                It.IsAny<Proto.SyncLiteSubscriptionRequest>(),
+                cancellationToken))
+            .ReturnsAsync(new Proto.SyncLiteSubscriptionResponse
+            {
+                Status = new Proto.Status { Code = Proto.Code.InternalError, Message = "rejected" }
+            });
+        var manager = CreateManager(client.Object, CreateRouteService(endpoint));
+        var dispatcher = new Mock<IGrpcPushConsumer>(MockBehavior.Strict);
+        dispatcher.Setup(value => value.StartAsync(cancellationToken)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.StopAsync(CancellationToken.None)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var consumer = new GrpcLitePushConsumer(dispatcher.Object, manager);
+
+        await Assert.ThrowsAsync<GrpcServiceException>(() => consumer.StartAsync(cancellationToken).AsTask());
+        await consumer.DisposeAsync();
+
+        dispatcher.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
+        dispatcher.Verify(value => value.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task LitePushConsumer_DelegatesRuntimeTopicUpdates()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var requests = new List<(Uri Endpoint, Proto.SyncLiteSubscriptionRequest Request)>();
+        var client = CreateSyncClient(requests);
+        var manager = CreateManager(client.Object, CreateRouteService(endpoint));
+        var dispatcher = new Mock<IGrpcPushConsumer>(MockBehavior.Strict);
+        dispatcher.Setup(value => value.StartAsync(cancellationToken)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.StopAsync(cancellationToken)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        await using var consumer = new GrpcLitePushConsumer(dispatcher.Object, manager);
+
+        await consumer.StartAsync(cancellationToken);
+        await consumer.SubscribeLiteAsync("alpha", GrpcLiteOffsetOption.Min, cancellationToken);
+        await consumer.UnsubscribeLiteAsync("alpha", cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Collection(
+            requests,
+            request => Assert.Equal(Proto.LiteSubscriptionAction.CompleteAdd, request.Request.Action),
+            request => Assert.Equal(Proto.LiteSubscriptionAction.PartialAdd, request.Request.Action),
+            request => Assert.Equal(Proto.LiteSubscriptionAction.PartialRemove, request.Request.Action));
     }
 
     private static Mock<IRocketMQGrpcClient> CreateSyncClient(

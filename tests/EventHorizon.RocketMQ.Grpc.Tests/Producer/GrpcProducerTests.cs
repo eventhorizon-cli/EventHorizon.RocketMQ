@@ -35,6 +35,66 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Producer;
 public sealed class GrpcProducerTests
 {
     [Fact]
+    public void Constructor_RejectsNonPositiveTransactionCheckConcurrency()
+    {
+        var options = TransactionOptions();
+        options.MaxConcurrentTransactionChecks = 0;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreateProducer(new FakeGrpcClient(), options));
+    }
+
+    [Fact]
+    public void QueueAndHashHelpers_RejectInvalidArguments()
+    {
+        Assert.Throws<ArgumentNullException>(() => GrpcProducer.ComputeFifoHash(null!));
+        Assert.Throws<ArgumentNullException>(() => GrpcProducer.GetFifoQueueIndex(null!, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GrpcProducer.GetFifoQueueIndex("orders", 0));
+        Assert.Throws<ArgumentNullException>(() => GrpcProducer.AcceptsMessageType(null!, Proto.MessageType.Normal));
+    }
+
+    [Fact]
+    public void GetRetryDelay_HandlesCustomizedExponentialAndInvalidPolicies()
+    {
+        var customized = new Proto.RetryPolicy
+        {
+            CustomizedBackoff = new Proto.CustomizedBackoff
+            {
+                Next =
+                {
+                    Duration.FromTimeSpan(TimeSpan.FromSeconds(1)),
+                    Duration.FromTimeSpan(TimeSpan.FromSeconds(3))
+                }
+            }
+        };
+        var exponential = new Proto.RetryPolicy
+        {
+            ExponentialBackoff = new Proto.ExponentialBackoff
+            {
+                Initial = Duration.FromTimeSpan(TimeSpan.FromSeconds(2)),
+                Max = Duration.FromTimeSpan(TimeSpan.FromSeconds(5)),
+                Multiplier = 2
+            }
+        };
+        var invalidExponential = new Proto.RetryPolicy
+        {
+            ExponentialBackoff = new Proto.ExponentialBackoff
+            {
+                Initial = new Duration { Nanos = -1 },
+                Max = Duration.FromTimeSpan(TimeSpan.FromSeconds(5)),
+                Multiplier = 0
+            }
+        };
+
+        Assert.Equal(TimeSpan.Zero, GrpcProducer.GetRetryDelay(null, 1));
+        Assert.Equal(TimeSpan.Zero, GrpcProducer.GetRetryDelay(customized, 0));
+        Assert.Equal(TimeSpan.FromSeconds(1), GrpcProducer.GetRetryDelay(customized, 1));
+        Assert.Equal(TimeSpan.FromSeconds(3), GrpcProducer.GetRetryDelay(customized, 3));
+        Assert.Equal(TimeSpan.FromSeconds(5), GrpcProducer.GetRetryDelay(exponential, 3));
+        Assert.Equal(TimeSpan.Zero, GrpcProducer.GetRetryDelay(invalidExponential, 1));
+        Assert.Equal(TimeSpan.Zero, GrpcProducer.GetRetryDelay(new Proto.RetryPolicy(), 1));
+    }
+
+    [Fact]
     public void ComputeFifoHash_MatchesSipHash24ReferenceVectors()
     {
         Assert.Equal(0x726fdb47dd0e0e31UL, GrpcProducer.ComputeFifoHash(string.Empty));
@@ -506,6 +566,153 @@ public sealed class GrpcProducerTests
             cancellationToken));
 
         Assert.Empty(client.SendRequests);
+    }
+
+    [Fact]
+    public async Task SendAsync_RejectsOversizedAndMutuallyExclusiveMessageProperties()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var options = TransactionOptions();
+        options.MaxMessageSize = 1;
+        var client = new FakeGrpcClient();
+        await using var producer = CreateProducer(client, options);
+        await producer.StartAsync(cancellationToken);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1, 2]),
+            cancellationToken));
+        await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1])
+            {
+                MessageGroup = "account-1",
+                Priority = 1
+            },
+            cancellationToken));
+
+        Assert.Empty(client.SendRequests);
+    }
+
+    [Fact]
+    public async Task SendAsync_RejectsRouteWithoutWritableQueue()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var client = new FakeGrpcClient();
+        var queue = Queue("orders", 0, "broker-a", client.BrokerEndpoint);
+        queue.Permission = Proto.Permission.Read;
+        await using var producer = CreateProducer(
+            client,
+            TransactionOptions(),
+            CreateRouteService([queue]));
+        await producer.StartAsync(cancellationToken);
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(() => producer.SendAsync(
+            new Message("orders", [1]),
+            cancellationToken));
+
+        Assert.Contains("No writable message queue", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(client.SendRequests);
+    }
+
+    [Fact]
+    public async Task SendAsync_SelectsMessageTypeCompatibleQueueAndServerRetryPolicy()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var client = new FakeGrpcClient();
+        var serverSettings = new Proto.Settings
+        {
+            Publishing = new Proto.Publishing { ValidateMessageType = true },
+            BackoffPolicy = new Proto.RetryPolicy
+            {
+                MaxAttempts = 2,
+                CustomizedBackoff = new Proto.CustomizedBackoff
+                {
+                    Next = { Duration.FromTimeSpan(TimeSpan.Zero) }
+                }
+            }
+        };
+        client.OpenTelemetryHandler = _ =>
+            Task.FromResult(CreateTelemetrySession(serverSettings).Session);
+        var compatible = Queue("orders", 0, "broker-a", client.BrokerEndpoint);
+        compatible.AcceptMessageTypes.Add(Proto.MessageType.Fifo);
+        var incompatible = Queue("orders", 1, "broker-a", client.BrokerEndpoint);
+        incompatible.AcceptMessageTypes.Add(Proto.MessageType.Normal);
+        await using var producer = CreateProducer(
+            client,
+            TransactionOptions(),
+            CreateRouteService([compatible, incompatible]));
+        await producer.StartAsync(cancellationToken);
+
+        await producer.SendAsync(new Message("orders", [1]) { MessageGroup = "account-1" }, cancellationToken);
+
+        var request = Assert.Single(client.SendRequests);
+        Assert.Equal(0, request.Messages[0].SystemProperties.QueueId);
+        Assert.Equal(Proto.MessageType.Fifo, request.Messages[0].SystemProperties.MessageType);
+    }
+
+    [Fact]
+    public async Task SendAsync_MapsEverySpecializedMessageType()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var client = new FakeGrpcClient();
+        await using var producer = CreateProducer(client, TransactionOptions());
+        await producer.StartAsync(cancellationToken);
+        var deliveryTimestamp = DateTimeOffset.UtcNow.AddMinutes(1);
+        Message[] messages =
+        [
+            new("orders", [1]) { MessageGroup = "account-1" },
+            new("orders", [2]) { DeliveryTimestamp = deliveryTimestamp },
+            new("orders", [3]) { Priority = 2 },
+            new("orders", [4]) { LiteTopic = "lite-orders" }
+        ];
+
+        foreach (var message in messages)
+        {
+            await producer.SendAsync(message, cancellationToken);
+        }
+
+        Assert.Equal(
+            [Proto.MessageType.Fifo, Proto.MessageType.Delay, Proto.MessageType.Priority, Proto.MessageType.Lite],
+            client.SendRequests.Select(static request => request.Messages[0].SystemProperties.MessageType));
+        Assert.Equal("account-1", client.SendRequests[0].Messages[0].SystemProperties.MessageGroup);
+        Assert.Equal(deliveryTimestamp, client.SendRequests[1].Messages[0].SystemProperties.DeliveryTimestamp.ToDateTimeOffset());
+        Assert.Equal(2, client.SendRequests[2].Messages[0].SystemProperties.Priority);
+        Assert.Equal("lite-orders", client.SendRequests[3].Messages[0].SystemProperties.LiteTopic);
+    }
+
+    [Fact]
+    public async Task SendAsync_PropagatesCancellationRaisedByTransport()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var client = new FakeGrpcClient
+        {
+            SendHandler = (_, _) =>
+            {
+                cancellation.Cancel();
+                return Task.FromCanceled<Proto.SendMessageResponse>(cancellation.Token);
+            }
+        };
+        await using var producer = CreateProducer(client, TransactionOptions());
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => producer.SendAsync(
+            new Message("orders", [1]),
+            cancellation.Token));
+
+        Assert.Single(client.SendRequests);
+    }
+
+    [Fact]
+    public async Task Lifecycle_IsIdempotentAndStartRejectsDisposedProducer()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var producer = CreateProducer(new FakeGrpcClient(), TransactionOptions());
+
+        await producer.StartAsync(cancellationToken);
+        await producer.StartAsync(cancellationToken);
+        await producer.DisposeAsync();
+        await producer.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => producer.StartAsync(cancellationToken).AsTask());
     }
 
     [Fact]

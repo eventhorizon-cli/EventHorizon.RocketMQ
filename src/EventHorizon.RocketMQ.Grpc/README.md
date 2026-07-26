@@ -7,6 +7,9 @@
 NuGet package for .NET 8 or later. It connects only to a RocketMQ Proxy through `Endpoint`; it does not
 connect directly to a NameServer or Broker.
 
+Client behavior is covered by high-coverage unit tests and Docker-backed integration tests against real
+NameServer, Broker, and Proxy paths.
+
 > See the [repository overview](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.md)
 > for the cross-protocol matrix and package-selection guidance, then use the
 > [runnable gRPC samples](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/README.md#grpc)

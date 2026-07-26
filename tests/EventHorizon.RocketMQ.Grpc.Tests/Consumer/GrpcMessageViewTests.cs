@@ -151,6 +151,45 @@ public sealed class GrpcMessageViewTests
         Assert.Contains("99", view.CorruptionReason);
     }
 
+    [Fact]
+    public void Factory_MapsDeliveryAndUserMetadata()
+    {
+        var systemProperties = new Proto.SystemProperties
+        {
+            MessageId = "message-1",
+            BodyEncoding = Proto.Encoding.Identity,
+            Tag = "important",
+            MessageGroup = "account-1",
+            InvisibleDuration = Google.Protobuf.WellKnownTypes.Duration.FromTimeSpan(TimeSpan.FromSeconds(30)),
+            LiteTopic = "lite-orders",
+            Keys = { "key-a", "key-b" }
+        };
+        var message = new Proto.Message
+        {
+            Topic = new Proto.Resource { Name = "orders" },
+            Body = ByteString.CopyFrom(Body),
+            SystemProperties = systemProperties,
+            UserProperties = { ["tenant"] = "east" }
+        };
+        var queue = new Proto.MessageQueue
+        {
+            Topic = message.Topic,
+            Id = 3,
+            Broker = new Proto.Broker { Name = "broker-a" }
+        };
+
+        var view = GrpcMessageViewFactory.Create(message, queue, new Uri("http://127.0.0.1:8081"));
+
+        Assert.Equal("important", view.Tag);
+        Assert.Equal(["key-a", "key-b"], view.Keys);
+        Assert.Equal("east", view.Properties["tenant"]);
+        Assert.Equal("account-1", view.MessageGroup);
+        Assert.Equal(TimeSpan.FromSeconds(30), view.InvisibleDuration);
+        Assert.Equal("lite-orders", view.LiteTopic);
+        Assert.Equal(3, view.QueueId);
+        Assert.Equal("broker-a", view.BrokerName);
+    }
+
     private static GrpcMessageView CreateView(byte[] body, Proto.Encoding encoding, Proto.Digest? digest = null)
     {
         var systemProperties = new Proto.SystemProperties

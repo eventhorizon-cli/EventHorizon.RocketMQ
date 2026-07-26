@@ -92,4 +92,11 @@ public sealed class GrpcEndpointTests
         Assert.Equal(new Uri("http://127.0.0.11:8082"), second);
         Assert.Equal(first, third);
     }
+
+    [Fact]
+    public void Conversion_RejectsEmptyEndpointCollections()
+    {
+        Assert.Throws<ArgumentException>(() => GrpcEndpoint.ToProtobuf([]));
+        Assert.Throws<InvalidOperationException>(() => GrpcEndpoint.FromProtobufAll(new Proto.Endpoints(), false));
+    }
 }

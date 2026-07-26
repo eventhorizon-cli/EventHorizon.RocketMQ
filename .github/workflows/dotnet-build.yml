@@ -85,3 +85,54 @@ jobs:
           flags: unit-tests
           name: dotnet-unit-tests
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  integration:
+    name: Docker integration tests and coverage
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore EventHorizon.RocketMQ.sln
+
+      - name: Build
+        run: >-
+          dotnet build EventHorizon.RocketMQ.sln
+          --configuration Release
+          --no-restore
+
+      - name: Test gRPC integration
+        run: >-
+          dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --collect:"XPlat Code Coverage"
+          --results-directory "${{ runner.temp }}/coverage/grpc-integration"
+
+      - name: Test Remoting integration
+        run: >-
+          dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --collect:"XPlat Code Coverage"
+          --results-directory "${{ runner.temp }}/coverage/remoting-integration"
+
+      - name: Upload integration coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          directory: ${{ runner.temp }}/coverage
+          fail_ci_if_error: true
+          flags: integration-tests
+          name: dotnet-integration-tests
+          token: ${{ secrets.CODECOV_TOKEN }}

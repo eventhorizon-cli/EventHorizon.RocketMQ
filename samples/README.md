@@ -50,19 +50,19 @@ synchronizes its `eventhorizon-test-lite-topic` LiteTopic subscription when it s
 [LitePush environment guide](../test-environments/rocketmq-litepush/README.md) for the exact setup and limits.
 
 The gRPC projects use `RocketMQ:Client` for `GrpcClientOptions` and `RocketMQ:Producer` or
-`RocketMQ:Consumer` for the role options. Sample-only runtime settings, such as a message body or subscription
-list, are in the top-level `Sample` section when the sample needs them. For example:
+`RocketMQ:Consumer` for the role options. The ordinary sample topic and consumer subscriptions are fixed in code so
+they match the local resource initializer. For example:
 
 ```shell
-RocketMQ__Client__Endpoint=localhost:8081 Sample__Topic=eventhorizon-test-topic dotnet run --project samples/grpc/Producer
+RocketMQ__Client__Endpoint=localhost:8081 dotnet run --project samples/grpc/Producer
 ```
 
 The classic Remoting projects use `RocketMQ:Remoting` for the NameServer connection and a concrete role section
-such as `RocketMQ:Producer`, `RocketMQ:PullConsumer`, or `RocketMQ:PushConsumer`. Their sample-only runtime
-settings are likewise in the top-level `Sample` section. For example:
+such as `RocketMQ:Producer`, `RocketMQ:PullConsumer`, or `RocketMQ:PushConsumer`. Their ordinary sample topic and
+consumer subscriptions are likewise fixed in code. For example:
 
 ```shell
-RocketMQ__Remoting__NamesrvAddr=localhost:9876 Sample__Topic=eventhorizon-test-topic dotnet run --project samples/remoting/Producer
+RocketMQ__Remoting__NamesrvAddr=localhost:9876 dotnet run --project samples/remoting/Producer
 ```
 
 Every project also contains an `appsettings.json` file with its default values. Consumer samples continue until
@@ -97,8 +97,8 @@ Remoting routes. Both use the auto-created `eventhorizon-test-topic`; the Produc
 Both Producer samples expose Swagger UI at `/swagger` and their OpenAPI document at
 `/swagger/v1/swagger.json`. Swagger UI can invoke both the default and keyed audit send endpoints directly.
 
-Both Producer samples expose `POST /messages`. Its JSON request body can contain optional `topic`, `tag`, and
-`body` fields. When a field is omitted, the sample uses the matching value from the `Sample` configuration section.
+Both Producer samples expose `POST /messages`. Its JSON request body has one required `message` field. The samples
+always send to `eventhorizon-test-topic` with the `sample` tag.
 
 Use the HTTP launch profile in a supported IDE or debug launcher to open Swagger automatically. For a predictable
 command-line fallback, disable the launch profile, bind a known local address, and then open
@@ -109,7 +109,7 @@ ASPNETCORE_URLS=http://localhost:5000 dotnet run --no-launch-profile --project s
 
 curl --request POST http://localhost:5000/messages \
     --header 'Content-Type: application/json' \
-    --data '{"topic":"eventhorizon-test-topic","tag":"sample","body":"Hello from curl."}'
+    --data '{"message":"Hello from curl."}'
 ```
 
 Replace `samples/grpc/Producer` with `samples/remoting/Producer` to use the classic Remoting Producer sample.
@@ -127,12 +127,12 @@ the same local RocketMQ environment as the default client registration, but can 
 `RocketMQ:Audit:Client` and `RocketMQ:Audit:Producer`; Remoting reads `RocketMQ:Audit:Remoting` and
 `RocketMQ:Audit:Producer`.
 
-Send through the audit keyed service with the same optional JSON body:
+Send through the audit keyed service with the same required `message` JSON body:
 
 ```shell
 curl --request POST http://localhost:5000/clients/audit/messages \
     --header 'Content-Type: application/json' \
-    --data '{"body":"Audit event from curl."}'
+    --data '{"message":"Audit event from curl."}'
 ```
 
 ## gRPC

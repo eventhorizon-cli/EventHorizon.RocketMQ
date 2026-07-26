@@ -15,6 +15,7 @@
 
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 
 namespace EventHorizon.RocketMQ.Remoting.Instrumentation;
 
@@ -109,6 +110,56 @@ internal sealed class RemotingRocketMQTelemetry : IRemotingRocketMQTelemetry
             parentContext,
             null,
             queueId);
+    }
+
+    public IRemotingRocketMQTelemetryOperation StartProcessBatch(
+        string topic,
+        string consumerGroup,
+        IReadOnlyList<RemotingMessageView> messages)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        if (messages.Count == 0)
+        {
+            throw new ArgumentException("At least one message is required.", nameof(messages));
+        }
+
+        long bodySize = 0;
+        foreach (var message in messages)
+        {
+            bodySize = checked(bodySize + message.Body.LongLength);
+        }
+
+        var first = messages[0];
+        var parentContext = first.ReceiveActivityContext;
+        var parentMessageIndex = -1;
+        if (!HasValidContext(parentContext))
+        {
+            for (var index = 0; index < messages.Count; index++)
+            {
+                if (TryExtractContext(messages[index].Properties, out var propagatedContext))
+                {
+                    parentContext = propagatedContext;
+                    parentMessageIndex = index;
+                    break;
+                }
+            }
+        }
+
+        return Start(
+            "process",
+            "process",
+            ActivityKind.Consumer,
+            topic,
+            consumerGroup,
+            messages.Count,
+            bodySize,
+            messages.Count == 1 ? first.MessageId : null,
+            parentMessageIndex < 0
+                ? messages.Select(static message => message.Properties)
+                : messages.Where((_, index) => index != parentMessageIndex).Select(static message => message.Properties),
+            parentContext,
+            null,
+            first.QueueId);
     }
 
     public IRemotingRocketMQTelemetryOperation StartSettle(

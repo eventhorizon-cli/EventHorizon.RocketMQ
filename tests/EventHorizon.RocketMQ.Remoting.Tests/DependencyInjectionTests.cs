@@ -241,7 +241,7 @@ public sealed class DependencyInjectionTests
             {
                 options.GroupName = "orders";
                 options.Subscribe("orders");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
         await using var provider = services.BuildServiceProvider();
 
@@ -326,7 +326,7 @@ public sealed class DependencyInjectionTests
                 options.GroupName = "orders";
                 options.InitialPosition = ConsumeFromPosition.Timestamp;
                 options.Subscribe("orders");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
 
         await using var provider = services.BuildServiceProvider();
@@ -334,6 +334,30 @@ public sealed class DependencyInjectionTests
         var exception = Assert.Throws<OptionsValidationException>(
             provider.GetRequiredService<IRemotingPushConsumer>);
         Assert.Contains("consume timestamp", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AddRemotingPushConsumer_RejectsNonPositiveConsumeTimeout()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = "127.0.0.1:9876";
+            })
+            .AddRemotingPushConsumer(options =>
+            {
+                options.GroupName = "orders";
+                options.ConsumeTimeout = TimeSpan.Zero;
+                options.Subscribe("orders");
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
+            });
+
+        await using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            provider.GetRequiredService<IRemotingPushConsumer>);
+        Assert.Contains("consume timeout", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -350,7 +374,7 @@ public sealed class DependencyInjectionTests
                 options.GroupName = "orders";
                 options.InitialPosition = (ConsumeFromPosition)int.MaxValue;
                 options.Subscribe("orders");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
 
         await using var provider = services.BuildServiceProvider();
@@ -374,7 +398,7 @@ public sealed class DependencyInjectionTests
                 options.GroupName = "orders";
                 options.ConsumerMode = (ConsumerMode)int.MaxValue;
                 options.Subscribe("orders");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
 
         await using var provider = services.BuildServiceProvider();
@@ -399,7 +423,7 @@ public sealed class DependencyInjectionTests
                 options.ConsumerMode = ConsumerMode.Broadcasting;
                 options.LocalOffsetStorePath = "invalid\0path";
                 options.Subscribe("orders");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+                options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
 
         await using var provider = services.BuildServiceProvider();

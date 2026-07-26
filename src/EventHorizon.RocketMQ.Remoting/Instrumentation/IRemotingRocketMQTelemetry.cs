@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using System.Diagnostics;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 
 namespace EventHorizon.RocketMQ.Remoting.Instrumentation;
 
@@ -40,6 +41,11 @@ internal interface IRemotingRocketMQTelemetry
         long bodySize,
         IReadOnlyDictionary<string, string> properties,
         ActivityContext? receiveContext);
+
+    IRemotingRocketMQTelemetryOperation StartProcessBatch(
+        string topic,
+        string consumerGroup,
+        IReadOnlyList<RemotingMessageView> messages);
 
     IRemotingRocketMQTelemetryOperation StartSettle(
         string operationName,

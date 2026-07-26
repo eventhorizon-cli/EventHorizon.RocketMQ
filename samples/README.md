@@ -168,7 +168,7 @@ These projects use `EventHorizon.RocketMQ.Remoting` and discover Brokers through
 | Pull consumer | `IRemotingPullConsumer` | [`remoting/PullConsumer`](remoting/PullConsumer/README.md) | Explicit queue discovery, offsets, pull, and offset commit. |
 | Lite Pull consumer | `IRemotingLitePullConsumer` | [`remoting/LitePullConsumer`](remoting/LitePullConsumer/README.md) | Subscription-driven assignment, polling, and client-managed offset commit. |
 | POP consumer | `IRemotingPopConsumer` | [`remoting/PopConsumer`](remoting/PopConsumer/README.md) | Explicit physical-queue selection and receipt acknowledgement. |
-| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.md) | Long-poll-based automatic dispatch through a message handler. |
+| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.md) | Long-poll-based automatic batch dispatch through a message handler, with singleton FIFO delivery where required. |
 
 Run a Remoting project with its directory as the project argument, for example:
 

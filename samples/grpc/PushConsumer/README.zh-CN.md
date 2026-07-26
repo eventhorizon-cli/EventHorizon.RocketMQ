@@ -18,6 +18,7 @@
 | `RocketMQ:Consumer:MaxConcurrency` | `4` | 最大并发 handler 执行数。 |
 | `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | 进入死信前的回退投递次数上限。 |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | 初始租约时长；处理期间客户端会续租。 |
+| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | 非 FIFO handler 在客户端取消其 token 并请求重新投递前允许运行的最长时间。 |
 | `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Receive 请求允许服务端等待的最长时间。 |
 | `Sample:Filter` | `sample` | 固定标准 topic 的 Tag 过滤表达式。 |
 
@@ -68,6 +69,8 @@ Producer 示例。
   的死信队列。本示例对损坏消息返回 `DeadLetter`，对正常消息记录日志后返回 `Success`。
 - `MaxConcurrency` 控制本地 handler 并发数，不控制 Broker 队列数量。即使其他消息可并发，FIFO message group 仍保持
   自身的顺序约束。
+- `ConsumeTimeout` 只适用于非 FIFO 分发。到期后会取消 handler token、停止客户端不可见时间续期并请求重新投递；忽略取消的
+  handler 无法被强制停止，其延迟返回的成功结果也会被忽略。为保持顺序，FIFO handler 会继续保持关联。
 - 使用同一个 group 的多个实例会分摊消息并共享重试状态。要独立观察 topic，请使用新的 group。
 
 handler 生命周期、重试行为和运行时订阅请参阅

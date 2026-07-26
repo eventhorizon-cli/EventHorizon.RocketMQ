@@ -4,7 +4,7 @@
 
 这个 ASP.NET Core Minimal API 在同一个 host 中运行 gRPC 和 classic Remoting Push Consumer，并为两个协议使用彼此独立的
 Consumer Group。两者都订阅共享的普通 Topic `eventhorizon-test-topic`，消费所有 tag。host 使用 scoped message handler，
-因此每次消息投递都有独立的依赖注入作用域。
+因此每条 gRPC 消息和每个 Remoting batch 都有独立的依赖注入作用域。
 
 共享的 SDK、OTLP、Compose 与 Grafana 配置请参阅 [OpenTelemetry 示例总览](../README.zh-CN.md)。启动本 Consumer host 后，
 可使用独立的 Producer Web API 发布消息。
@@ -30,6 +30,13 @@ ASPNETCORE_URLS=http://127.0.0.1:5242 \
 便于在随附的
 [Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry) 中观察 `process`
 operation duration；该示例为此配置了亚秒级 duration bucket。
+
+Remoting handler 会收到消息列表和 `RemotingPushConsumeContext`。本示例返回 `Success` 时不修改 `AckIndex`，因此会确认
+每个完整批次。并发、非 FIFO handler 也可以返回 `Success`，同时将 `AckIndex` 设为最后一条已接受消息的从零开始索引，以确认
+其前缀并重试其后的尾部消息；`-1` 表示一条也不确认。`Retry` 和 `DeadLetter` 始终应用到整个批次。对于要重试的消息，
+`DelayLevelWhenNextConsume` 初始为 `RetryDelay`，可设为 `0` 使用 Broker 策略、设为正的 RocketMQ 延迟级别，或设为负值
+直接进入死信队列。广播模式没有 Broker 重试/死信流程，因此未确认的尾部消息会被跳过。FIFO `MessageGroup` 和
+`ConsumeOrderly` 投递均为单消息路径，不使用部分批量确认。
 
 ## 路由
 
@@ -57,9 +64,12 @@ operation duration；该示例为此配置了亚秒级 duration bucket。
 | `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | gRPC Push Consumer 使用的 RocketMQ 5 Proxy 端点。 |
 | `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | gRPC Push Consumer 的 Consumer Group。 |
 | `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | 并发执行的 gRPC message handler 数量。 |
+| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO gRPC handler 允许运行的最长时间。 |
 | `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | Remoting Push Consumer 使用的 NameServer。 |
 | `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Remoting Push Consumer 的 Consumer Group。 |
+| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | 单次 Remoting handler 调用处理的最大消息数量。 |
 | `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | 并发执行的 Remoting message handler 数量。 |
+| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO Remoting batch handler 允许运行的最长时间。 |
 | `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource 值。 |
 | `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector 端点。 |
 

@@ -93,6 +93,11 @@ PushConsumer 启动后大致执行如下循环：
 FIFO 分发时，客户端为同一消息组维持顺序尾链并阻塞同组后续消息；这是应用处理顺序的约束，不应被理解为
 跨消费组、跨队列或跨消费者的全局顺序保证。
 
+对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后 dispatcher 会取消 handler token、停止客户端的
+不可见时间续期并请求重新投递；延迟返回的成功结果会被忽略。即使应用代码忽略取消，dispatcher 也会释放 worker 容量，
+但客户端无法强制终止这段代码。重新投递可能与仍在执行、但忽略取消的调用重叠，因此 handler 必须具备幂等性。FIFO message
+group 会刻意排除在此机制之外，因为脱离一个超时 handler 可能破坏顺序。
+
 通过 `AddGrpcPushConsumer<THandler>(ServiceLifetime.Scoped, ...)` 注册 typed handler 时，每次处理都会创建
 DI scope。详情见[依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)。
 

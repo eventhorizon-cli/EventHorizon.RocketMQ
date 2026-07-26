@@ -22,6 +22,7 @@ using Xunit;
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
 [Collection(RocketMQMultiBrokerCollection.Name)]
+[Trait("Topology", "MultiBroker")]
 public sealed class RocketMQMultiBrokerIntegrationTests
 {
     private readonly RocketMQMultiBrokerRemotingContainerFixture _fixture;

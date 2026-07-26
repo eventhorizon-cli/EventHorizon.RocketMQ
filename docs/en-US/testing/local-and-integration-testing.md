@@ -46,7 +46,7 @@ protocol Projects:
 - [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests)
 
 They validate isolated behavior such as serialization, route caching, client lifecycle, handler
-lifetimes, and public contracts without depending on a Broker. The compatibility tests compile
+lifetimes, batch-prefix acknowledgement, and public contracts without depending on a Broker. The compatibility tests compile
 against both protocol Projects to verify both public APIs, namespace separation, and dual-Package
 consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
@@ -91,12 +91,16 @@ them.
 
 ### CI coverage
 
-GitHub Actions runs the Docker-backed gRPC and Remoting integration-test projects in a separate
-`ubuntu-latest` job after formatting, build, and unit-test validation complete. The job has its own
-timeout budget because Testcontainers must pull images and start the Broker, NameServer, and Proxy
-fixtures. Both integration projects collect Cobertura reports and upload them to Codecov with the
-`integration-tests` flag. Codecov combines those reports with the `unit-tests` reports; the
-repository configuration continues to exclude `samples` from coverage.
+GitHub Actions runs the Docker-backed gRPC and Remoting integration-test projects in four parallel
+`ubuntu-latest` matrix jobs after formatting, build, and unit-test validation complete: one
+single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
+selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores
+and builds only its protocol-specific integration-test dependency graph, has its own timeout budget,
+and reuses the repository's NuGet package cache. Testcontainers still starts isolated Broker,
+NameServer, and Proxy fixtures for every job. All four jobs collect Cobertura reports and upload them
+to Codecov with distinct upload names under the shared `integration-tests` flag. Codecov combines
+those reports with the `unit-tests` reports; the repository configuration continues to exclude
+`samples` from coverage.
 
 ### Manual Compose environment
 

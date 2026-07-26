@@ -4,7 +4,8 @@
 
 This ASP.NET Core Minimal API runs the gRPC and classic Remoting Push consumers in one host, using separate
 protocol-specific consumer groups. Both subscribe to the shared standard topic `eventhorizon-test-topic` and process
-every tag. The host uses scoped message handlers, so every delivery has its own dependency-injection scope.
+every tag. The host uses scoped message handlers, so each gRPC delivery and each Remoting batch has its own
+dependency-injection scope.
 
 The [OpenTelemetry sample overview](../README.md) covers the shared SDK, OTLP, Compose, and Grafana setup. Use the
 separate producer Web API to publish messages after this consumer host has started.
@@ -32,6 +33,15 @@ makes the `process` operation duration easy to inspect in the bundled
 [Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry), which
 uses sub-second duration buckets for this sample.
 
+The Remoting handler receives its message list and a `RemotingPushConsumeContext`. This sample returns `Success`
+without changing `AckIndex`, so it confirms each complete batch. A concurrent non-FIFO handler can instead return
+`Success` with `AckIndex` set to the zero-based index of the last accepted message to confirm its prefix and retry the
+remaining tail; `-1` confirms none. `Retry` and `DeadLetter` always apply to the whole batch. For retried messages,
+`DelayLevelWhenNextConsume` starts from `RetryDelay` and can be set to `0` for Broker policy, a positive RocketMQ
+delay level, or a negative value for direct dead-lettering. Broadcasting has no Broker retry/dead-letter flow, so an
+unacknowledged tail is skipped. FIFO `MessageGroup` and `ConsumeOrderly` deliveries are singleton paths and do not
+use partial batch confirmation.
+
 ## Routes
 
 | Method | Route | Success response |
@@ -58,9 +68,12 @@ The project uses the following local defaults from `appsettings.json`:
 | `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | RocketMQ 5 Proxy endpoint for the gRPC Push consumer. |
 | `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | Consumer group for the gRPC Push consumer. |
 | `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | Concurrent gRPC message-handler invocations. |
+| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO gRPC handler time before retry is requested. |
 | `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | NameServer for the Remoting Push consumer. |
 | `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Consumer group for the Remoting Push consumer. |
+| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | Maximum messages processed by one Remoting handler invocation. |
 | `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | Concurrent Remoting message-handler invocations. |
+| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO Remoting batch-handler time before retry is requested. |
 | `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource value. |
 | `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector endpoint. |
 

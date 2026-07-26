@@ -23,17 +23,24 @@ namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi;
 internal sealed class RemotingConsumerMessageHandler(
     ILogger<RemotingConsumerMessageHandler> logger) : IRemotingPushMessageHandler
 {
-    public async ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+    public async ValueTask<ConsumeResult> HandleAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext context,
+        CancellationToken cancellationToken)
     {
-        await Task.Delay(Random.Shared.Next(250, 1001), cancellationToken);
-        logger.LogInformation(
-            "Remoting consumer received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",
-            message.MessageId,
-            message.Topic,
-            message.BrokerName,
-            message.QueueId,
-            message.QueueOffset,
-            Encoding.UTF8.GetString(message.Body));
+        foreach (var message in messages)
+        {
+            await Task.Delay(Random.Shared.Next(250, 1001), cancellationToken);
+            logger.LogInformation(
+                "Remoting consumer received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",
+                message.MessageId,
+                message.Topic,
+                message.BrokerName,
+                message.QueueId,
+                message.QueueOffset,
+                Encoding.UTF8.GetString(message.Body));
+        }
+
         return ConsumeResult.Success;
     }
 }

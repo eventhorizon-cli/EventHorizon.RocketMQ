@@ -128,7 +128,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         var consumer = CreateRemotingPushConsumer(
@@ -194,7 +194,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         var consumer = CreateRemotingPushConsumer(
@@ -279,7 +279,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -353,7 +353,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -432,7 +432,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -524,7 +524,7 @@ public sealed class RemotingPushConsumerTests
         };
         var options = CreateBroadcastOptions(
             offsetPath,
-            static (_, _) => ValueTask.FromResult(ConsumeResult.Success));
+            static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.MaxConcurrency = 1;
         options.RetryDelay = TimeSpan.FromMilliseconds(20);
         var consumer = CreateRemotingPushConsumer(
@@ -616,7 +616,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders", new FilterExpression("created || paid"));
         var clientOptions = new RemotingClientOptions
@@ -702,7 +702,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -754,7 +754,7 @@ public sealed class RemotingPushConsumerTests
             var remoting = new FakeRemotingClient("127.0.0.1@broadcast-test");
             var routeTopics = new ConcurrentQueue<string>();
             var routes = CreateRouteServiceMock(3, routeTopics);
-            var options = CreateBroadcastOptions(offsetPath, static (_, _) =>
+            var options = CreateBroadcastOptions(offsetPath, static (_, _, _) =>
                 ValueTask.FromResult(ConsumeResult.Success));
             await using var consumer = CreateRemotingPushConsumer(options, routes.Object, remoting, "broadcast-test");
 
@@ -806,7 +806,7 @@ public sealed class RemotingPushConsumerTests
                     throw new InvalidOperationException("An infinite pull completed unexpectedly.");
                 }
             };
-            var firstOptions = CreateBroadcastOptions(offsetPath, static (_, _) =>
+            var firstOptions = CreateBroadcastOptions(offsetPath, static (_, _, _) =>
                 ValueTask.FromResult(ConsumeResult.Retry));
             await using (var first = CreateRemotingPushConsumer(
                              firstOptions,
@@ -824,7 +824,7 @@ public sealed class RemotingPushConsumerTests
                 RequestCode.UpdateConsumerOffset or RequestCode.ConsumerSendMsgBack);
 
             var secondRemoting = new FakeRemotingClient("127.0.0.1@broadcast-test");
-            var secondOptions = CreateBroadcastOptions(offsetPath, static (_, _) =>
+            var secondOptions = CreateBroadcastOptions(offsetPath, static (_, _, _) =>
                 ValueTask.FromResult(ConsumeResult.Success));
             await using (var second = CreateRemotingPushConsumer(
                              secondOptions,
@@ -843,6 +843,70 @@ public sealed class RemotingPushConsumerTests
                 RequestCode.GetConsumerListByGroup or RequestCode.QueryConsumerOffset or
                 RequestCode.UpdateConsumerOffset or RequestCode.ConsumerSendMsgBack or
                 RequestCode.GetMinOffset or RequestCode.GetMaxOffset or RequestCode.SearchOffsetByTimestamp);
+        }
+        finally
+        {
+            File.Delete(offsetPath);
+        }
+    }
+
+    [Fact]
+    public async Task BroadcastingConsumer_DoesNotApplyConsumeTimeout()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var offsetPath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            $"rocketmq-broadcast-timeout-{Guid.NewGuid():N}.json");
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@broadcast-timeout")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "broadcast", null, 0, 1_000), 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = CreateBroadcastOptions(
+            offsetPath,
+            async (_, _, token) =>
+            {
+                handlerStarted.TrySetResult();
+                using var registration = token.Register(() => handlerCancellationRequested.TrySetResult());
+                await releaseHandler.Task.WaitAsync(token);
+                handlerFinished.TrySetResult();
+                return ConsumeResult.Success;
+            });
+        options.ConsumeTimeout = TimeSpan.FromMilliseconds(50);
+        options.MaxConcurrency = 1;
+        options.MaxCachedMessages = 1;
+        try
+        {
+            await using var consumer = CreateRemotingPushConsumer(
+                options,
+                CreateRouteServiceMock().Object,
+                remoting,
+                "broadcast-timeout");
+
+            await consumer.StartAsync(cancellationToken);
+            await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await Task.Delay(100, cancellationToken);
+            Assert.False(handlerCancellationRequested.Task.IsCompleted);
+
+            releaseHandler.TrySetResult();
+            await handlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await consumer.StopAsync(cancellationToken);
+
+            Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
         }
         finally
         {
@@ -884,14 +948,10 @@ public sealed class RemotingPushConsumerTests
                 It.IsAny<IEnumerable<IReadOnlyDictionary<string, string>>?>()))
             .Returns(receiveOperation.Object);
         telemetry
-            .Setup(value => value.StartProcess(
+            .Setup(value => value.StartProcessBatch(
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<int>(),
-                It.IsAny<long>(),
-                It.IsAny<IReadOnlyDictionary<string, string>>(),
-                It.IsAny<ActivityContext?>()))
+                It.Is<IReadOnlyList<RemotingMessageView>>(messages => messages.Count == 1)))
             .Returns(processOperation.Object);
         var delivered = 0;
         var remoting = new FakeRemotingClient("127.0.0.1@telemetry-test")
@@ -910,7 +970,7 @@ public sealed class RemotingPushConsumerTests
         };
         var options = CreateBroadcastOptions(
             offsetPath,
-            (_, _) => ValueTask.FromResult(result));
+            (_, _, _) => ValueTask.FromResult(result));
         try
         {
             await using var consumer = CreateRemotingPushConsumer(
@@ -953,7 +1013,7 @@ public sealed class RemotingPushConsumerTests
                 MaxConcurrency = 1,
                 MaxCachedMessages = 8,
                 LongPollingTimeout = TimeSpan.FromSeconds(1),
-                MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+                MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
             };
             var remoting = new FakeRemotingClient("127.0.0.1@dynamic-test");
             await using var consumer = CreateRemotingPushConsumer(
@@ -1143,8 +1203,9 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (message, _) =>
+            MessageHandler = (messages, _, _) =>
             {
+                var message = Assert.Single(messages);
                 if (message.MessageId == "retry-after-crash")
                 {
                     retryDelivered.TrySetResult();
@@ -1187,7 +1248,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         var clientOptions = new RemotingClientOptions
@@ -1218,10 +1279,658 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoRetryKeepsSameGroupSuccessorBlockedUntilPredecessorSucceeds()
+    public async Task ConcurrentPushConsumer_DispatchesMessagesInConfiguredBatches()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var batches = new ConcurrentQueue<string[]>();
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "one", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "two", null, 1, 1_001))
+            .Concat(CreateMessageRecord("orders", "three", null, 2, 1_002))
+            .Concat(CreateMessageRecord("orders", "four", null, 3, 1_003))
+            .Concat(CreateMessageRecord("orders", "five", null, 4, 1_004))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-dispatch")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 5);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 5,
+            ConsumeMessageBatchSize = 2,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 5,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = (messages, _, _) =>
+            {
+                batches.Enqueue(messages.Select(static message => message.MessageId).ToArray());
+                if (batches.Count == 3)
+                {
+                    completed.TrySetResult();
+                }
+
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "batch-dispatch");
+
+        await consumer.StartAsync(cancellationToken);
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 5))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Collection(
+            batches.ToArray(),
+            batch => Assert.Equal(["one", "two"], batch),
+            batch => Assert.Equal(["three", "four"], batch),
+            batch => Assert.Equal(["five"], batch));
+        var pull = remoting.Requests.First(request =>
+            request.Code == RequestCode.PullMessage &&
+            string.Equals(request.ExtFields["topic"] as string, "orders", StringComparison.Ordinal));
+        Assert.Equal(5, Convert.ToInt32(pull.ExtFields["maxMsgNums"]));
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_BatchRetrySendsEveryMessageBack()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "one", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "two", null, 1, 1_001))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-retry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 2);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 2,
+            ConsumeMessageBatchSize = 2,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 2,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, context, _) =>
+            {
+                context.AckIndex = 0;
+                return ValueTask.FromResult(ConsumeResult.Retry);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "batch-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 2, cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(
+            2,
+            remoting.Requests.Count(static request => request.Code == RequestCode.ConsumerSendMsgBack));
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_AcknowledgesBatchPrefixAndRetriesRemainingMessages()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "one", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "two", null, 1, 1_001))
+            .Concat(CreateMessageRecord("orders", "three", null, 2, 1_002))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-partial-ack")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 3);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 3,
+            ConsumeMessageBatchSize = 3,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 3,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = (messages, context, _) =>
+            {
+                Assert.Equal(["one", "two", "three"], messages.Select(static message => message.MessageId));
+                context.AckIndex = 0;
+                context.DelayLevelWhenNextConsume = 7;
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "batch-partial-ack");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 2, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 3))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        var sendBackRequests = remoting.Requests
+            .Where(static request => request.Code == RequestCode.ConsumerSendMsgBack)
+            .ToArray();
+        Assert.Equal(2, sendBackRequests.Length);
+        Assert.Equal(
+            [1_001L, 1_002L],
+            sendBackRequests.Select(static request => Convert.ToInt64(request.ExtFields["offset"])).Order());
+        Assert.All(
+            sendBackRequests,
+            static request => Assert.Equal(7, Convert.ToInt32(request.ExtFields["delayLevel"])));
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_RecordsPartialBatchAcknowledgementAsPartialSuccessTelemetry()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var processCompleted = new TaskCompletionSource<(bool Success, string? Outcome)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var processOperation = new Mock<IRemotingRocketMQTelemetryOperation>(MockBehavior.Strict);
+        processOperation
+            .Setup(value => value.Complete(false, "partial_success"))
+            .Callback(() => processCompleted.TrySetResult((false, "partial_success")));
+        processOperation.Setup(value => value.Dispose());
+        var telemetry = new ProcessTelemetry(processOperation.Object);
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "one", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "two", null, 1, 1_001))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-partial-telemetry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 2);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 2,
+            ConsumeMessageBatchSize = 2,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 2,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, context, _) =>
+            {
+                context.AckIndex = 0;
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "batch-partial-telemetry",
+            telemetry);
+
+        await consumer.StartAsync(cancellationToken);
+        var outcome = await processCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.False(outcome.Success);
+        Assert.Equal("partial_success", outcome.Outcome);
+        Assert.Equal(1, telemetry.ProcessBatchCalls);
+        processOperation.VerifyAll();
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_AdmitsFullBatchesFromMultipleQueuesWhenCacheMatchesOneBatch()
+    {
+        const int queueCount = 4;
+        const int messagesPerBatch = 2;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var readyPulls = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePulls = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allBatchesHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deliveredQueues = new ConcurrentDictionary<int, byte>();
+        var handledBatches = new ConcurrentQueue<string[]>();
+        var waitingPulls = 0;
+        var handledBatchCount = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-admission")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (!string.Equals(request.ExtFields["topic"] as string, "orders", StringComparison.Ordinal))
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+                }
+
+                var queueId = Convert.ToInt32(request.ExtFields["queueId"]);
+                if (!deliveredQueues.TryAdd(queueId, 0))
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+                }
+
+                if (Interlocked.Increment(ref waitingPulls) == queueCount)
+                {
+                    readyPulls.TrySetResult();
+                }
+
+                await releasePulls.Task.WaitAsync(token);
+                return PullSuccess(
+                    CreateMessageRecord("orders", $"queue-{queueId}-first", null, 0, 1_000 + queueId)
+                        .Concat(CreateMessageRecord("orders", $"queue-{queueId}-second", null, 1, 2_000 + queueId))
+                        .ToArray(),
+                    messagesPerBatch);
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = messagesPerBatch,
+            ConsumeMessageBatchSize = messagesPerBatch,
+            MaxConcurrency = queueCount,
+            MaxCachedMessages = messagesPerBatch,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = (messages, _, _) =>
+            {
+                Assert.Equal(messagesPerBatch, messages.Count);
+                handledBatches.Enqueue(messages.Select(static message => message.MessageId).ToArray());
+                if (Interlocked.Increment(ref handledBatchCount) == queueCount)
+                {
+                    allBatchesHandled.TrySetResult();
+                }
+
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock(queueCount).Object,
+            remoting,
+            "batch-admission");
+
+        await consumer.StartAsync(cancellationToken);
+        await readyPulls.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        releasePulls.TrySetResult();
+        await allBatchesHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(queueCount, deliveredQueues.Count);
+        Assert.Equal(
+            Enumerable.Range(0, queueCount).Select(static queueId => $"queue-{queueId}-first").Order(),
+            handledBatches.Select(static batch => batch[0]).Order());
+        Assert.All(
+            handledBatches,
+            batch =>
+            {
+                var prefix = batch[0][..^"-first".Length];
+                Assert.Equal(new[] { $"{prefix}-first", $"{prefix}-second" }, batch);
+            });
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_CancelsTimedOutHandlerAndContinuesWithQueuedMessages()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var firstHandlerCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "first", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "second", null, 1, 1_001))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@consume-timeout")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 2);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 2,
+            ConsumeMessageBatchSize = 1,
+            ConsumeTimeout = TimeSpan.FromMilliseconds(50),
+            MaxConcurrency = 1,
+            MaxCachedMessages = 2,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (messages, _, token) =>
+            {
+                var message = Assert.Single(messages);
+                if (message.MessageId == "first")
+                {
+                    using var failingRegistration = token.Register(
+                        static () => throw new InvalidOperationException("The test cancellation callback failed."));
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        firstHandlerCanceled.TrySetResult();
+                        throw;
+                    }
+                }
+
+                secondHandled.TrySetResult();
+                return ConsumeResult.Success;
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "consume-timeout");
+
+        await consumer.StartAsync(cancellationToken);
+        await firstHandlerCanceled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await secondHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 2))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Single(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_RetriesTimedOutHandlerThatDoesNotHonorCancellation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processCompleted = new TaskCompletionSource<(bool Success, string? Outcome)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var processOperation = new Mock<IRemotingRocketMQTelemetryOperation>(MockBehavior.Strict);
+        processOperation
+            .Setup(value => value.Complete(false, "timeout"))
+            .Callback(() => processCompleted.TrySetResult((false, "timeout")));
+        processOperation.Setup(value => value.Dispose());
+        var telemetry = new ProcessTelemetry(processOperation.Object);
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "stuck", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@consume-timeout-uncooperative")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 1,
+            ConsumeTimeout = TimeSpan.FromMilliseconds(50),
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (_, _, _) =>
+            {
+                handlerStarted.TrySetResult();
+                await releaseHandler.Task;
+                handlerFinished.TrySetResult();
+                return ConsumeResult.Success;
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "consume-timeout-uncooperative",
+            telemetry);
+
+        await consumer.StartAsync(cancellationToken);
+        await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        var processOutcome = await processCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.False(processOutcome.Success);
+        Assert.Equal("timeout", processOutcome.Outcome);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 1))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        releaseHandler.TrySetResult();
+        await handlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Single(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+        Assert.Equal(1, telemetry.ProcessBatchCalls);
+        processOperation.VerifyAll();
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_RetriesEveryMessageInTimedOutBatch()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "first", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "second", null, 1, 1_001))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@consume-timeout-batch")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 2);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 2,
+            ConsumeMessageBatchSize = 2,
+            ConsumeTimeout = TimeSpan.FromMilliseconds(50),
+            RetryDelay = TimeSpan.FromSeconds(5),
+            MaxConcurrency = 1,
+            MaxCachedMessages = 2,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (messages, context, _) =>
+            {
+                Assert.Equal(2, messages.Count);
+                context.DelayLevelWhenNextConsume = -1;
+                handlerStarted.TrySetResult();
+                await releaseHandler.Task;
+                handlerFinished.TrySetResult();
+                return ConsumeResult.Success;
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "consume-timeout-batch");
+
+        await consumer.StartAsync(cancellationToken);
+        await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 2, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 2))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        releaseHandler.TrySetResult();
+        await handlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(
+            2,
+            remoting.Requests.Count(static request => request.Code == RequestCode.ConsumerSendMsgBack));
+        Assert.All(
+            remoting.Requests.Where(static request => request.Code == RequestCode.ConsumerSendMsgBack),
+            static request => Assert.Equal(2, Convert.ToInt32(request.ExtFields["delayLevel"])));
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_WaitsForEveryBatchBeforeCommittingOffset()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var allBatchesStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBatches = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = 0;
+        var handlerCalls = 0;
+        var body = CreateMessageRecord("orders", "one", null, 0, 1_000)
+            .Concat(CreateMessageRecord("orders", "two", null, 1, 1_001))
+            .Concat(CreateMessageRecord("orders", "three", null, 2, 1_002))
+            .Concat(CreateMessageRecord("orders", "four", null, 3, 1_003))
+            .Concat(CreateMessageRecord("orders", "five", null, 4, 1_004))
+            .ToArray();
+        var remoting = new FakeRemotingClient("127.0.0.1@batch-completion")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 5);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 5,
+            ConsumeMessageBatchSize = 2,
+            MaxConcurrency = 3,
+            MaxCachedMessages = 5,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (_, _, token) =>
+            {
+                if (Interlocked.Increment(ref handlerCalls) == 3)
+                {
+                    allBatchesStarted.TrySetResult();
+                }
+
+                await releaseBatches.Task.WaitAsync(token);
+                return ConsumeResult.Success;
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "batch-completion");
+
+        await consumer.StartAsync(cancellationToken);
+        await allBatchesStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.DoesNotContain(
+            remoting.UpdatedOffsets,
+            static update => update.Topic == "orders" && update.Offset == 5);
+
+        releaseBatches.TrySetResult();
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 5))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(3, handlerCalls);
+    }
+
+    [Fact]
+    public async Task FifoRetryKeepsSameGroupSuccessorBlockedUntilPredecessorSucceedsAndIgnoresBatchAcknowledgementContext()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstSecondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstCalls = 0;
@@ -1246,13 +1955,16 @@ public sealed class RemotingPushConsumerTests
         var options = new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
+            ConsumeMessageBatchSize = 2,
+            ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             MaxDeliveryAttempts = 3,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (message, token) =>
+            MessageHandler = async (messages, context, token) =>
             {
+                var message = Assert.Single(messages);
                 if (message.MessageId == "first")
                 {
                     if (Interlocked.Increment(ref firstCalls) == 1)
@@ -1261,7 +1973,9 @@ public sealed class RemotingPushConsumerTests
                     }
 
                     firstSecondAttempt.TrySetResult();
+                    using var registration = token.Register(() => firstCancellationRequested.TrySetResult());
                     await releaseFirst.Task.WaitAsync(token);
+                    context.AckIndex = -1;
                     return ConsumeResult.Success;
                 }
 
@@ -1287,6 +2001,7 @@ public sealed class RemotingPushConsumerTests
         await consumer.StartAsync(cancellationToken);
         await firstSecondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         await Task.Delay(100, cancellationToken);
+        Assert.False(firstCancellationRequested.Task.IsCompleted);
         Assert.False(secondHandled.Task.IsCompleted);
 
         releaseFirst.TrySetResult();
@@ -1310,7 +2025,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -1379,7 +2094,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -1447,7 +2162,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
         };
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
@@ -1476,6 +2191,7 @@ public sealed class RemotingPushConsumerTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var delivered = 0;
@@ -1501,14 +2217,17 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
+            ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (message, token) =>
+            MessageHandler = async (messages, _, token) =>
             {
+                var message = Assert.Single(messages);
                 if (message.MessageId == "first")
                 {
                     firstStarted.TrySetResult();
+                    using var registration = token.Register(() => firstCancellationRequested.TrySetResult());
                     await releaseFirst.Task.WaitAsync(token);
                 }
                 else
@@ -1529,6 +2248,7 @@ public sealed class RemotingPushConsumerTests
         await consumer.StartAsync(cancellationToken);
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         await Task.Delay(100, cancellationToken);
+        Assert.False(firstCancellationRequested.Task.IsCompleted);
         Assert.False(secondStarted.Task.IsCompleted);
 
         releaseFirst.TrySetResult();
@@ -1541,6 +2261,64 @@ public sealed class RemotingPushConsumerTests
         Assert.Contains(
             remoting.UpdatedOffsets,
             static update => update.Topic == "orders" && update.Offset == 2);
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_IgnoresBatchAcknowledgementContext()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "order", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-context")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            MaxDeliveryAttempts = 1,
+            RetryDelay = TimeSpan.FromMilliseconds(1),
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = (messages, context, _) =>
+            {
+                Assert.Single(messages);
+                context.AckIndex = -1;
+                handled.TrySetResult();
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-context");
+
+        await consumer.StartAsync(cancellationToken);
+        await handled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 1))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
     }
 
     [Fact]
@@ -1573,7 +2351,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (message, _) =>
+            MessageHandler = async (_, _, _) =>
             {
                 firstStarted.TrySetResult();
                 await releaseFirst.Task;
@@ -1797,7 +2575,7 @@ public sealed class RemotingPushConsumerTests
 
     private static RemotingPushConsumerOptions CreateBroadcastOptions(
         string offsetPath,
-        Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>> handler)
+        Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>> handler)
     {
         var options = new RemotingPushConsumerOptions
         {
@@ -1820,7 +2598,7 @@ public sealed class RemotingPushConsumerTests
         MaxConcurrency = 2,
         MaxCachedMessages = 8,
         LongPollingTimeout = TimeSpan.FromSeconds(1),
-        MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+        MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
     };
 
     private static RemotingPushConsumer CreateRemotingPushConsumer(
@@ -1912,6 +2690,60 @@ public sealed class RemotingPushConsumerTests
                 return Task.FromResult(Route(queueCount));
             });
         return routes;
+    }
+
+    private sealed class ProcessTelemetry(IRemotingRocketMQTelemetryOperation processOperation) : IRemotingRocketMQTelemetry
+    {
+        private int _processBatchCalls;
+
+        public int ProcessBatchCalls => Volatile.Read(ref _processBatchCalls);
+
+        public IRemotingRocketMQTelemetryOperation StartSend(string topic, int messageCount, long bodySize) =>
+            RemotingRocketMQTelemetry.Operation.Disabled;
+
+        public IRemotingRocketMQTelemetryOperation StartReceive(
+            string topic,
+            string consumerGroup,
+            int messageCount,
+            ActivityContext? parentContext,
+            DateTimeOffset startTime,
+            long startTimestamp,
+            int? queueId = null,
+            bool createActivity = true,
+            IEnumerable<IReadOnlyDictionary<string, string>>? messageProperties = null) =>
+            RemotingRocketMQTelemetry.Operation.Disabled;
+
+        public IRemotingRocketMQTelemetryOperation StartProcess(
+            string topic,
+            string consumerGroup,
+            string messageId,
+            int queueId,
+            long bodySize,
+            IReadOnlyDictionary<string, string> properties,
+            ActivityContext? receiveContext) =>
+            RemotingRocketMQTelemetry.Operation.Disabled;
+
+        public IRemotingRocketMQTelemetryOperation StartProcessBatch(
+            string topic,
+            string consumerGroup,
+            IReadOnlyList<RemotingMessageView> messages)
+        {
+            Interlocked.Increment(ref _processBatchCalls);
+            return processOperation;
+        }
+
+        public IRemotingRocketMQTelemetryOperation StartSettle(
+            string operationName,
+            string topic,
+            string consumerGroup,
+            string? messageId,
+            int? queueId,
+            IReadOnlyDictionary<string, string>? properties) =>
+            RemotingRocketMQTelemetry.Operation.Disabled;
+
+        public void InjectContext(Activity? activity, IDictionary<string, string> properties)
+        {
+        }
     }
 
     private sealed class FakeRemotingClient(string clientId) : IRemotingClient, IRemotingRequestHandlerRegistry

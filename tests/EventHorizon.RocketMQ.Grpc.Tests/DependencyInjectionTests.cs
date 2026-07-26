@@ -15,6 +15,7 @@
 
 using System.Reflection;
 using EventHorizon.RocketMQ.Grpc.Consumer;
+using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 using EventHorizon.RocketMQ.Grpc.Instrumentation;
@@ -149,6 +150,48 @@ public sealed class DependencyInjectionTests
         Assert.IsType<GrpcPushConsumer>(consumer);
         Assert.IsType<GrpcPushConsumerHostedService>(hostedService);
         Assert.Same(consumer, provider.GetRequiredService<IGrpcPushConsumer>());
+    }
+
+    [Fact]
+    public void AddGrpcPushConsumer_RejectsNonPositiveConsumeTimeout()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
+            .AddGrpcPushConsumer(options =>
+            {
+                options.GroupName = "orders";
+                options.Subscribe("orders");
+                options.ConsumeTimeout = TimeSpan.Zero;
+                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+            });
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            () => provider.GetRequiredService<IGrpcPushConsumer>());
+
+        Assert.Contains("Consume timeout", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddGrpcLitePushConsumer_RejectsNonPositiveConsumeTimeout()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
+            .AddGrpcLitePushConsumer(options =>
+            {
+                options.GroupName = "orders";
+                options.BindTopic = "orders";
+                options.ConsumeTimeout = TimeSpan.Zero;
+                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+            });
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            () => provider.GetRequiredService<IGrpcLitePushConsumer>());
+
+        Assert.Contains("Consume timeout", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

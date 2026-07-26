@@ -159,7 +159,7 @@ LitePush 示例，并自动准备它所需的 LITE parent Topic 和 Consumer Gro
 | Pull consumer | `IRemotingPullConsumer` | [`remoting/PullConsumer`](remoting/PullConsumer/README.zh-CN.md) | 显式队列发现、位点、拉取和位点提交。 |
 | Lite Pull consumer | `IRemotingLitePullConsumer` | [`remoting/LitePullConsumer`](remoting/LitePullConsumer/README.zh-CN.md) | 基于订阅的分配、轮询和客户端管理的位点提交。 |
 | POP consumer | `IRemotingPopConsumer` | [`remoting/PopConsumer`](remoting/PopConsumer/README.zh-CN.md) | 显式选择物理队列并确认 receipt。 |
-| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.zh-CN.md) | 通过 handler 进行基于长轮询的自动分发。 |
+| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.zh-CN.md) | 通过 handler 进行基于长轮询的自动批量分发，并在需要时保持单消息 FIFO 投递。 |
 
 以项目目录作为参数运行 Remoting 项目，例如：
 

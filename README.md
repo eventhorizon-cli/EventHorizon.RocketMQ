@@ -68,7 +68,7 @@ See the [Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md) and
 | PullConsumer | ✅ | Explicit queues and offsets with tag or SQL filtering. |
 | LitePullConsumer | ✅ | Client-side polling, assignment, seek, pause/resume, and commit; clustered consumption only. |
 | POPConsumer | ✅ | Explicit queue selection, receipt acknowledgement, and invisibility renewal; normal topics only. |
-| PushConsumer | ✅ | Clustering or broadcasting, concurrent or FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
+| PushConsumer | ✅ | Clustering or broadcasting, concurrent batch callbacks with partial prefix acknowledgement or singleton FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQRemoting`. |
 | OpenTelemetry tracing and metrics | ✅ | Register with `AddRocketMQRemotingInstrumentation`; the application selects SDK processors and exporters. |
 

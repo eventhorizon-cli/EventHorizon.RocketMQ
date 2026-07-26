@@ -23,8 +23,13 @@ namespace EventHorizon.RocketMQ.Grpc.Consumer.Push;
 public class GrpcPushConsumerOptions : ConsumerOptions
 {
     /// <summary>
-    /// Gets or sets the maximum number of messages processed concurrently.
+    /// Gets or sets the maximum number of message-handler dispatches that may run concurrently.
     /// </summary>
+    /// <remarks>
+    /// A non-FIFO handler that ignores cancellation after <see cref="ConsumeTimeout"/> expires can continue running
+    /// after its dispatch slot is released, so the setting limits scheduled dispatches rather than every in-process
+    /// application invocation in that exceptional case.
+    /// </remarks>
     public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
 
     /// <summary>
@@ -51,6 +56,17 @@ public class GrpcPushConsumerOptions : ConsumerOptions
     /// Gets or sets the initial duration for which a received message remains invisible to other consumers.
     /// </summary>
     public TimeSpan InvisibleDuration { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Gets or sets the maximum time a non-FIFO message handler may run before the message is made eligible for
+    /// retry.
+    /// </summary>
+    /// <remarks>
+    /// When this timeout expires, the consumer cancels the handler token, stops client-side invisibility renewal,
+    /// and requests redelivery. A handler that does not observe cancellation cannot be forcibly stopped, and a late
+    /// successful result is ignored. FIFO message groups are excluded so that their ordering is not broken.
+    /// </remarks>
+    public TimeSpan ConsumeTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Gets or sets the maximum time the server may wait for messages during a long-poll request.

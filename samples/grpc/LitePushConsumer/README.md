@@ -19,6 +19,7 @@ the service through `SyncLiteSubscription`.
 | `RocketMQ:Consumer:MaxConcurrency` | `4` | Maximum concurrent handler executions. |
 | `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | Fallback delivery-attempt limit before dead-lettering. |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration for a received message. |
+| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO handler time before the client cancels its token and requests retry. |
 | `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Maximum server wait for a receive operation. |
 | `RocketMQ:Consumer:SubscriptionSyncInterval` | `00:00:30` | Interval for reconciling the complete LiteTopic set with the service. |
 
@@ -79,6 +80,9 @@ only sends ordinary messages and does not populate a LiteTopic.
   must name the same parent topic. A spelling mismatch is a configuration error, not a way to
   subscribe to a second parent topic.
 - The handler is registered as `Scoped`, so each handling attempt gets its own async DI scope.
+- `ConsumeTimeout` has the same non-FIFO timeout behavior as standard Push: the handler token is canceled,
+  client-side invisibility renewal stops, and retry is requested. It cannot terminate code that ignores cancellation;
+  FIFO handlers stay attached to preserve ordering.
 
 For Lite message production and the complete API, see the
 [gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md).

@@ -248,11 +248,15 @@ public static class RemotingRocketMQBuilderExtensions
             .Validate(static value => !string.IsNullOrWhiteSpace(value.GroupName), "Consumer group name is required.")
             .Validate(static value => value.MaxConcurrency > 0, "Maximum concurrency must be positive.")
             .Validate(static value => value.BatchSize > 0, "Batch size must be positive.")
+            .Validate(
+                static value => value.ConsumeMessageBatchSize > 0,
+                "Consume message batch size must be positive.")
             .Validate(static value => value.MaxCachedMessages > 0, "Maximum cached message count must be positive.")
             .Validate(static value => value.MaxMessageBytes > 0, "Maximum pull response size must be positive.")
             .Validate(static value => value.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
             .Validate(static value => value.LongPollingTimeout > TimeSpan.Zero, "Long polling timeout must be positive.")
             .Validate(static value => value.RetryDelay > TimeSpan.Zero, "Retry delay must be positive.")
+            .Validate(static value => value.ConsumeTimeout > TimeSpan.Zero, "Consume timeout must be positive.")
             .Validate(static value => Enum.IsDefined(value.ConsumerMode), "Consumer mode is invalid.")
             .Validate(
                 static value => BroadcastOffsetStore.IsValidPath(value.LocalOffsetStorePath),
@@ -272,6 +276,9 @@ public static class RemotingRocketMQBuilderExtensions
         {
             options.Validate(static value => value.MessageHandler is not null, "A message handler is required.");
         }
+        options.Validate(
+            static value => value.ConsumeOrderly || value.MaxCachedMessages >= value.ConsumeMessageBatchSize,
+            "Maximum cached message count must be at least the consume message batch size.");
 
         RemotingRocketMQRegistration.AddRoleSingleton<IRemotingPushConsumer>(
             builder,

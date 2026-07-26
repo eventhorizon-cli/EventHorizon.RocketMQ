@@ -92,14 +92,31 @@ registration is keyed to the internal role key, so handlers cannot cross client-
 | Handler lifetime | Resolution behavior |
 | --- | --- |
 | `Singleton` | The handler is resolved from the root provider and reused. It must be safe for concurrent delivery. |
-| `Scoped` | A new async scope is created for each delivered message, then disposed after handling. |
-| `Transient` | A new async scope is created for each delivered message; the transient handler and its scoped dependencies are disposed with that scope. |
+| `Scoped` | A new async scope is created for each handler invocation, then disposed after handling. |
+| `Transient` | A new async scope is created for each handler invocation; the transient handler and its scoped dependencies are disposed with that scope. |
 
 The concrete implementation is visible in the
 [gRPC handler factory](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushMessageHandlerFactory.cs)
 and [Remoting handler factory](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Push/RemotingPushMessageHandlerFactory.cs).
 Use the typed overload when a handler needs DI. The `MessageHandler` option is a direct delegate and
-does not create an application DI scope for the caller.
+does not create an application DI scope for the caller. gRPC Push and LitePush invoke their handlers for each
+message. Remoting Push invokes its one `IRemotingPushMessageHandler` API with an
+`IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext` for each batch; its
+`ConsumeMessageBatchSize` defaults to `1`, so existing settings retain singleton delivery unless configured
+otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
+contiguous prefix and retry its tail; `Retry` and `DeadLetter` remain whole-batch outcomes. The direct Remoting
+`MessageHandler` delegate uses the same list-and-context contract.
+
+For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token, stops client-side
+invisibility renewal, and requests retry when the configured limit elapses. The dispatcher ignores a late result and
+releases its worker, but it cannot terminate application code. A timed-out invocation can overlap redelivery and must
+be idempotent. Its typed-handler async scope remains alive until that invocation returns, so scoped dependencies are
+not disposed while handler code is still running. FIFO message groups are excluded to preserve ordering.
+
+For concurrent clustered non-FIFO Remoting batches, `ConsumeTimeout` cancels the handler token and requests Broker
+redelivery when the configured limit elapses. A late result is ignored and can overlap redelivery, so the handler still
+owns cancellation cooperation and must be idempotent; the runtime cannot forcibly stop application code. FIFO and
+orderly delivery remain excluded to preserve ordering guarantees.
 
 ## Trade-offs and Constraints
 

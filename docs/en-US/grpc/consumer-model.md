@@ -87,6 +87,12 @@ dispatches work according to the configured concurrency and FIFO settings. It is
 long polling from end to end. Calling it protocol-level Broker push would give the wrong operational
 model.
 
+For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. When it expires, the dispatcher cancels the handler
+token, stops client-side invisibility renewal, and requests retry; a late successful result is ignored. This recovers
+worker capacity even when application code ignores cancellation, but the client cannot forcibly terminate that code.
+Retried delivery can overlap an invocation that ignored cancellation, so handlers must be idempotent. FIFO message
+groups are intentionally excluded because detaching a timed-out handler could break their ordering.
+
 ### LitePushConsumer
 
 LitePush wraps the automatic dispatcher with a

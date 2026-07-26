@@ -267,7 +267,8 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
                 startTime,
                 startTimestamp,
                 queue.Id,
-                createActivity: messages.Count > 0);
+                createActivity: messages.Count > 0,
+                messageProperties: messages.Select(static message => message.Properties));
             if (telemetry.Activity is { } activity)
             {
                 foreach (var message in messages)

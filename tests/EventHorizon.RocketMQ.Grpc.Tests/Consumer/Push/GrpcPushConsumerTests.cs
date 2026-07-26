@@ -14,12 +14,14 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Threading.Channels;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
+using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
@@ -715,6 +717,41 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
+    public async Task Worker_RecordsRetryAsFailedProcessTelemetry()
+    {
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete(false, ConsumeResult.Retry.ToString()));
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            static (_, _) => ValueTask.FromResult(ConsumeResult.Retry),
+            out var engine,
+            telemetry: telemetry.Object);
+
+        await RunWorkerAsync(
+            consumer,
+            engine,
+            TestContext.Current.CancellationToken,
+            Message("message-1"));
+
+        operation.Verify(value => value.Complete(false, ConsumeResult.Retry.ToString()), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
+    }
+
+    [Fact]
     public async Task Worker_RetriesDeadLetterAfterTransientFailureAndContinues()
     {
         var client = new FakeGrpcClient();
@@ -1022,9 +1059,10 @@ public sealed class GrpcPushConsumerTests
         Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> handler,
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
-        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null)
+        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
-        return CreateConsumer(client, handler, out _, configure, routes, engineLogger);
+        return CreateConsumer(client, handler, out _, configure, routes, engineLogger, telemetry);
     }
 
     private static GrpcPushConsumer CreateConsumer(
@@ -1033,7 +1071,8 @@ public sealed class GrpcPushConsumerTests
         out GrpcReceiveConsumerEngine engine,
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
-        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null)
+        ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
         var options = PushOptions(handler);
         configure?.Invoke(options);
@@ -1050,7 +1089,8 @@ public sealed class GrpcPushConsumerTests
         return new GrpcPushConsumer(
             Options.Create(options),
             engine,
-            NullLogger<GrpcPushConsumer>.Instance);
+            NullLogger<GrpcPushConsumer>.Instance,
+            telemetry: telemetry);
     }
 
     private static GrpcReceiveConsumerEngine CreateEngine(FakeGrpcClient client)

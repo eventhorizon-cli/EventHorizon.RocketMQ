@@ -62,7 +62,8 @@ internal sealed class RemotingRocketMQTelemetry : IRemotingRocketMQTelemetry
         DateTimeOffset startTime,
         long startTimestamp,
         int? queueId = null,
-        bool createActivity = true) =>
+        bool createActivity = true,
+        IEnumerable<IReadOnlyDictionary<string, string>>? messageProperties = null) =>
         Start(
             "receive",
             "receive",
@@ -72,7 +73,7 @@ internal sealed class RemotingRocketMQTelemetry : IRemotingRocketMQTelemetry
             messageCount,
             null,
             null,
-            null,
+            messageProperties,
             parentContext,
             (startTime, startTimestamp),
             queueId,

@@ -165,6 +165,52 @@ public sealed class RemotingRocketMQTelemetryTests
     }
 
     [Fact]
+    public void StartReceive_LinksProducerContexts()
+    {
+        using var listener = CreateActivityListener();
+        using var provider = CreateServiceProvider();
+        var telemetry = CreateTelemetry(provider);
+        var firstTraceId = ActivityTraceId.CreateRandom();
+        var firstSpanId = ActivitySpanId.CreateRandom();
+        var secondTraceId = ActivityTraceId.CreateRandom();
+        var secondSpanId = ActivitySpanId.CreateRandom();
+        var messageProperties = new IReadOnlyDictionary<string, string>[]
+        {
+            new Dictionary<string, string>
+            {
+                ["traceparent"] = $"00-{firstTraceId}-{firstSpanId}-01"
+            },
+            new Dictionary<string, string>
+            {
+                ["traceparent"] = "invalid"
+            },
+            new Dictionary<string, string>
+            {
+                ["traceparent"] = $"00-{secondTraceId}-{secondSpanId}-01"
+            }
+        };
+
+        using var receive = telemetry.StartReceive(
+            "orders",
+            "orders-consumer",
+            3,
+            null,
+            DateTimeOffset.UtcNow,
+            Stopwatch.GetTimestamp(),
+            3,
+            messageProperties: messageProperties);
+        var receiveActivity = Assert.IsType<Activity>(receive.Activity);
+        receive.Complete();
+
+        var links = receiveActivity.Links.ToArray();
+        Assert.Equal(2, links.Length);
+        Assert.Equal(firstTraceId, links[0].Context.TraceId);
+        Assert.Equal(firstSpanId, links[0].Context.SpanId);
+        Assert.Equal(secondTraceId, links[1].Context.TraceId);
+        Assert.Equal(secondSpanId, links[1].Context.SpanId);
+    }
+
+    [Fact]
     public void StartProcess_UsesProducerContextAsParentWithoutReceiveContext()
     {
         using var listener = CreateActivityListener();

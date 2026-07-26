@@ -212,7 +212,8 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
                 startTime,
                 startTimestamp,
                 queue.QueueId,
-                createActivity: result.Messages.Count > 0);
+                createActivity: result.Messages.Count > 0,
+                messageProperties: result.Messages.Select(static message => message.Properties));
             if (telemetry.Activity is { } activity)
             {
                 foreach (var message in result.Messages)

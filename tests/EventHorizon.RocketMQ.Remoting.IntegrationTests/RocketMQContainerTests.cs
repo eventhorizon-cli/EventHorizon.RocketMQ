@@ -319,6 +319,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = "legacy-push-consumer-it";
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("legacy-push"));

@@ -4,7 +4,7 @@
 
 这个 ASP.NET Core Minimal API 在同一个 host 中运行 gRPC 和 classic Remoting Push Consumer，并为两个协议使用彼此独立的
 Consumer Group。两者都订阅共享的普通 Topic `eventhorizon-test-topic`，消费所有 tag。host 使用 scoped message handler，
-因此每次消息投递都有独立的依赖注入作用域。
+因此每条 gRPC 消息和每个 Remoting batch 都有独立的依赖注入作用域。
 
 共享的 SDK、OTLP、Compose 与 Grafana 配置请参阅 [OpenTelemetry 示例总览](../README.zh-CN.md)。启动本 Consumer host 后，
 可使用独立的 Producer Web API 发布消息。
@@ -57,9 +57,12 @@ operation duration；该示例为此配置了亚秒级 duration bucket。
 | `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | gRPC Push Consumer 使用的 RocketMQ 5 Proxy 端点。 |
 | `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | gRPC Push Consumer 的 Consumer Group。 |
 | `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | 并发执行的 gRPC message handler 数量。 |
+| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO gRPC handler 允许运行的最长时间。 |
 | `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | Remoting Push Consumer 使用的 NameServer。 |
 | `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Remoting Push Consumer 的 Consumer Group。 |
+| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | 单次 Remoting handler 调用处理的最大消息数量。 |
 | `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | 并发执行的 Remoting message handler 数量。 |
+| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO Remoting batch handler 允许运行的最长时间。 |
 | `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource 值。 |
 | `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector 端点。 |
 

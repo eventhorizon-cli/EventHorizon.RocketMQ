@@ -44,7 +44,7 @@ internal static class RemotingPushMessageHandlerFactory
         }
     }
 
-    internal static Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>> Create(
+    internal static Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>> Create(
         IServiceProvider provider,
         RemotingRocketMQRoleKey roleKey,
         ServiceLifetime lifetime)
@@ -61,19 +61,19 @@ internal static class RemotingPushMessageHandlerFactory
         };
     }
 
-    private static Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>> CreateScopedHandler(
+    private static Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>> CreateScopedHandler(
         IServiceScopeFactory scopeFactory,
         RemotingRocketMQRoleKey roleKey) =>
-        (message, cancellationToken) => HandleScopedAsync(scopeFactory, roleKey, message, cancellationToken);
+        (messages, cancellationToken) => HandleScopedAsync(scopeFactory, roleKey, messages, cancellationToken);
 
     private static async ValueTask<ConsumeResult> HandleScopedAsync(
         IServiceScopeFactory scopeFactory,
         RemotingRocketMQRoleKey roleKey,
-        RemotingMessageView message,
+        IReadOnlyList<RemotingMessageView> messages,
         CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var handler = scope.ServiceProvider.GetRequiredKeyedService<IRemotingPushMessageHandler>(roleKey);
-        return await handler.HandleAsync(message, cancellationToken).ConfigureAwait(false);
+        return await handler.HandleAsync(messages, cancellationToken).ConfigureAwait(false);
     }
 }

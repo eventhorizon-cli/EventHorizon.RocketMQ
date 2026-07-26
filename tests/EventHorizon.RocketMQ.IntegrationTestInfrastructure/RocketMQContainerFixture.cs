@@ -172,32 +172,6 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
         await _nameServer.StartAsync().ConfigureAwait(false);
         await _broker.StartAsync().ConfigureAwait(false);
 
-        ExecResult clusterList = default;
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            clusterList = await _broker.ExecAsync([
-                "sh", "mqadmin", "clusterList", "-n", $"nameserver:{NameServerPort}"
-            ]).ConfigureAwait(false);
-            if (clusterList.ExitCode == 0 && clusterList.Stdout.Contains("broker-a", StringComparison.Ordinal))
-            {
-                break;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
-        }
-
-        if (clusterList.ExitCode != 0 || !clusterList.Stdout.Contains("broker-a", StringComparison.Ordinal))
-        {
-            var actualConfiguration = await _broker.ExecAsync(["sh", "-c", "cat /tmp/broker.conf 2>&1"]).ConfigureAwait(false);
-            var environment = await _broker.ExecAsync(["sh", "-c", "echo $NAMESRV_ADDR"]).ConfigureAwait(false);
-            var logs = await _broker.ExecAsync([
-                "sh", "-c", "tail -n 80 /home/rocketmq/logs/rocketmqlogs/broker.log 2>&1"
-            ]).ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"Broker did not register with NameServer. clusterList: {clusterList.Stdout} " +
-                $"config: {actualConfiguration.Stdout} env: {environment.Stdout} logs: {logs.Stdout} {logs.Stderr}");
-        }
-
         await CreateTopicAsync(TestTopic, "NORMAL").ConfigureAwait(false);
         await CreateTopicAsync(TransactionTopic, "TRANSACTION").ConfigureAwait(false);
         await CreateTopicAsync(FifoTopic, "FIFO").ConfigureAwait(false);

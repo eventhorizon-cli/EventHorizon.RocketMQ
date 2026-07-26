@@ -115,9 +115,10 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
     {
         await _network.CreateAsync().ConfigureAwait(false);
         await _nameServer.StartAsync().ConfigureAwait(false);
-        await _brokerA.StartAsync().ConfigureAwait(false);
-        await _brokerB.StartAsync().ConfigureAwait(false);
-        await _brokerC.StartAsync().ConfigureAwait(false);
+        await Task.WhenAll(
+            _brokerA.StartAsync(),
+            _brokerB.StartAsync(),
+            _brokerC.StartAsync()).ConfigureAwait(false);
 
         await WaitForClusterRegistrationAsync().ConfigureAwait(false);
         await CreateTopicAsync().ConfigureAwait(false);

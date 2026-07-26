@@ -74,12 +74,25 @@ The Remoting builder offers roles with semantics that belong to classic RocketMQ
 | `IRemotingPullConsumer` | Explicit route, queue, pull, offset, and commit control. |
 | `IRemotingLitePullConsumer` | Client-managed Lite Pull subscriptions, polling, and offset commits. |
 | `IRemotingPopConsumer` | POP receipt acquisition, acknowledgement, and invisibility renewal. |
-| `IRemotingPushConsumer` | Automatic long-poll dispatch with classic Remoting compatibility and Broker callback handling. |
+| `IRemotingPushConsumer` | Automatic long-poll batch dispatch with classic Remoting compatibility and Broker callback handling. |
 
 The role registrations live in
 [`RemotingRocketMQBuilderExtensions`](../../../src/EventHorizon.RocketMQ.Remoting/RemotingRocketMQBuilderExtensions.cs).
 Push is still driven by classic pull/long-poll behavior internally; it is not identical to the
 gRPC Push implementation and should not be treated as a common transport-neutral role.
+
+Remoting Push has one batch-oriented handler API: `IRemotingPushMessageHandler.HandleAsync` receives an
+`IReadOnlyList<RemotingMessageView>`. `BatchSize` limits how many messages one long poll requests from the Broker;
+`ConsumeMessageBatchSize` independently limits how many messages one handler invocation receives and defaults to
+`1`. Concurrent non-`MessageGroup` messages from the same Broker physical queue can be grouped and those batches
+can run in parallel up to `MaxConcurrency`. `MessageGroup` FIFO deliveries and `ConsumeOrderly` deliveries remain
+singleton and serialized. One `ConsumeResult` applies to every message in its batch.
+
+`ConsumeTimeout` defaults to 15 minutes and applies only to concurrent clustered non-FIFO batches. When it elapses,
+the client cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate
+application code that ignores cancellation; its late result is ignored and can overlap redelivery, so handlers must
+cooperate with the token and remain idempotent. FIFO and orderly delivery intentionally remain outside this recovery
+path to preserve ordering guarantees.
 
 ### Read-only Admin and physical message IDs
 

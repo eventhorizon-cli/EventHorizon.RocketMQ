@@ -34,7 +34,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     private static readonly TimeSpan MaximumBrokerLockLiveTime = TimeSpan.FromSeconds(30);
 
     private readonly RemotingPushConsumerOptions _options;
-    private readonly Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>> _messageHandler;
+    private readonly Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>
+        _messageHandler;
     private readonly RemotingClientOptions _clientOptions;
     private readonly IRemotingConsumerEngine _consumerEngine;
     private readonly ITopicRouteService _routes;
@@ -60,12 +61,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
         ILogger<RemotingPushConsumer> logger,
-        Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
+        Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
         IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
         _messageHandler = messageHandler ?? _options.MessageHandler ??
             throw new ArgumentException("A message handler is required.", nameof(options));
+
         _clientOptions = clientOptions.Value;
         _consumerEngine = consumerEngine;
         _routes = routes;
@@ -119,7 +121,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             var run = new RunState(
                 CreateDeliveryChannel(),
                 _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
-                _options.MaxConcurrency);
+                _options.MaxConcurrency,
+                _options.MaxCachedMessages);
             _run = run;
             try
             {
@@ -405,10 +408,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private Channel<Delivery> CreateDeliveryChannel() =>
-        Channel.CreateBounded<Delivery>(new BoundedChannelOptions(_options.MaxCachedMessages)
+    private Channel<DeliveryBatch> CreateDeliveryChannel() =>
+        Channel.CreateUnbounded<DeliveryBatch>(new UnboundedChannelOptions
         {
-            FullMode = BoundedChannelFullMode.Wait,
             SingleReader = _options.MaxConcurrency == 1,
             SingleWriter = false
         });
@@ -949,15 +951,44 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 foreach (var delivery in pending)
                 {
                     run.ReserveFifoOrder(delivery);
-                    try
+                }
+
+                var deliveryBatches = CreateDeliveryBatches(pending);
+                try
+                {
+                    foreach (var batch in deliveryBatches)
                     {
-                        await run.Deliveries.Writer.WriteAsync(delivery, cancellationToken).ConfigureAwait(false);
+                        var slotsReserved = false;
+                        try
+                        {
+                            await run.ReserveDeliverySlotsAsync(batch.Deliveries.Count, cancellationToken)
+                                .ConfigureAwait(false);
+                            slotsReserved = true;
+                            await run.Deliveries.Writer.WriteAsync(batch, cancellationToken).ConfigureAwait(false);
+                            batch.MarkQueued();
+                        }
+                        catch
+                        {
+                            if (slotsReserved)
+                            {
+                                run.ReleaseDeliverySlots(batch.Deliveries.Count);
+                            }
+
+                            throw;
+                        }
                     }
-                    catch
+                }
+                catch
+                {
+                    foreach (var batch in deliveryBatches.Where(static batch => !batch.IsQueued))
                     {
-                        run.CompleteFifoOrder(delivery);
-                        throw;
+                        foreach (var delivery in batch.Deliveries)
+                        {
+                            run.CompleteFifoOrder(delivery);
+                        }
                     }
+
+                    throw;
                 }
 
                 var outcomes = await Task.WhenAll(pending.Select(static delivery => delivery.Completion.Task))
@@ -1028,6 +1059,41 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     queue.QueueId);
                 await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    private IReadOnlyList<DeliveryBatch> CreateDeliveryBatches(IReadOnlyList<Delivery> deliveries)
+    {
+        var batches = new List<DeliveryBatch>();
+        var batch = new List<Delivery>(Math.Min(_options.ConsumeMessageBatchSize, deliveries.Count));
+        foreach (var delivery in deliveries)
+        {
+            if (!string.IsNullOrEmpty(delivery.Message.MessageGroup))
+            {
+                AddBatch();
+                batches.Add(new DeliveryBatch([delivery]));
+                continue;
+            }
+
+            batch.Add(delivery);
+            if (batch.Count == _options.ConsumeMessageBatchSize)
+            {
+                AddBatch();
+            }
+        }
+
+        AddBatch();
+        return batches;
+
+        void AddBatch()
+        {
+            if (batch.Count == 0)
+            {
+                return;
+            }
+
+            batches.Add(new DeliveryBatch(batch.ToArray()));
+            batch.Clear();
         }
     }
 
@@ -1174,7 +1240,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             await run.OrderlyConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                result = await InvokeMessageHandlerAsync(message, cancellationToken).ConfigureAwait(false);
+                result = await InvokeMessageHandlerAsync(new[] { message }, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1405,32 +1471,49 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     {
         try
         {
-            await foreach (var delivery in run.Deliveries.Reader.ReadAllAsync(run.Stopping.Token).ConfigureAwait(false))
+            await foreach (var batch in run.Deliveries.Reader.ReadAllAsync(run.Stopping.Token).ConfigureAwait(false))
             {
+                run.ReleaseDeliverySlots(batch.Deliveries.Count);
                 try
                 {
-                    if (delivery.QueueCancellation.IsCancellationRequested)
+                    if (batch.QueueCancellation.IsCancellationRequested)
                     {
-                        delivery.Completion.TrySetCanceled(delivery.QueueCancellation);
+                        foreach (var delivery in batch.Deliveries)
+                        {
+                            delivery.Completion.TrySetCanceled(batch.QueueCancellation);
+                        }
+
                         continue;
                     }
 
                     using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                         run.Stopping.Token,
-                        delivery.QueueCancellation);
+                        batch.QueueCancellation);
                     try
                     {
-                        if (delivery.FifoOrder is { } order)
+                        foreach (var delivery in batch.Deliveries)
                         {
-                            await order.Predecessor.WaitAsync(linked.Token).ConfigureAwait(false);
+                            if (delivery.FifoOrder is { } order)
+                            {
+                                await order.Predecessor.WaitAsync(linked.Token).ConfigureAwait(false);
+                            }
                         }
 
-                        var result = await HandleMessageAsync(delivery, linked.Token).ConfigureAwait(false);
-                        delivery.Completion.TrySetResult(result);
+                        var result = UsesConcurrentTimeoutRecovery(batch)
+                            ? await InvokeConcurrentDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false)
+                            : await HandleDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false);
+                        foreach (var delivery in batch.Deliveries)
+                        {
+                            delivery.Completion.TrySetResult(result);
+                        }
                     }
                     catch (OperationCanceledException) when (linked.IsCancellationRequested)
                     {
-                        delivery.Completion.TrySetCanceled(linked.Token);
+                        foreach (var delivery in batch.Deliveries)
+                        {
+                            delivery.Completion.TrySetCanceled(linked.Token);
+                        }
+
                         if (run.Stopping.IsCancellationRequested)
                         {
                             return;
@@ -1440,20 +1523,40 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     {
                         _logger.LogError(
                             exception,
-                            "Legacy message handler failed for message {MessageId}",
-                            delivery.Message.MessageId);
-                        delivery.Completion.TrySetResult(ConsumeResult.Retry);
+                            "Legacy message handler failed for a batch containing {MessageCount} messages",
+                            batch.Deliveries.Count);
+                        foreach (var delivery in batch.Deliveries)
+                        {
+                            delivery.Completion.TrySetResult(ConsumeResult.Retry);
+                        }
                     }
                 }
                 finally
                 {
-                    run.CompleteFifoOrder(delivery);
+                    foreach (var delivery in batch.Deliveries)
+                    {
+                        run.CompleteFifoOrder(delivery);
+                    }
                 }
             }
         }
         catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
         {
         }
+    }
+
+    private async ValueTask<ConsumeResult> HandleDeliveryBatchAsync(
+        DeliveryBatch batch,
+        CancellationToken cancellationToken)
+    {
+        if (batch.Deliveries.Count == 1)
+        {
+            return await HandleMessageAsync(batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
+        }
+
+        return await InvokeMessageHandlerAsync(
+            batch.Deliveries.Select(static delivery => delivery.Message).ToArray(),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<ConsumeResult> HandleMessageAsync(
@@ -1466,7 +1569,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             ConsumeResult result;
             try
             {
-                result = await InvokeMessageHandlerAsync(delivery.Message, cancellationToken).ConfigureAwait(false);
+                result = await InvokeMessageHandlerAsync(
+                    new[] { delivery.Message },
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1497,21 +1602,28 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private async ValueTask<ConsumeResult> InvokeMessageHandlerAsync(
-        RemotingMessageView message,
-        CancellationToken cancellationToken)
-    {
-        using var telemetry = _telemetry.StartProcess(
-            message.Topic,
+    private ValueTask<ConsumeResult> InvokeMessageHandlerAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken) =>
+        InvokeTrackedMessageHandlerAsync(
+            messages,
+            cancellationToken,
+            StartMessageHandlerTelemetry(messages));
+
+    private MessageHandlerTelemetry StartMessageHandlerTelemetry(IReadOnlyList<RemotingMessageView> messages) =>
+        new(_telemetry.StartProcessBatch(
+            messages[0].Topic,
             _options.GroupName,
-                message.MessageId,
-                message.QueueId,
-                message.Body.LongLength,
-                message.Properties,
-                message.ReceiveActivityContext);
+            messages));
+
+    private async ValueTask<ConsumeResult> InvokeTrackedMessageHandlerAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken,
+        MessageHandlerTelemetry telemetry)
+    {
         try
         {
-            var result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
+            var result = await _messageHandler(messages, cancellationToken).ConfigureAwait(false);
             telemetry.Complete(result == ConsumeResult.Success, result.ToString());
             return result;
         }
@@ -1519,6 +1631,96 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         {
             telemetry.Complete(exception);
             throw;
+        }
+    }
+
+    private bool UsesConcurrentTimeoutRecovery(DeliveryBatch batch) =>
+        _options.ConsumerMode == ConsumerMode.Clustering &&
+        batch.Deliveries.All(static delivery => delivery.FifoOrder is null);
+
+    private async ValueTask<ConsumeResult> InvokeConcurrentDeliveryBatchAsync(
+        DeliveryBatch batch,
+        CancellationToken cancellationToken)
+    {
+        CancellationTokenSource? handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            var activeHandlerCancellation = handlerCancellation;
+            var messages = batch.Deliveries.Select(static delivery => delivery.Message).ToArray();
+            var telemetry = StartMessageHandlerTelemetry(messages);
+            var handler = InvokeTrackedMessageHandlerAsync(messages, activeHandlerCancellation.Token, telemetry);
+            if (handler.IsCompletedSuccessfully)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return handler.Result;
+            }
+
+            var handlerTask = handler.AsTask();
+            var timeout = Task.Delay(_options.ConsumeTimeout, _timeProvider, timeoutCancellation.Token);
+            await Task.WhenAny(handlerTask, timeout).ConfigureAwait(false);
+            timeoutCancellation.Cancel();
+            if (handlerTask.IsCompleted)
+            {
+                return await handlerTask.ConfigureAwait(false);
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                telemetry.Complete(new OperationCanceledException(cancellationToken));
+                _ = ObserveTimedOutDeliveryBatchAsync(handlerTask, activeHandlerCancellation, batch.Deliveries.Count);
+                handlerCancellation = null;
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            telemetry.Complete(false, "timeout");
+            try
+            {
+                activeHandlerCancellation.Cancel();
+            }
+            catch (AggregateException exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "A cancellation callback failed after a legacy message handler exceeded the consume timeout");
+            }
+
+            _ = ObserveTimedOutDeliveryBatchAsync(handlerTask, activeHandlerCancellation, batch.Deliveries.Count);
+            handlerCancellation = null;
+            _logger.LogWarning(
+                "Legacy message handler exceeded the configured consume timeout of {ConsumeTimeout} for a batch containing {MessageCount} messages; cancellation was requested and the batch will be retried",
+                _options.ConsumeTimeout,
+                batch.Deliveries.Count);
+            return ConsumeResult.Retry;
+        }
+        finally
+        {
+            handlerCancellation?.Dispose();
+        }
+    }
+
+    private async Task ObserveTimedOutDeliveryBatchAsync(
+        Task<ConsumeResult> handlerTask,
+        CancellationTokenSource handlerCancellation,
+        int messageCount)
+    {
+        try
+        {
+            await handlerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            _logger.LogDebug(
+                exception,
+                "Legacy message handler for a timed-out batch containing {MessageCount} messages completed with an exception after timeout",
+                messageCount);
+        }
+        finally
+        {
+            handlerCancellation.Dispose();
         }
     }
 
@@ -1720,19 +1922,26 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
     private sealed class RunState : IDisposable
     {
-        public RunState(Channel<Delivery> deliveries, long subscriptionVersion, int maxConcurrency)
+        public RunState(
+            Channel<DeliveryBatch> deliveries,
+            long subscriptionVersion,
+            int maxConcurrency,
+            int maxCachedMessages)
         {
             Deliveries = deliveries;
             _subscriptionVersion = subscriptionVersion;
             OrderlyConcurrency = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            DeliverySlots = new SemaphoreSlim(maxCachedMessages, maxCachedMessages);
         }
 
-        public Channel<Delivery> Deliveries { get; }
+        public Channel<DeliveryBatch> Deliveries { get; }
         public long SubscriptionVersion => Interlocked.Read(ref _subscriptionVersion);
         public CancellationTokenSource Stopping { get; } = new();
         public SemaphoreSlim RebalanceSignal { get; } = new(0, 1);
         public SemaphoreSlim CoordinationGate { get; } = new(1, 1);
         public SemaphoreSlim OrderlyConcurrency { get; }
+        public SemaphoreSlim DeliverySlots { get; }
+        public SemaphoreSlim DeliveryReservationGate { get; } = new(1, 1);
         public ConcurrentDictionary<QueueKey, QueueReceiver> Receivers { get; } = new();
         public ConcurrentDictionary<QueueKey, long> RetryBoundaries { get; } = new();
         public ConcurrentDictionary<string, BrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
@@ -1744,6 +1953,35 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         private long _subscriptionVersion;
 
         public void BumpSubscriptionVersion() => Interlocked.Increment(ref _subscriptionVersion);
+
+        public async ValueTask ReserveDeliverySlotsAsync(int count, CancellationToken cancellationToken)
+        {
+            await DeliveryReservationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var reserved = 0;
+            try
+            {
+                while (reserved < count)
+                {
+                    await DeliverySlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    reserved++;
+                }
+            }
+            catch
+            {
+                if (reserved > 0)
+                {
+                    DeliverySlots.Release(reserved);
+                }
+
+                throw;
+            }
+            finally
+            {
+                DeliveryReservationGate.Release();
+            }
+        }
+
+        public void ReleaseDeliverySlots(int count) => DeliverySlots.Release(count);
 
         public void ReserveFifoOrder(Delivery delivery)
         {
@@ -1789,6 +2027,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             RebalanceSignal.Dispose();
             CoordinationGate.Dispose();
             OrderlyConcurrency.Dispose();
+            DeliveryReservationGate.Dispose();
+            DeliverySlots.Dispose();
             Stopping.Dispose();
         }
     }
@@ -1850,6 +2090,70 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         {
             _brokerLockAvailable.Dispose();
             Stopping.Dispose();
+        }
+    }
+
+    private sealed class DeliveryBatch
+    {
+        public DeliveryBatch(IReadOnlyList<Delivery> deliveries)
+        {
+            ArgumentNullException.ThrowIfNull(deliveries);
+            if (deliveries.Count == 0)
+            {
+                throw new ArgumentException("At least one delivery is required.", nameof(deliveries));
+            }
+
+            Deliveries = deliveries;
+            QueueCancellation = deliveries[0].QueueCancellation;
+        }
+
+        public IReadOnlyList<Delivery> Deliveries { get; }
+        public CancellationToken QueueCancellation { get; }
+        public bool IsQueued { get; private set; }
+
+        public void MarkQueued() => IsQueued = true;
+    }
+
+    private sealed class MessageHandlerTelemetry(IRemotingRocketMQTelemetryOperation operation)
+    {
+        private IRemotingRocketMQTelemetryOperation? _operation = operation;
+
+        public void Complete(bool success, string? outcome = null)
+        {
+            var current = Interlocked.Exchange(ref _operation, null);
+            if (current is null)
+            {
+                return;
+            }
+
+            try
+            {
+                current.Complete(success, outcome);
+            }
+            finally
+            {
+                current.Dispose();
+            }
+        }
+
+        public void Complete(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+
+            var current = Interlocked.Exchange(ref _operation, null);
+            if (current is null)
+            {
+                return;
+            }
+
+            try
+            {
+                current.Complete(exception);
+            }
+            finally
+            {
+                current.Dispose();
+            }
         }
     }
 

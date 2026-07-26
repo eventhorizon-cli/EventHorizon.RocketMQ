@@ -4,7 +4,8 @@
 
 This ASP.NET Core Minimal API runs the gRPC and classic Remoting Push consumers in one host, using separate
 protocol-specific consumer groups. Both subscribe to the shared standard topic `eventhorizon-test-topic` and process
-every tag. The host uses scoped message handlers, so every delivery has its own dependency-injection scope.
+every tag. The host uses scoped message handlers, so each gRPC delivery and each Remoting batch has its own
+dependency-injection scope.
 
 The [OpenTelemetry sample overview](../README.md) covers the shared SDK, OTLP, Compose, and Grafana setup. Use the
 separate producer Web API to publish messages after this consumer host has started.
@@ -58,9 +59,12 @@ The project uses the following local defaults from `appsettings.json`:
 | `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | RocketMQ 5 Proxy endpoint for the gRPC Push consumer. |
 | `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | Consumer group for the gRPC Push consumer. |
 | `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | Concurrent gRPC message-handler invocations. |
+| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO gRPC handler time before retry is requested. |
 | `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | NameServer for the Remoting Push consumer. |
 | `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Consumer group for the Remoting Push consumer. |
+| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | Maximum messages processed by one Remoting handler invocation. |
 | `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | Concurrent Remoting message-handler invocations. |
+| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO Remoting batch-handler time before retry is requested. |
 | `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource value. |
 | `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector endpoint. |
 

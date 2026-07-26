@@ -631,6 +631,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 fifo,
                 maxDeliveryAttempts,
                 fifoRetryCancellationToken,
+                renewalCts,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -745,6 +746,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         bool fifo,
         int maxDeliveryAttempts,
         CancellationToken fifoRetryCancellationToken,
+        CancellationTokenSource renewalCts,
         CancellationToken cancellationToken)
     {
         var attempt = Math.Max(1, message.DeliveryAttempt);
@@ -762,8 +764,18 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 message.ReceiveActivityContext);
             try
             {
-                result = await _messageHandler(message, cancellationToken).ConfigureAwait(false);
-                telemetry.Complete(result == ConsumeResult.Success, result.ToString());
+                var execution = fifo
+                    ? new HandlerExecution(
+                        await _messageHandler(message, cancellationToken).ConfigureAwait(false),
+                        false)
+                    : await InvokeConcurrentMessageHandlerAsync(
+                        message,
+                        renewalCts,
+                        cancellationToken).ConfigureAwait(false);
+                result = execution.Result;
+                telemetry.Complete(
+                    result == ConsumeResult.Success,
+                    execution.TimedOut ? "timeout" : result.ToString());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -800,6 +812,90 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 retryDelay,
                 fifoRetryCancellationToken,
                 cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask<HandlerExecution> InvokeConcurrentMessageHandlerAsync(
+        GrpcMessageView message,
+        CancellationTokenSource renewalCts,
+        CancellationToken cancellationToken)
+    {
+        CancellationTokenSource? handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            var activeHandlerCancellation = handlerCancellation;
+            var handler = _messageHandler(message, activeHandlerCancellation.Token);
+            if (handler.IsCompletedSuccessfully)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return new HandlerExecution(handler.Result, false);
+            }
+
+            var handlerTask = handler.AsTask();
+            var timeout = Task.Delay(_options.ConsumeTimeout, timeoutCancellation.Token);
+            await Task.WhenAny(handlerTask, timeout).ConfigureAwait(false);
+            timeoutCancellation.Cancel();
+            if (handlerTask.IsCompleted)
+            {
+                return new HandlerExecution(await handlerTask.ConfigureAwait(false), false);
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _ = ObserveTimedOutMessageHandlerAsync(handlerTask, message.MessageId, activeHandlerCancellation);
+                handlerCancellation = null;
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            try
+            {
+                activeHandlerCancellation.Cancel();
+            }
+            catch (AggregateException exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "A cancellation callback failed after a message handler exceeded the consume timeout");
+            }
+
+            _ = ObserveTimedOutMessageHandlerAsync(handlerTask, message.MessageId, activeHandlerCancellation);
+            handlerCancellation = null;
+            renewalCts.Cancel();
+            _logger.LogWarning(
+                "Message handler for message {MessageId} exceeded consume timeout {ConsumeTimeout}; cancellation was requested and the message will be retried",
+                message.MessageId,
+                _options.ConsumeTimeout);
+            return new HandlerExecution(ConsumeResult.Retry, true);
+        }
+        finally
+        {
+            handlerCancellation?.Dispose();
+        }
+    }
+
+    private async Task ObserveTimedOutMessageHandlerAsync(
+        Task<ConsumeResult> handlerTask,
+        string messageId,
+        CancellationTokenSource handlerCancellation)
+    {
+        try
+        {
+            await handlerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            _logger.LogDebug(
+                exception,
+                "Message handler for timed-out message {MessageId} completed with an exception after timeout",
+                messageId);
+        }
+        finally
+        {
+            handlerCancellation.Dispose();
         }
     }
 
@@ -972,6 +1068,8 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         ByteCapacityGate Capacity,
         int ReservedBytes,
         int MessageBytes);
+
+    private readonly record struct HandlerExecution(ConsumeResult Result, bool TimedOut);
 
     private sealed class ByteCapacityGate
     {

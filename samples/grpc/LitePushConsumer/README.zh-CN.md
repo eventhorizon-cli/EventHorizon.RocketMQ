@@ -18,6 +18,7 @@ LITE parent/bind topic 的 LiteTopic 消息，并通过 `SyncLiteSubscription` �
 | `RocketMQ:Consumer:MaxConcurrency` | `4` | 最大并发 handler 执行数。 |
 | `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | 进入死信前的回退投递次数上限。 |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | 收到消息后的初始租约时长。 |
+| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | 非 FIFO handler 在客户端取消其 token 并请求重新投递前允许运行的最长时间。 |
 | `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Receive 请求允许服务端等待的最长时间。 |
 | `RocketMQ:Consumer:SubscriptionSyncInterval` | `00:00:30` | 将完整 LiteTopic 集合与服务端协调的间隔。 |
 
@@ -69,5 +70,7 @@ Host 会持续运行直到按下 Ctrl+C，并在启动时记录固定的 LiteTop
 - `BindTopic`、Broker `message.type=LITE` 属性与 group `lite.bind.topic` 属性必须指向同一个 parent topic。拼写不一致
   是配置错误，而不是订阅第二个 parent topic 的方式。
 - handler 注册为 `Scoped`，每次处理尝试都会获得自己的异步 DI scope。
+- `ConsumeTimeout` 与标准 Push 的非 FIFO 超时行为一致：会取消 handler token、停止客户端不可见时间续期并请求重新投递。它无法
+  强制停止忽略取消的代码；FIFO handler 会继续保持关联以维护顺序。
 
 Lite 消息生产和完整 API 请参阅 [gRPC 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)。

@@ -305,6 +305,7 @@ rocketMQ.AddGrpcPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, option
     options.MaxConcurrency = 8;
     options.MaxDeliveryAttempts = 16;
     options.InvisibleDuration = TimeSpan.FromSeconds(30);
+    options.ConsumeTimeout = TimeSpan.FromMinutes(15);
     options.Subscribe("orders", new FilterExpression("created"));
 });
 
@@ -326,6 +327,10 @@ immediately. The generic registration selects the handler lifetime for the curre
 `Singleton` creates one handler per client registration/role and must be thread-safe; `Scoped` and `Transient`
 resolve a handler in a new async service scope for each handling attempt. The `MessageHandler`
 delegate remains available for small stateless callbacks, but cannot be combined with a typed handler.
+For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. On expiry, the handler cancellation token is
+canceled, client invisibility renewal stops, and the message is requested for retry; a late successful handler result
+is ignored. Retried delivery can overlap code that ignored cancellation, so handlers must be idempotent. The client
+cannot forcibly stop that code. FIFO message groups are deliberately excluded so their ordering is preserved.
 
 ## LitePushConsumer
 

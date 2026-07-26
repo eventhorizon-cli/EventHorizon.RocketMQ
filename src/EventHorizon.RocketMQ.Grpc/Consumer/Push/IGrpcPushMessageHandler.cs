@@ -31,7 +31,10 @@ public interface IGrpcPushMessageHandler
     /// Processes a received message and returns the requested delivery outcome.
     /// </summary>
     /// <param name="message">The message to process.</param>
-    /// <param name="cancellationToken">The token that cancels processing when the consumer stops.</param>
+    /// <param name="cancellationToken">
+    /// The token that cancels processing when the consumer stops and, for non-FIFO dispatch, when
+    /// <see cref="GrpcPushConsumerOptions.ConsumeTimeout"/> expires.
+    /// </param>
     /// <returns>The requested delivery outcome.</returns>
     ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message, CancellationToken cancellationToken);
 }

@@ -46,8 +46,12 @@ public sealed class RemotingPushMessageHandlerFactoryTests
         {
             var handleAsync = RemotingPushMessageHandlerFactory.Create(provider, roleKey, lifetime);
 
-            Assert.Equal(ConsumeResult.Success, await handleAsync(CreateMessage(), TestContext.Current.CancellationToken));
-            Assert.Equal(ConsumeResult.Success, await handleAsync(CreateMessage(), TestContext.Current.CancellationToken));
+            Assert.Equal(
+                ConsumeResult.Success,
+                await handleAsync(new[] { CreateMessage() }, TestContext.Current.CancellationToken));
+            Assert.Equal(
+                ConsumeResult.Success,
+                await handleAsync(new[] { CreateMessage() }, TestContext.Current.CancellationToken));
 
             Assert.Equal(expectedCreatedCount, tracker.Created.Count);
             Assert.Equal(expectedDisposedBeforeProviderDisposal, tracker.Disposed.Count);
@@ -85,7 +89,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
 
         var handleAsync = RemotingPushMessageHandlerFactory.Create(provider, roleKey, ServiceLifetime.Transient);
 
-        Assert.Equal(ConsumeResult.Success, await handleAsync(CreateMessage(), TestContext.Current.CancellationToken));
+        Assert.Equal(
+            ConsumeResult.Success,
+            await handleAsync(new[] { CreateMessage() }, TestContext.Current.CancellationToken));
         Assert.Single(tracker.Created);
         Assert.Single(tracker.Handled);
         Assert.Single(tracker.Disposed);
@@ -154,7 +160,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
 
         Assert.IsType<RemotingPushConsumer>(consumer);
         Assert.Empty(tracker.Created);
-        Assert.Equal(ConsumeResult.Success, await handleAsync(CreateMessage(), TestContext.Current.CancellationToken));
+        Assert.Equal(
+            ConsumeResult.Success,
+            await handleAsync(new[] { CreateMessage() }, TestContext.Current.CancellationToken));
         var dependency = Assert.Single(tracker.Created);
         Assert.Same(dependency, Assert.Single(tracker.Injected));
         Assert.Same(dependency, Assert.Single(tracker.Handled));
@@ -253,7 +261,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
             _tracker.Created.Add(this);
         }
 
-        public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+        public ValueTask<ConsumeResult> HandleAsync(
+            IReadOnlyList<RemotingMessageView> messages,
+            CancellationToken cancellationToken)
         {
             _tracker.Handled.Add(this);
             return ValueTask.FromResult(ConsumeResult.Success);
@@ -275,7 +285,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
             tracker.Logger = logger;
         }
 
-        public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken) =>
+        public ValueTask<ConsumeResult> HandleAsync(
+            IReadOnlyList<RemotingMessageView> messages,
+            CancellationToken cancellationToken) =>
             ValueTask.FromResult(ConsumeResult.Success);
     }
 
@@ -286,7 +298,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
 
     private sealed class SingletonHandlerWithScopedDependency(ScopedDependency dependency) : IRemotingPushMessageHandler
     {
-        public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+        public ValueTask<ConsumeResult> HandleAsync(
+            IReadOnlyList<RemotingMessageView> messages,
+            CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(dependency);
             return ValueTask.FromResult(ConsumeResult.Success);
@@ -305,7 +319,9 @@ public sealed class RemotingPushMessageHandlerFactoryTests
             _tracker.Injected.Add(_dependency);
         }
 
-        public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+        public ValueTask<ConsumeResult> HandleAsync(
+            IReadOnlyList<RemotingMessageView> messages,
+            CancellationToken cancellationToken)
         {
             _tracker.Handled.Add(_dependency);
             return ValueTask.FromResult(ConsumeResult.Success);

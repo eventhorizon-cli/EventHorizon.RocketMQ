@@ -23,14 +23,30 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 public sealed class RemotingPushConsumerOptions : ConsumerOptions
 {
     /// <summary>
-    /// Gets or sets the maximum number of message-handler invocations that may run concurrently.
+    /// Gets or sets the maximum number of message-handler batch dispatches that may run concurrently.
     /// </summary>
+    /// <remarks>
+    /// A non-FIFO handler that ignores cancellation after <see cref="ConsumeTimeout"/> expires can continue running
+    /// after its dispatch slot is released, so the setting limits scheduled dispatches rather than every in-process
+    /// application invocation in that exceptional case.
+    /// </remarks>
     public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
 
     /// <summary>
     /// Gets or sets the maximum number of messages requested by each long-poll operation.
     /// </summary>
     public int BatchSize { get; set; } = 32;
+
+    /// <summary>
+    /// Gets or sets the maximum number of messages passed to one batch message-handler invocation.
+    /// </summary>
+    /// <remarks>
+    /// This setting is independent from <see cref="BatchSize"/>, which controls the maximum number of
+    /// messages requested from the Broker. Batch handling is used only for concurrent dispatch; orderly
+    /// consumption and messages with a <c>MessageGroup</c> continue to be delivered one at a time so that
+    /// their ordering and retry semantics remain intact.
+    /// </remarks>
+    public int ConsumeMessageBatchSize { get; set; } = 1;
 
     /// <summary>
     /// Gets or sets the maximum number of messages that may wait for local dispatch.
@@ -56,6 +72,19 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// Gets or sets the delay applied before retrying message handling or a failed receive operation.
     /// </summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Gets or sets the maximum time a concurrent clustered message batch may occupy a handler before retry is requested.
+    /// </summary>
+    /// <remarks>
+    /// When this timeout elapses, the consumer cancels the handler token and marks the complete non-FIFO batch as
+    /// <see cref="ConsumeResult.Retry"/> so it can be returned to the Broker for redelivery. Application code that
+    /// does not cooperate with cancellation cannot be forcibly stopped; its late result is ignored and can overlap
+    /// a redelivered invocation.
+    /// This recovery is intentionally not applied to <see cref="ConsumeOrderly"/> or <c>MessageGroup</c> FIFO delivery,
+    /// because automatically releasing those messages could break their ordering guarantees.
+    /// </remarks>
+    public TimeSpan ConsumeTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Gets or sets whether this consumer shares queues with its group or receives every queue.
@@ -91,11 +120,16 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public DateTimeOffset? ConsumeTimestamp { get; set; }
 
     /// <summary>
-    /// Gets or sets the asynchronous handler that processes each delivered message and reports its outcome.
+    /// Gets or sets the asynchronous handler that processes one delivered message batch and reports its outcome.
     /// </summary>
     /// <remarks>
     /// This delegate is invoked directly. Use the generic <c>AddRemotingPushConsumer&lt;TMessageHandler&gt;</c>
-    /// overload to use a dependency-injected handler with an explicit lifetime.
+    /// overload to use a dependency-injected handler with an explicit lifetime. The returned outcome applies to
+    /// every message in the batch.
     /// </remarks>
-    public Func<RemotingMessageView, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler { get; set; }
+    public Func<IReadOnlyList<RemotingMessageView>, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler
+    {
+        get;
+        set;
+    }
 }

@@ -15,6 +15,7 @@
 
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry;
@@ -240,6 +241,95 @@ public sealed class RemotingRocketMQTelemetryTests
     }
 
     [Fact]
+    public void StartProcessBatch_UsesReceiveContextAndLinksEveryProducerContext()
+    {
+        using var listener = CreateActivityListener();
+        using var provider = CreateServiceProvider();
+        var telemetry = CreateTelemetry(provider);
+        var receiveContext = new ActivityContext(
+            ActivityTraceId.CreateRandom(),
+            ActivitySpanId.CreateRandom(),
+            ActivityTraceFlags.Recorded);
+        var firstTraceId = ActivityTraceId.CreateRandom();
+        var firstSpanId = ActivitySpanId.CreateRandom();
+        var secondTraceId = ActivityTraceId.CreateRandom();
+        var secondSpanId = ActivitySpanId.CreateRandom();
+        var messages = new[]
+        {
+            CreateMessage(
+                "message-1",
+                [1, 2],
+                new Dictionary<string, string>
+                {
+                    ["traceparent"] = $"00-{firstTraceId}-{firstSpanId}-01"
+                },
+                receiveContext),
+            CreateMessage(
+                "message-2",
+                [3, 4, 5],
+                new Dictionary<string, string>
+                {
+                    ["traceparent"] = $"00-{secondTraceId}-{secondSpanId}-01"
+                },
+                receiveContext)
+        };
+
+        using var process = telemetry.StartProcessBatch("orders", "orders-consumer", messages);
+        var processActivity = Assert.IsType<Activity>(process.Activity);
+        process.Complete();
+
+        var links = processActivity.Links.ToArray();
+        Assert.Equal(receiveContext.TraceId, processActivity.TraceId);
+        Assert.Equal(receiveContext.SpanId, processActivity.ParentSpanId);
+        Assert.Equal(2, processActivity.GetTagItem("messaging.batch.message_count"));
+        Assert.Equal(5L, processActivity.GetTagItem("messaging.message.body.size"));
+        Assert.Equal(2, links.Length);
+        Assert.Equal(firstTraceId, links[0].Context.TraceId);
+        Assert.Equal(secondTraceId, links[1].Context.TraceId);
+    }
+
+    [Fact]
+    public void StartProcessBatch_UsesProducerContextAsParentWithoutReceiveContext()
+    {
+        using var listener = CreateActivityListener();
+        using var provider = CreateServiceProvider();
+        var telemetry = CreateTelemetry(provider);
+        var firstTraceId = ActivityTraceId.CreateRandom();
+        var firstSpanId = ActivitySpanId.CreateRandom();
+        var secondTraceId = ActivityTraceId.CreateRandom();
+        var secondSpanId = ActivitySpanId.CreateRandom();
+        var messages = new[]
+        {
+            CreateMessage(
+                "message-1",
+                [1, 2],
+                new Dictionary<string, string>
+                {
+                    ["traceparent"] = $"00-{firstTraceId}-{firstSpanId}-01"
+                },
+                default),
+            CreateMessage(
+                "message-2",
+                [3, 4],
+                new Dictionary<string, string>
+                {
+                    ["traceparent"] = $"00-{secondTraceId}-{secondSpanId}-01"
+                },
+                default)
+        };
+
+        using var process = telemetry.StartProcessBatch("orders", "orders-consumer", messages);
+        var processActivity = Assert.IsType<Activity>(process.Activity);
+        process.Complete();
+
+        var link = Assert.Single(processActivity.Links);
+        Assert.Equal(firstTraceId, processActivity.TraceId);
+        Assert.Equal(firstSpanId, processActivity.ParentSpanId);
+        Assert.Equal(secondTraceId, link.Context.TraceId);
+        Assert.Equal(secondSpanId, link.Context.SpanId);
+    }
+
+    [Fact]
     public void Complete_RecordsMetricsForFailedOperation()
     {
         var measurements = new List<(string InstrumentName, long Value, KeyValuePair<string, object?>[] Tags)>();
@@ -314,6 +404,34 @@ public sealed class RemotingRocketMQTelemetryTests
 
     private static RemotingRocketMQTelemetry CreateTelemetry(ServiceProvider provider) =>
         new(provider.GetRequiredService<IMeterFactory>());
+
+    private static RemotingMessageView CreateMessage(
+        string messageId,
+        byte[] body,
+        IReadOnlyDictionary<string, string> properties,
+        ActivityContext receiveActivityContext)
+    {
+        var message = new RemotingMessageView(
+            "orders",
+            body,
+            messageId,
+            $"offset-{messageId}",
+            null,
+            [],
+            properties,
+            1,
+            null,
+            3,
+            "broker-a",
+            0,
+            0,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch)
+        {
+            ReceiveActivityContext = receiveActivityContext
+        };
+        return message;
+    }
 
     private static ActivityListener CreateActivityListener()
     {

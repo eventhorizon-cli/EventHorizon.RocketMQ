@@ -18,6 +18,7 @@ messages to a DI-managed scoped handler; it is not a Broker-initiated network pu
 | `RocketMQ:Consumer:MaxConcurrency` | `4` | Maximum concurrent handler executions. |
 | `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | Fallback delivery-attempt limit before dead-lettering. |
 | `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration; the client renews it while handling a message. |
+| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO handler time before the client cancels its token and requests retry. |
 | `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Maximum server wait for a receive operation. |
 | `Sample:Filter` | `sample` | Tag filter expression for the fixed standard topic. |
 
@@ -74,6 +75,9 @@ The host continues until Ctrl+C. Send a standard message tagged `sample` to
   sample returns `DeadLetter` for corrupted messages and `Success` after logging normal messages.
 - `MaxConcurrency` controls local handler parallelism, not Broker queue count. Messages in a FIFO
   message group retain their ordering constraints even when other messages run concurrently.
+- `ConsumeTimeout` applies to non-FIFO dispatch. When it expires, the handler token is canceled,
+  client-side invisibility renewal stops, and the client requests retry; a handler that ignores cancellation cannot
+  be forcibly stopped, and its late success is ignored. FIFO handlers remain attached so their ordering is preserved.
 - Running multiple instances with the same group distributes messages and shares retry state. Use a
   new group when independently observing the topic.
 

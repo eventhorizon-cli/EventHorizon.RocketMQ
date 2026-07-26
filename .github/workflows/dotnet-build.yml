@@ -18,6 +18,7 @@ concurrency:
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_NOLOGO: "true"
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
 jobs:
   validate:
@@ -33,6 +34,14 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.*.props', '**/Directory.*.targets', 'NuGet.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
 
       - name: Restore
         run: dotnet restore EventHorizon.RocketMQ.sln
@@ -87,10 +96,39 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   integration:
-    name: Docker integration tests and coverage
+    name: ${{ matrix.protocol }} ${{ matrix.topology }} Docker integration tests and coverage
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - protocol: gRPC
+            topology: single-Broker
+            test_project: tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+            test_filter: Topology!=MultiBroker
+            coverage_directory: grpc-single-broker-integration
+            coverage_name: dotnet-grpc-single-broker-integration-tests
+          - protocol: gRPC
+            topology: multi-Broker
+            test_project: tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+            test_filter: Topology=MultiBroker
+            coverage_directory: grpc-multi-broker-integration
+            coverage_name: dotnet-grpc-multi-broker-integration-tests
+          - protocol: Remoting
+            topology: single-Broker
+            test_project: tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+            test_filter: Topology!=MultiBroker
+            coverage_directory: remoting-single-broker-integration
+            coverage_name: dotnet-remoting-single-broker-integration-tests
+          - protocol: Remoting
+            topology: multi-Broker
+            test_project: tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+            test_filter: Topology=MultiBroker
+            coverage_directory: remoting-multi-broker-integration
+            coverage_name: dotnet-remoting-multi-broker-integration-tests
 
     steps:
       - name: Checkout
@@ -101,32 +139,33 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.*.props', '**/Directory.*.targets', 'NuGet.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
       - name: Restore
-        run: dotnet restore EventHorizon.RocketMQ.sln
-
-      - name: Build
         run: >-
-          dotnet build EventHorizon.RocketMQ.sln
+          dotnet restore "${{ matrix.test_project }}"
+
+      - name: Build integration tests
+        run: >-
+          dotnet build "${{ matrix.test_project }}"
           --configuration Release
           --no-restore
 
-      - name: Test gRPC integration
+      - name: Test integration
         run: >-
-          dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
-          --configuration Release
-          --no-build
-          --no-restore
-          --collect:"XPlat Code Coverage"
-          --results-directory "${{ runner.temp }}/coverage/grpc-integration"
-
-      - name: Test Remoting integration
-        run: >-
-          dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+          dotnet test "${{ matrix.test_project }}"
           --configuration Release
           --no-build
           --no-restore
+          --filter "${{ matrix.test_filter }}"
           --collect:"XPlat Code Coverage"
-          --results-directory "${{ runner.temp }}/coverage/remoting-integration"
+          --results-directory "${{ runner.temp }}/coverage/${{ matrix.coverage_directory }}"
 
       - name: Upload integration coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -134,5 +173,5 @@ jobs:
           directory: ${{ runner.temp }}/coverage
           fail_ci_if_error: true
           flags: integration-tests
-          name: dotnet-integration-tests
+          name: ${{ matrix.coverage_name }}
           token: ${{ secrets.CODECOV_TOKEN }}

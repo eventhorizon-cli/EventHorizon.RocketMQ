@@ -293,6 +293,7 @@ rocketMQ.AddGrpcPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, option
     options.MaxConcurrency = 8;
     options.MaxDeliveryAttempts = 16;
     options.InvisibleDuration = TimeSpan.FromSeconds(30);
+    options.ConsumeTimeout = TimeSpan.FromMinutes(15);
     options.Subscribe("orders", new FilterExpression("created"));
 });
 
@@ -312,6 +313,9 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，且必须线程安全；`Scoped` 和
 `Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。`MessageHandler` 委托仍适合
 简单的无状态回调，但不能与类型化 handler 同时配置。
+对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后会取消 handler token、停止客户端的不可见时间续期，并请求消息
+重新投递；延迟返回的成功结果会被忽略。重新投递可能与仍在执行、但忽略取消的代码重叠，因此 handler 必须具备幂等性。
+客户端无法强制停止这段代码。FIFO message group 会刻意排除在该机制之外，以维持其顺序。
 
 ## LitePushConsumer
 

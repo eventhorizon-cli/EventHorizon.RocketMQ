@@ -337,6 +337,30 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public async Task AddRemotingPushConsumer_RejectsNonPositiveConsumeTimeout()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = "127.0.0.1:9876";
+            })
+            .AddRemotingPushConsumer(options =>
+            {
+                options.GroupName = "orders";
+                options.ConsumeTimeout = TimeSpan.Zero;
+                options.Subscribe("orders");
+                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
+            });
+
+        await using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            provider.GetRequiredService<IRemotingPushConsumer>);
+        Assert.Contains("consume timeout", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task AddRemotingPushConsumer_RejectsUnknownInitialPosition()
     {
         var services = new ServiceCollection();

@@ -119,11 +119,13 @@ Docker 不可用时，应报告没有运行哪一个 integration test 以及原�
 
 ### 4.1 CI 也采集 integration coverage
 
-GitHub Actions 在格式化、构建和单元测试验证通过后，于独立的 `ubuntu-latest` job 运行 Docker 驱动的
-gRPC 与 Remoting integration test。该 job 使用独立超时预算，因为 Testcontainers 需要拉取镜像并启动
-Broker、NameServer 与 Proxy fixture。两个 integration 项目都会生成 Cobertura 报告，并以
-`integration-tests` flag 上传至 Codecov；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会排除
-`samples`，不会将 sample 计入覆盖率。
+GitHub Actions 在格式化、构建和单元测试验证通过后，于四个并行的 `ubuntu-latest` matrix job 运行 Docker
+驱动的 gRPC 与 Remoting integration test：每个协议各有一个 single-Broker 与一个 multi-Broker job。类级别
+的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；single-Broker job 运行其余测试。每个 job 只 restore
+和 build 对应协议的 integration-test 依赖图，使用独立超时预算，并复用仓库的 NuGet 包缓存。Testcontainers
+仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture。四个 job 都会生成 Cobertura 报告，
+以不同的上传名称归入共享的 `integration-tests` flag；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会
+排除 `samples`，不会将 sample 计入覆盖率。
 
 ### 5. 测试范围也体现支持边界
 

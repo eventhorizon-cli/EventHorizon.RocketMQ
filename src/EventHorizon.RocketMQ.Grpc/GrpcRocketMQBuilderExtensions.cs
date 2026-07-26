@@ -266,6 +266,7 @@ public static class GrpcRocketMQBuilderExtensions
             .Validate(
                 static value => value.InvisibleDuration > TimeSpan.Zero,
                 "Invisible duration must be positive.")
+            .Validate(static value => value.ConsumeTimeout > TimeSpan.Zero, "Consume timeout must be positive.")
             .Validate(
                 static value => value.LongPollingTimeout > TimeSpan.Zero,
                 "Long polling timeout must be positive.")
@@ -323,6 +324,7 @@ public static class GrpcRocketMQBuilderExtensions
             .Validate(
                 static value => value.InvisibleDuration > TimeSpan.Zero,
                 "Invisible duration must be positive.")
+            .Validate(static value => value.ConsumeTimeout > TimeSpan.Zero, "Consume timeout must be positive.")
             .Validate(
                 static value => value.LongPollingTimeout > TimeSpan.Zero,
                 "Long polling timeout must be positive.")

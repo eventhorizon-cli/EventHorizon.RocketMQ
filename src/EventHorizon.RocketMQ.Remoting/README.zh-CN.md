@@ -93,7 +93,7 @@ await app.RunAsync();
 | `IRemotingPullConsumer` | ✅ | 支持显式队列和位点，以及 tag 或 SQL 过滤。SQL 过滤要求目标 Broker 配置过滤能力。 |
 | `IRemotingLitePullConsumer` | ✅ | 支持订阅后的自动分配，或通过 `AssignAsync` 手动分配；客户端维护位点、提交、暂停、恢复和 seek。目前仅支持集群消费。 |
 | `IRemotingPopConsumer` | ✅ | 支持手动选择物理队列、receipt 确认以及普通 topic POP 消息的可见期续租；Broker 必须支持 POP。 |
-| `IRemotingPushConsumer` | ✅ | 支持集群或广播消费、运行时订阅、可配置起始位点、并发或 FIFO 分发、重试、死信处理，以及 Broker 触发的重平衡或位点重置。 |
+| `IRemotingPushConsumer` | ✅ | 支持集群或广播消费、运行时订阅、可配置起始位点、并发批量回调或单消息 FIFO 分发、重试、死信处理，以及 Broker 触发的重平衡或位点重置。 |
 | 队列有序 Push 消费 | ✅ | 使用可选的 Broker 队列锁实现有序消费；仅在目标 Broker 支持经典锁定流程时配置。 |
 | 内置 Socket 传输 | ✅ | 基于 `System.IO.Pipelines`，支持可选 TLS、多个 NameServer 地址、Broker 故障转移、ACL 签名、命名空间和可配置帧限制；不依赖 Bedrock Framework。 |
 | 依赖注入、Options、日志、Generic Host 生命周期以及默认客户端注册和 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 创建客户端注册，再添加所需角色。 |
@@ -493,6 +493,9 @@ POP 命令码超出了 RocketMQ 可选二进制 command-header 格式保留的�
 经典 `IRemotingPushConsumer` 由客户端主动拉取和长轮询实现，并非协议层面的 Broker Push；但它还会
 处理经典 Broker 的重平衡和位点重置回调。
 
+Remoting 只有一个 PushConsumer 角色和一套基于列表的 message-handler 合约。增大
+`ConsumeMessageBatchSize` 只会改变该合约单次收到的最大消息数，不会选择另一个 Consumer 实现。
+
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
@@ -504,29 +507,47 @@ rocketMQ.AddRemotingPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 {
     options.GroupName = "orders-push-consumer";
     options.MaxConcurrency = 8;
+    options.BatchSize = 32;
+    options.ConsumeMessageBatchSize = 16;
     options.MaxDeliveryAttempts = 16;
     options.Subscribe("orders", new FilterExpression("created"));
 });
 
 public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 {
-    public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+    public ValueTask<ConsumeResult> HandleAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken)
     {
-        Console.WriteLine(Encoding.UTF8.GetString(message.Body));
+        foreach (var message in messages)
+        {
+            Console.WriteLine(Encoding.UTF8.GetString(message.Body));
+        }
+
         return ValueTask.FromResult(ConsumeResult.Success);
     }
 }
 ```
 
-返回 `Success` 可提交消息，返回 `Retry` 可请求 Broker 重新投递，返回 `DeadLetter` 会将消息发送到
-死信队列。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。
+`BatchSize` 是单次长轮询从 Broker 请求的最大消息数，默认值为 32。`ConsumeMessageBatchSize` 是单次
+handler 调用收到的最大消息数，默认值为 1。并发分发只会将来自同一个 Broker 物理队列、且不带
+`MessageGroup` 的消息合并为一批；带 `MessageGroup` 的 FIFO 消息以及所有 `ConsumeOrderly` 投递都会以
+只包含一条消息的列表传递，以保持顺序和重试语义。符合并发条件的批次可在 `MaxConcurrency` 范围内并行处理。
+
+`ConsumeTimeout` 默认值为 15 分钟。并发集群、非 FIFO 批次超过该时间后，Consumer 会取消 handler token，并为
+整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。
+延迟返回的结果会被忽略，并可能与重新投递的调用重叠。FIFO 和顺序投递为保持顺序保证而不会应用此机制。
+
+返回 `Success` 会提交一批中的每条消息，返回 `Retry` 会为一批中的每条消息请求 Broker 重新投递，返回
+`DeadLetter` 会将一批中的每条消息发送到死信队列。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。
 泛型注册会为当前客户端注册选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，
-且必须线程安全；`Scoped` 和 `Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。
-`MessageHandler` 委托仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
+且必须线程安全；`Scoped` 和 `Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。
+`MessageHandler` 委托使用相同的列表签名，仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
 
 ### 队列有序消费
 
-当经典 PushConsumer 需要让每个已分配的物理队列一次只处理一条消息时，设置 `ConsumeOrderly`：
+当经典 PushConsumer 需要让每个已分配的物理队列一次只处理一条消息时，设置 `ConsumeOrderly`。无论
+`ConsumeMessageBatchSize` 如何配置，它都会传递只包含一条消息的列表：
 
 ```csharp
 rocketMQ.AddRemotingPushConsumer(options =>

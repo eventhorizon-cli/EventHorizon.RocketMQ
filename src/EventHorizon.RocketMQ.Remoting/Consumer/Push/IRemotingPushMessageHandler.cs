@@ -19,19 +19,25 @@ using Microsoft.Extensions.DependencyInjection;
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 
 /// <summary>
-/// Processes a message delivered by a classic remoting Push consumer.
+/// Processes a message batch delivered by a classic remoting Push consumer.
 /// </summary>
 /// <remarks>
 /// A handler registered with <see cref="ServiceLifetime.Singleton"/> can receive concurrent calls and must be
-/// thread-safe. Scoped and transient handlers are resolved for each message handling attempt.
+/// thread-safe. Scoped and transient handlers are resolved for each batch handling attempt. A returned
+/// <see cref="ConsumeResult"/> applies to every message in the batch.
 /// </remarks>
 public interface IRemotingPushMessageHandler
 {
     /// <summary>
-    /// Processes a received message and returns the requested delivery outcome.
+    /// Processes received messages and returns the requested delivery outcome for the complete batch.
     /// </summary>
-    /// <param name="message">The message to process.</param>
-    /// <param name="cancellationToken">The token that cancels processing when the consumer stops.</param>
-    /// <returns>The requested delivery outcome.</returns>
-    ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken);
+    /// <param name="messages">The messages to process, in their delivery order.</param>
+    /// <param name="cancellationToken">
+    /// The token that cancels processing when the consumer stops and, for concurrent clustered non-FIFO batches,
+    /// when <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> expires.
+    /// </param>
+    /// <returns>The requested delivery outcome for every message in <paramref name="messages"/>.</returns>
+    ValueTask<ConsumeResult> HandleAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken);
 }

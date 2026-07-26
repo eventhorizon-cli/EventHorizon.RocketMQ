@@ -117,13 +117,27 @@ Push 和 LitePush 可接收委托，也可注册实现 `IGrpcPushMessageHandler`
 | handler 生命周期 | 实例与 scope 行为 |
 | --- | --- |
 | `Singleton` | 直接复用一个 handler；它只能依赖 singleton 或安全的工厂/抽象。 |
-| `Scoped` | 每次消息处理创建一个异步 DI scope，并从该 scope 解析 handler。 |
-| `Transient` | 同样为每次处理创建一个异步 DI scope，再取得新的 handler。 |
+| `Scoped` | 每次 handler 调用创建一个异步 DI scope，并从该 scope 解析 handler。 |
+| `Transient` | 同样为每次 handler 调用创建一个异步 DI scope，再取得新的 handler。 |
 
 因此，scoped handler 可以安全地依赖 scoped 服务；但 singleton handler 不能捕获 scoped 依赖。启用
 容器 scope 校验时，后者会在容器构建或解析阶段暴露为生命周期错误，而不是在长轮询运行后才随机失败。
 
-具体的 per-message scope 逻辑位于
+gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通过唯一的
+`IRemotingPushMessageHandler` API，在每次批量回调中传入 `IReadOnlyList<RemotingMessageView>`；其
+`ConsumeMessageBatchSize` 默认值为 `1`，因此除非显式配置，否则仍是单消息投递。
+直接配置的 Remoting `MessageHandler` 委托也使用相同的列表合约。
+
+对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token、停止客户端不可见时间续期，并请求
+重新投递。dispatcher 会忽略延迟返回的结果并释放 worker，但无法终止应用代码。超时调用可能与重新投递重叠，因此必须保持幂等。
+对应 typed handler 的异步 scope 会一直存活到该调用返回，因此 handler 代码仍在运行时不会提前释放 scoped 依赖。FIFO message group
+为了保持顺序而不会应用此机制。
+
+对于并发集群、非 FIFO 的 Remoting 批次，`ConsumeTimeout` 到期后会取消 handler token，并请求 Broker 重新投递。
+延迟返回的结果会被忽略，并可能与重新投递重叠，因此 handler 仍需自行配合取消并保持幂等；运行时不能强制停止应用代码。
+FIFO 和顺序投递为保持顺序保证而不会应用此机制。
+
+对应的 handler scope 逻辑位于
 [`GrpcPushMessageHandlerFactory`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushMessageHandlerFactory.cs)
 和
 [`RemotingPushMessageHandlerFactory`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Push/RemotingPushMessageHandlerFactory.cs)。

@@ -22,6 +22,7 @@ using Xunit;
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
 [Collection(RocketMQMultiBrokerCollection.Name)]
+[Trait("Topology", "MultiBroker")]
 public sealed class RocketMQMultiBrokerIntegrationTests
 {
     private readonly RocketMQMultiBrokerGrpcContainerFixture _fixture;

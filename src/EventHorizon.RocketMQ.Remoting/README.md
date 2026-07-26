@@ -99,7 +99,7 @@ enable the applicable server-side feature.
 | `IRemotingPullConsumer` | ✅ | Supports explicit queues and offsets plus tag or SQL filtering. SQL filtering requires the target Broker's filter configuration. |
 | `IRemotingLitePullConsumer` | ✅ | Supports clustered automatic or manual assignment, client-maintained positions, commits, pause, resume, and seek. It currently supports clustered consumption only. |
 | `IRemotingPopConsumer` | ✅ | Supports manually selected physical queues, receipt acknowledgement, and invisibility renewal for normal-topic POP messages; the Broker must support POP. |
-| `IRemotingPushConsumer` | ✅ | Supports clustering or broadcasting, runtime subscriptions, configurable initial offsets, concurrent or FIFO dispatch, retries, dead-letter handling, and Broker-triggered rebalance or offset reset. |
+| `IRemotingPushConsumer` | ✅ | Supports clustering or broadcasting, runtime subscriptions, configurable initial offsets, concurrent batch callbacks or singleton FIFO dispatch, retries, dead-letter handling, and Broker-triggered rebalance or offset reset. |
 | Queue-orderly Push consumption | ✅ | Uses optional Broker queue locks for ordered consumption; configure it only where the destination Broker supports the classic locking flow. |
 | Built-in socket transport | ✅ | Uses `System.IO.Pipelines` with optional TLS, multiple NameServer addresses, Broker failover, ACL signing, namespaces, and configurable frame limits. It does not depend on Bedrock Framework. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default/keyed client registrations | ✅ | Add a client registration with `AddRocketMQRemoting`, then add the required roles. |
@@ -517,6 +517,10 @@ Classic `IRemotingPushConsumer` is implemented with client-initiated pulls and l
 not protocol-level Broker push, although it also handles classic Broker callbacks for rebalance and
 offset reset.
 
+There is one Remoting PushConsumer role and one list-based message-handler contract. Configuring a larger
+`ConsumeMessageBatchSize` changes the maximum messages delivered to that contract; it does not select a separate
+consumer implementation.
+
 ```csharp
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
@@ -528,32 +532,52 @@ rocketMQ.AddRemotingPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 {
     options.GroupName = "orders-push-consumer";
     options.MaxConcurrency = 8;
+    options.BatchSize = 32;
+    options.ConsumeMessageBatchSize = 16;
     options.MaxDeliveryAttempts = 16;
     options.Subscribe("orders", new FilterExpression("created"));
 });
 
 public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 {
-    public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+    public ValueTask<ConsumeResult> HandleAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken)
     {
-        Console.WriteLine(Encoding.UTF8.GetString(message.Body));
+        foreach (var message in messages)
+        {
+            Console.WriteLine(Encoding.UTF8.GetString(message.Body));
+        }
+
         return ValueTask.FromResult(ConsumeResult.Success);
     }
 }
 ```
 
-Return `Success` to commit a message, `Retry` to request Broker redelivery, or `DeadLetter` to send
-it to the dead-letter queue. Runtime `SubscribeAsync` and `UnsubscribeAsync` calls update classic
-heartbeats and reconcile active queue receivers. The generic registration selects the handler lifetime
+`BatchSize` is the maximum number of messages requested from the Broker by one long poll and defaults to 32.
+`ConsumeMessageBatchSize` is the maximum number passed to one handler invocation and defaults to 1. For concurrent
+dispatch, only non-`MessageGroup` messages received from the same Broker physical queue are combined. `MessageGroup`
+FIFO messages and all `ConsumeOrderly` deliveries are passed as singleton lists to preserve ordering and retry
+semantics. Eligible concurrent batches can run in parallel up to `MaxConcurrency`.
+
+`ConsumeTimeout` defaults to 15 minutes. For a concurrent clustered non-FIFO batch that exceeds the timeout, the
+consumer cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate
+application code that ignores cancellation; its late result is ignored and can overlap a redelivered invocation, so
+handlers must honor the token and remain idempotent. FIFO and orderly delivery are excluded to preserve their ordering
+guarantees.
+
+Return `Success` to commit every message in a batch, `Retry` to request Broker redelivery for every message in the
+batch, or `DeadLetter` to send every message in the batch to the dead-letter queue. Runtime `SubscribeAsync` and
+`UnsubscribeAsync` calls update classic heartbeats and reconcile active queue receivers. The generic registration selects the handler lifetime
 for the current client registration: `Singleton` creates one handler per client registration/role and must be thread-safe;
-`Scoped` and `Transient` resolve a handler in a new async service scope for each handling attempt. The
-`MessageHandler` delegate remains available for small stateless callbacks, but cannot be combined with a
+`Scoped` and `Transient` resolve a handler in a new async service scope for each batch handling attempt. The
+`MessageHandler` delegate has the same list-based signature and remains available for small stateless callbacks, but cannot be combined with a
 typed handler.
 
 ### Queue-orderly consumption
 
 Set `ConsumeOrderly` when a classic PushConsumer must process each assigned physical queue one message
-at a time:
+at a time. It delivers singleton lists regardless of `ConsumeMessageBatchSize`:
 
 ```csharp
 rocketMQ.AddRemotingPushConsumer(options =>

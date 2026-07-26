@@ -27,7 +27,7 @@ Remoting 客户端先连接 NameServer 获取 topic route，然后对 route 中�
 | `IRemotingPullConsumer` | 应用显式选择队列和位点来拉取、确认/提交 | ✅ |
 | `IRemotingLitePullConsumer` | 订阅后的自动分配或 `AssignAsync` 手工分配、客户端位点、pause/resume/seek | ✅ |
 | `IRemotingPopConsumer` | POP receipt、确认和可见期续租 | ✅ |
-| `IRemotingPushConsumer` | 自动消费、重试、死信、重平衡与经典 Broker 兼容行为 | ✅ |
+| `IRemotingPushConsumer` | 自动批量消费、重试、死信、重平衡与经典 Broker 兼容行为 | ✅ |
 
 “后台生命周期”表示通过 Generic Host 注册时会有 hosted service 启动/停止该角色。Admin 是按需查询 API，
 不启动独立循环。
@@ -79,7 +79,16 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 - **POP**：Broker 返回 receipt；应用使用 receipt 确认，并在长时间处理时请求更改不可见期。receipt 不是
   可跨消息、跨队列复用的 token。
 - **Push**：客户端仍以拉取/长轮询为基础，但加上经典 group、心跳、Broker 回调、重平衡和可选队列锁的
-  兼容流程。它支持 cluster/broadcast、并发或 FIFO 分发，以及队列有序消费所需的经典锁定行为。
+  兼容流程。它支持 cluster/broadcast、并发批量或 FIFO 分发，以及队列有序消费所需的经典锁定行为。
+  唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>`。
+  `BatchSize` 限制单次长轮询向 Broker 请求的消息数；`ConsumeMessageBatchSize` 独立限制单次 handler
+  调用收到的消息数，默认值为 `1`。来自同一个 Broker 物理队列、且不带 `MessageGroup` 的并发消息可以合并为
+一批，多个批次可在 `MaxConcurrency` 范围内并行处理；带 `MessageGroup` 的 FIFO 投递和 `ConsumeOrderly`
+投递保持单消息、串行处理。一项 `ConsumeResult` 会应用于该批中的每条消息。
+
+`ConsumeTimeout` 默认值为 15 分钟，仅适用于并发集群、非 FIFO 批次。超时后，客户端会取消 handler token，并为
+整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。
+延迟返回的结果会被忽略，并可能与重新投递重叠。FIFO 和顺序投递为保持顺序保证而不会进入此恢复路径。
 
 无论选择哪种角色，至少一次交付仍要求业务处理幂等。发送重试、连接中断、可见期到期或确认失败都可能导致
 重复投递。

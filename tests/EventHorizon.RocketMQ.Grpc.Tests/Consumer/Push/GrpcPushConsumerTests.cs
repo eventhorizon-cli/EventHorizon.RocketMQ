@@ -43,19 +43,22 @@ public sealed class GrpcPushConsumerTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var processingOrder = new ConcurrentQueue<string>();
         var client = new FakeGrpcClient();
         await using var consumer = CreateConsumer(
             client,
-            async (message, cancellationToken) =>
+            async (message, handlerCancellationToken) =>
             {
                 processingOrder.Enqueue(message.MessageId);
                 if (message.MessageId == "first")
                 {
+                    using var registration = handlerCancellationToken.Register(
+                        () => firstCancellationRequested.TrySetResult());
                     firstStarted.TrySetResult();
-                    await releaseFirst.Task.WaitAsync(cancellationToken);
+                    await releaseFirst.Task.WaitAsync(handlerCancellationToken);
                 }
                 else
                 {
@@ -65,7 +68,11 @@ public sealed class GrpcPushConsumerTests
                 return ConsumeResult.Success;
             },
             out var engine,
-            options => options.MaxConcurrency = 2);
+            options =>
+            {
+                options.MaxConcurrency = 2;
+                options.ConsumeTimeout = TimeSpan.FromMilliseconds(50);
+            });
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
         var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -85,6 +92,7 @@ public sealed class GrpcPushConsumerTests
 
         await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         await Task.Delay(100, cancellationToken);
+        Assert.False(firstCancellationRequested.Task.IsCompleted);
         Assert.False(secondStarted.Task.IsCompleted);
         releaseFirst.TrySetResult();
         await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
@@ -662,6 +670,81 @@ public sealed class GrpcPushConsumerTests
         Assert.Empty(client.ChangeInvisibleRequests);
         Assert.Empty(client.DeadLetterRequests);
         Assert.Equal(0, consumer.CachedMessageBytes);
+    }
+
+    [Fact]
+    public async Task ConcurrentMessageTimeout_CancelsHandlerRequestsRetryAndIgnoresLateSuccess()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete(false, "timeout"));
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            async (_, handlerCancellationToken) =>
+            {
+                handlerStarted.TrySetResult();
+                using var registration = handlerCancellationToken.Register(
+                    () => handlerCancellationRequested.TrySetResult());
+                using var failingRegistration = handlerCancellationToken.Register(
+                    static () => throw new InvalidOperationException("The test cancellation callback failed."));
+                await releaseHandler.Task.ConfigureAwait(false);
+                handlerFinished.TrySetResult();
+                return ConsumeResult.Success;
+            },
+            out var engine,
+            options =>
+            {
+                options.ConsumeTimeout = TimeSpan.FromMilliseconds(100);
+                options.RetryDelay = TimeSpan.FromSeconds(3);
+            },
+            telemetry: telemetry.Object);
+
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
+        var message = Message("timeout");
+        engine.BindMessage(message);
+        await channel.Writer.WriteAsync(message, cancellationToken);
+        channel.Writer.Complete();
+
+        try
+        {
+            await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await handlerCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+            Assert.Empty(client.AckRequests);
+            var retry = Assert.Single(client.ChangeInvisibleRequests);
+            Assert.Equal(TimeSpan.FromSeconds(3), retry.InvisibleDuration.ToTimeSpan());
+        }
+        finally
+        {
+            releaseHandler.TrySetResult();
+        }
+
+        await handlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.Empty(client.AckRequests);
+        operation.Verify(value => value.Complete(false, "timeout"), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
     }
 
     [Fact]

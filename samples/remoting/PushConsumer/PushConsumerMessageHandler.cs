@@ -23,16 +23,22 @@ namespace EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 internal sealed class PushConsumerMessageHandler(
     ILogger<PushConsumerMessageHandler> logger) : IRemotingPushMessageHandler
 {
-    public ValueTask<ConsumeResult> HandleAsync(RemotingMessageView message, CancellationToken cancellationToken)
+    public ValueTask<ConsumeResult> HandleAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        CancellationToken cancellationToken)
     {
-        logger.LogInformation(
-            "Received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",
-            message.MessageId,
-            message.Topic,
-            message.BrokerName,
-            message.QueueId,
-            message.QueueOffset,
-            Encoding.UTF8.GetString(message.Body));
+        foreach (var message in messages)
+        {
+            logger.LogInformation(
+                "Received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",
+                message.MessageId,
+                message.Topic,
+                message.BrokerName,
+                message.QueueId,
+                message.QueueOffset,
+                Encoding.UTF8.GetString(message.Body));
+        }
+
         // Success advances the original queue offset. In clustering mode, Retry sends failed work back for redelivery
         // before that offset advances.
         return ValueTask.FromResult(ConsumeResult.Success);

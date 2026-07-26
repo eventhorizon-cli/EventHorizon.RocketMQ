@@ -318,8 +318,9 @@ public sealed class RocketMQContainerTests
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("legacy-push"));
-                options.MessageHandler = (message, _) =>
+                options.MessageHandler = (messages, _) =>
                 {
+                    var message = Assert.Single(messages);
                     var body = Encoding.UTF8.GetString(message.Body);
                     if (body == expected && Interlocked.Increment(ref handlerCalls) == 1)
                     {
@@ -380,6 +381,86 @@ public sealed class RocketMQContainerTests
 
     [Fact]
     [Trait("Category", "Integration")]
+    public async Task LegacyPushConsumerDispatchesConfiguredMessageBatch()
+    {
+        const int messageCount = 3;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var suffix = Guid.NewGuid().ToString("N");
+        var group = $"legacy-push-batch-{suffix}";
+        var tag = $"legacy-push-batch-{suffix}";
+        var expectedBodies = Enumerable.Range(0, messageCount)
+            .Select(index => $"{tag}-{index}")
+            .ToArray();
+        var consumed = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = _fixture.NameServerAddress;
+            })
+            .AddRemotingProducer(options => options.GroupName = $"legacy-push-batch-producer-{suffix}")
+            .AddRemotingPushConsumer(options =>
+            {
+                options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
+                options.BatchSize = messageCount;
+                options.ConsumeMessageBatchSize = messageCount;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.MessageHandler = (messages, _) =>
+                {
+                    var bodies = messages.Select(message => Encoding.UTF8.GetString(message.Body)).ToArray();
+                    if (bodies.SequenceEqual(expectedBodies))
+                    {
+                        consumed.TrySetResult(bodies);
+                    }
+
+                    return ValueTask.FromResult(ConsumeResult.Success);
+                };
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IRemotingProducer>();
+        var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
+        await producer.StartAsync(cancellationToken);
+        try
+        {
+            var queue = (await producer.GetPublishMessageQueuesAsync(
+                RocketMQContainerFixture.TestTopic,
+                cancellationToken)).First();
+            var sent = await producer.SendAsync(
+                expectedBodies.Select(body => new Message(
+                RocketMQContainerFixture.TestTopic,
+                Encoding.UTF8.GetBytes(body))
+                {
+                    Tag = tag
+                }).ToArray(),
+                queue,
+                cancellationToken);
+            Assert.Equal(RemotingSendStatus.SendOk, sent.Status);
+
+            await consumer.StartAsync(cancellationToken);
+            var actualBodies = await consumed.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
+            Assert.Equal(expectedBodies, actualBodies);
+
+            var commit = await _fixture.WaitForConsumerCommitAsync(
+                group,
+                RocketMQContainerFixture.TestTopic,
+                queue.BrokerName,
+                queue.QueueId,
+                TimeSpan.FromSeconds(10),
+                cancellationToken);
+            Assert.True(commit.Committed, $"Legacy push batch offset was not committed. {commit.Progress}");
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
     public async Task LegacyOrderlyPushConsumerWaitsForBrokerQueueLock()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -406,8 +487,9 @@ public sealed class RocketMQContainerTests
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (message, _) =>
+                options.MessageHandler = (messages, _) =>
                 {
+                    var message = Assert.Single(messages);
                     if (Encoding.UTF8.GetString(message.Body) == expected)
                     {
                         delivered.TrySetResult();
@@ -553,16 +635,19 @@ public sealed class RocketMQContainerTests
                     options.MaxConcurrency = 4;
                     options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                     options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                    options.MessageHandler = (message, _) =>
+                    options.MessageHandler = (messages, _) =>
                     {
-                        var body = Encoding.UTF8.GetString(message.Body);
-                        if (expectedBodies.Contains(body))
+                        foreach (var message in messages)
                         {
-                            onDelivery();
-                            deliveries.AddOrUpdate(body, 1, static (_, count) => count + 1);
-                            if (deliveries.Count == messageCount)
+                            var body = Encoding.UTF8.GetString(message.Body);
+                            if (expectedBodies.Contains(body))
                             {
-                                allConsumed.TrySetResult();
+                                onDelivery();
+                                deliveries.AddOrUpdate(body, 1, static (_, count) => count + 1);
+                                if (deliveries.Count == messageCount)
+                                {
+                                    allConsumed.TrySetResult();
+                                }
                             }
                         }
 
@@ -648,8 +733,9 @@ public sealed class RocketMQContainerTests
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (message, _) =>
+                options.MessageHandler = (messages, _) =>
                 {
+                    var message = Assert.Single(messages);
                     if (Encoding.UTF8.GetString(message.Body) == expectedBody)
                     {
                         consumed.TrySetResult();
@@ -729,8 +815,9 @@ public sealed class RocketMQContainerTests
                     options.InitialPosition = ConsumeFromPosition.Beginning;
                     options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                     options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
-                    options.MessageHandler = (message, _) =>
+                    options.MessageHandler = (messages, _) =>
                     {
+                        var message = Assert.Single(messages);
                         if (Encoding.UTF8.GetString(message.Body) == expectedBody)
                         {
                             completion.TrySetResult();

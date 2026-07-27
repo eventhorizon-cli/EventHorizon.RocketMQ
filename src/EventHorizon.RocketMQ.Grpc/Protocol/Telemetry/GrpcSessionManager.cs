@@ -21,6 +21,9 @@ using Proto = Apache.Rocketmq.V2;
 
 namespace EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 
+/// <summary>
+/// Coordinates the endpoint-scoped RocketMQ Telemetry RPC control sessions for one client role.
+/// </summary>
 internal sealed class GrpcSessionManager : IAsyncDisposable
 {
     private static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);

@@ -198,6 +198,53 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
+    public async Task ReconnectCommandReceivedDuringSessionOpening_IsHonoredAfterRegistration()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var first = CreateSession();
+        var replacement = CreateSession();
+        var replacementOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var openCalls = 0;
+        var client = CreateClient();
+        client
+            .Setup(value => value.OpenTelemetryAsync(
+                endpoint,
+                It.IsAny<Proto.Settings>(),
+                It.IsAny<Func<Proto.TelemetryCommand, CancellationToken, Task>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<Uri, Proto.Settings, Func<Proto.TelemetryCommand, CancellationToken, Task>?, CancellationToken>(
+                async (_, _, handler, token) =>
+                {
+                    if (Interlocked.Increment(ref openCalls) == 1)
+                    {
+                        var commandHandler = Assert.IsType<Func<Proto.TelemetryCommand, CancellationToken, Task>>(handler);
+                        await commandHandler(new Proto.TelemetryCommand
+                        {
+                            ReconnectEndpointsCommand = new Proto.ReconnectEndpointsCommand { Nonce = "reconnect-queued" }
+                        }, token);
+                        return first.Session.Object;
+                    }
+
+                    replacementOpened.TrySetResult();
+                    return replacement.Session.Object;
+                });
+        client
+            .Setup(value => value.NotifyTerminationAsync(
+                endpoint,
+                It.IsAny<Proto.NotifyClientTerminationRequest>(),
+                CancellationToken.None))
+            .ReturnsAsync(OkTerminationResponse());
+        await using var manager = CreateManager(client.Object, "orders", null);
+
+        await manager.EnsureAsync([endpoint], new Proto.Settings(), cancellationToken);
+        await replacementOpened.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(2, Volatile.Read(ref openCalls));
+        first.Session.Verify(value => value.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
     public async Task SessionFailure_ReplacesTheTelemetrySession()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -232,6 +279,48 @@ public sealed class GrpcSessionManagerTests
         await replacementOpened.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
 
         first.Session.Verify(value => value.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task FailedSessionReplacement_IsCancelledWhenTheManagerIsDisposed()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var first = CreateSession();
+        var replacementAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var openCalls = 0;
+        var client = CreateClient();
+        client
+            .Setup(value => value.OpenTelemetryAsync(
+                endpoint,
+                It.IsAny<Proto.Settings>(),
+                It.IsAny<Func<Proto.TelemetryCommand, CancellationToken, Task>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<Uri, Proto.Settings, Func<Proto.TelemetryCommand, CancellationToken, Task>?, CancellationToken>(
+                (_, _, _, _) =>
+                {
+                    if (Interlocked.Increment(ref openCalls) == 1)
+                    {
+                        return Task.FromResult<IGrpcTelemetrySession>(first.Session.Object);
+                    }
+
+                    replacementAttempted.TrySetResult();
+                    return Task.FromException<IGrpcTelemetrySession>(new IOException("telemetry unavailable"));
+                });
+        client
+            .Setup(value => value.NotifyTerminationAsync(
+                endpoint,
+                It.IsAny<Proto.NotifyClientTerminationRequest>(),
+                CancellationToken.None))
+            .ReturnsAsync(OkTerminationResponse());
+        await using var manager = CreateManager(client.Object, "orders", null);
+
+        await manager.EnsureAsync([endpoint], new Proto.Settings(), cancellationToken);
+        first.Completion.TrySetResult();
+        await replacementAttempted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await manager.DisposeAsync();
+
+        Assert.Equal(2, Volatile.Read(ref openCalls));
     }
 
     [Fact]
@@ -277,6 +366,108 @@ public sealed class GrpcSessionManagerTests
         Assert.Equal(Proto.ClientType.Producer, heartbeat.ClientType);
         Assert.Equal("orders", heartbeat.Group.Name);
         Assert.Equal("tenant-a", heartbeat.Group.ResourceNamespace);
+    }
+
+    [Fact]
+    public async Task Start_ContinuesAfterAHeartbeatFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var telemetry = CreateSession();
+        var heartbeatSucceeded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var heartbeatAttempts = 0;
+        var client = CreateClient();
+        client
+            .Setup(value => value.OpenTelemetryAsync(
+                endpoint,
+                It.IsAny<Proto.Settings>(),
+                It.IsAny<Func<Proto.TelemetryCommand, CancellationToken, Task>>(),
+                cancellationToken))
+            .ReturnsAsync(telemetry.Session.Object);
+        client
+            .Setup(value => value.HeartbeatAsync(
+                endpoint,
+                It.IsAny<Proto.HeartbeatRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<Uri, Proto.HeartbeatRequest, CancellationToken>((_, _, _) =>
+            {
+                if (Interlocked.Increment(ref heartbeatAttempts) == 1)
+                {
+                    return Task.FromException<Proto.HeartbeatResponse>(new IOException("heartbeat unavailable"));
+                }
+
+                heartbeatSucceeded.TrySetResult();
+                return Task.FromResult(new Proto.HeartbeatResponse { Status = OkStatus() });
+            });
+        client
+            .Setup(value => value.NotifyTerminationAsync(
+                endpoint,
+                It.IsAny<Proto.NotifyClientTerminationRequest>(),
+                CancellationToken.None))
+            .ReturnsAsync(OkTerminationResponse());
+        await using var manager = CreateManager(
+            client.Object,
+            "orders",
+            null,
+            heartbeatInterval: TimeSpan.FromMilliseconds(10));
+
+        manager.Start();
+        await manager.EnsureAsync([endpoint], new Proto.Settings(), cancellationToken);
+        await heartbeatSucceeded.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.True(Volatile.Read(ref heartbeatAttempts) >= 2);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CancelsAnInFlightHeartbeat()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var telemetry = CreateSession();
+        var heartbeatStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = CreateClient();
+        client
+            .Setup(value => value.OpenTelemetryAsync(
+                endpoint,
+                It.IsAny<Proto.Settings>(),
+                It.IsAny<Func<Proto.TelemetryCommand, CancellationToken, Task>>(),
+                cancellationToken))
+            .ReturnsAsync(telemetry.Session.Object);
+        client
+            .Setup(value => value.HeartbeatAsync(
+                endpoint,
+                It.IsAny<Proto.HeartbeatRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<Uri, Proto.HeartbeatRequest, CancellationToken>((_, _, token) =>
+            {
+                heartbeatStarted.TrySetResult();
+                return WaitForHeartbeatCancellationAsync(token);
+            });
+        client
+            .Setup(value => value.NotifyTerminationAsync(
+                endpoint,
+                It.IsAny<Proto.NotifyClientTerminationRequest>(),
+                CancellationToken.None))
+            .ReturnsAsync(OkTerminationResponse());
+        await using var manager = CreateManager(
+            client.Object,
+            "orders",
+            null,
+            heartbeatInterval: TimeSpan.FromMilliseconds(10));
+
+        manager.Start();
+        await manager.EnsureAsync([endpoint], new Proto.Settings(), cancellationToken);
+        await heartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await manager.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task GetServerSettings_ReturnsNullWhenTheEndpointHasNoSession()
+    {
+        var client = CreateClient();
+        await using var manager = CreateManager(client.Object, "orders", null);
+
+        Assert.Null(manager.GetServerSettings(new Uri("http://127.0.0.1:8081")));
     }
 
     private static Mock<IRocketMQGrpcClient> CreateClient() => new(MockBehavior.Strict);
@@ -346,6 +537,13 @@ public sealed class GrpcSessionManagerTests
     {
         replacementOpened.TrySetResult();
         return session;
+    }
+
+    private static async Task<Proto.HeartbeatResponse> WaitForHeartbeatCancellationAsync(
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        return new Proto.HeartbeatResponse { Status = OkStatus() };
     }
 
     private static Proto.Status OkStatus() => new() { Code = Proto.Code.Ok };

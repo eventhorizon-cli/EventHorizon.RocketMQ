@@ -46,6 +46,7 @@ internal sealed class GrpcProducer : IGrpcProducer
     private readonly HashSet<string> _declaredTopics;
     private readonly HashSet<string> _topics;
     private readonly object _topicsGate = new();
+    private readonly SemaphoreSlim _topicSettingsGate = new(1, 1);
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private int _started;
     private int _disposed;
@@ -316,7 +317,7 @@ internal sealed class GrpcProducer : IGrpcProducer
 
                     if (isNewTopic)
                     {
-                        await sessions.SyncSettingsAsync(settings, cancellationToken).ConfigureAwait(false);
+                        await SyncTopicSettingsAsync(sessions, cancellationToken).ConfigureAwait(false);
                         isNewTopic = false;
                     }
 
@@ -437,7 +438,7 @@ internal sealed class GrpcProducer : IGrpcProducer
         await sessions.EnsureAsync(new[] { endpoint }, settings, cancellationToken).ConfigureAwait(false);
         if (isNewTopic)
         {
-            await sessions.SyncSettingsAsync(settings, cancellationToken).ConfigureAwait(false);
+            await SyncTopicSettingsAsync(sessions, cancellationToken).ConfigureAwait(false);
         }
 
         var response = await _client.RecallMessageAsync(endpoint, new Proto.RecallMessageRequest
@@ -646,6 +647,19 @@ internal sealed class GrpcProducer : IGrpcProducer
             Topics = { topics.Select(Resource) }
         };
         return settings;
+    }
+
+    private async Task SyncTopicSettingsAsync(GrpcSessionManager sessions, CancellationToken cancellationToken)
+    {
+        await _topicSettingsGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await sessions.SyncSettingsAsync(BuildSettings(), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _topicSettingsGate.Release();
+        }
     }
 
     private Proto.Settings BaseSettings(Proto.ClientType clientType) => new()

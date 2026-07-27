@@ -134,7 +134,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             catch
             {
                 _run = null;
-                await ShutdownRunAsync(run).ConfigureAwait(false);
+                await ShutdownRunAsync(run, CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
         }
@@ -156,7 +156,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             }
 
             _run = null;
-            await ShutdownRunAsync(run).ConfigureAwait(false);
+            await ShutdownRunAsync(run, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -992,6 +992,11 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
                 var outcomes = await Task.WhenAll(pending.Select(static delivery => delivery.Completion.Task))
                     .WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (run.ShouldAbandonHandlerResults)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
                 if (_options.ConsumerMode == ConsumerMode.Broadcasting)
                 {
                     for (var index = 0; index < outcomes.Length; index++)
@@ -1153,6 +1158,11 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         receiver,
                         message,
                         cancellationToken).ConfigureAwait(false);
+                    if (run.ShouldAbandonHandlerResults)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
                     if (outcome == OrderlyDeliveryOutcome.LeaseLost)
                     {
                         completed = false;
@@ -1240,8 +1250,14 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             await run.OrderlyConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                result = (await InvokeMessageHandlerAsync(new[] { message }, cancellationToken).ConfigureAwait(false))
-                    .Result;
+                var batchResult = await InvokeMessageHandlerAsync(run, new[] { message }, cancellationToken)
+                    .ConfigureAwait(false);
+                if (run.ShouldAbandonHandlerResults)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                result = batchResult.Result;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1501,8 +1517,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         }
 
                         var result = UsesConcurrentTimeoutRecovery(batch)
-                            ? await InvokeConcurrentDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false)
-                            : await HandleDeliveryBatchAsync(batch, linked.Token).ConfigureAwait(false);
+                            ? await InvokeConcurrentDeliveryBatchAsync(run, batch, linked.Token).ConfigureAwait(false)
+                            : await HandleDeliveryBatchAsync(run, batch, linked.Token).ConfigureAwait(false);
+                        if (run.ShouldAbandonHandlerResults)
+                        {
+                            linked.Token.ThrowIfCancellationRequested();
+                        }
+
                         for (var index = 0; index < batch.Deliveries.Count; index++)
                         {
                             batch.Deliveries[index].Completion.TrySetResult(result.GetOutcome(index));
@@ -1548,21 +1569,24 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     }
 
     private async ValueTask<BatchDeliveryResult> HandleDeliveryBatchAsync(
+        RunState run,
         DeliveryBatch batch,
         CancellationToken cancellationToken)
     {
         if (batch.Deliveries.Count == 1)
         {
-            var outcome = await HandleMessageAsync(batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
+            var outcome = await HandleMessageAsync(run, batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
             return BatchDeliveryResult.All(outcome.Result, 1, outcome.DelayLevelWhenNextConsume);
         }
 
         return await InvokeMessageHandlerAsync(
+            run,
             batch.Deliveries.Select(static delivery => delivery.Message).ToArray(),
             cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<MessageConsumeResult> HandleMessageAsync(
+        RunState run,
         Delivery delivery,
         CancellationToken cancellationToken)
     {
@@ -1573,6 +1597,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             try
             {
                 var batchResult = await InvokeMessageHandlerAsync(
+                    run,
                     new[] { delivery.Message },
                     cancellationToken).ConfigureAwait(false);
                 outcome = delivery.FifoOrder is null
@@ -1609,6 +1634,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     }
 
     private ValueTask<BatchDeliveryResult> InvokeMessageHandlerAsync(
+        RunState run,
         IReadOnlyList<RemotingMessageView> messages,
         CancellationToken cancellationToken)
     {
@@ -1617,6 +1643,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             messages,
             context,
             cancellationToken,
+            run,
             StartMessageHandlerTelemetry(messages));
     }
 
@@ -1630,11 +1657,17 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         IReadOnlyList<RemotingMessageView> messages,
         RemotingPushConsumeContext context,
         CancellationToken cancellationToken,
+        RunState run,
         MessageHandlerTelemetry telemetry)
     {
         try
         {
             var result = await _messageHandler(messages, context, cancellationToken).ConfigureAwait(false);
+            if (run.ShouldAbandonHandlerResults)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             var batchResult = BatchDeliveryResult.Create(
                 result,
                 context.AckIndex,
@@ -1660,6 +1693,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         batch.Deliveries.All(static delivery => delivery.FifoOrder is null);
 
     private async ValueTask<BatchDeliveryResult> InvokeConcurrentDeliveryBatchAsync(
+        RunState run,
         DeliveryBatch batch,
         CancellationToken cancellationToken)
     {
@@ -1675,6 +1709,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 messages,
                 context,
                 activeHandlerCancellation.Token,
+                run,
                 telemetry);
             if (handler.IsCompletedSuccessfully)
             {
@@ -1750,21 +1785,36 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private async Task ShutdownRunAsync(RunState run)
+    private async Task ShutdownRunAsync(RunState run, CancellationToken cancellationToken)
     {
+        using var abandonHandlerResultsRegistration = cancellationToken.Register(run.AbandonHandlerResults);
+        Task? detachedTasks = null;
+        QueueReceiver[] receivers = [];
         run.Stopping.Cancel();
         SignalRebalance(run);
         run.Deliveries.Writer.TryComplete();
         await AwaitTaskAsync(run.Coordinator).ConfigureAwait(false);
 
-        var receivers = run.Receivers.Values.ToArray();
+        receivers = run.Receivers.Values.ToArray();
         foreach (var receiver in receivers)
         {
             receiver.Stopping.Cancel();
         }
 
-        await AwaitReceiversAsync(receivers).ConfigureAwait(false);
-        await AwaitTasksAsync(run.Workers).ConfigureAwait(false);
+        var activeTasks = receivers
+            .Select(static receiver => receiver.Task)
+            .Concat(run.Workers)
+            .ToArray();
+        try
+        {
+            await AwaitTasksAsync(activeTasks, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            run.AbandonHandlerResults();
+            detachedTasks = Task.WhenAll(activeTasks);
+        }
+
         if (UsesBrokerQueueLocks && receivers.Length > 0)
         {
             await UnlockQueuesAsync(
@@ -1785,12 +1835,19 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         {
             await _consumerEngine.StopAsync(CancellationToken.None).ConfigureAwait(false);
 
-            foreach (var receiver in receivers)
+            if (detachedTasks is null)
             {
-                receiver.Dispose();
+                DisposeRunResources(run, receivers);
             }
+            else
+            {
+                ObserveDetachedWorkers(run, receivers, detachedTasks);
+            }
+        }
 
-            run.Dispose();
+        if (detachedTasks is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 
@@ -1893,23 +1950,66 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     private static async Task AwaitReceiversAsync(IEnumerable<QueueReceiver> receivers) =>
         await AwaitTasksAsync(receivers.Select(static receiver => receiver.Task)).ConfigureAwait(false);
 
-    private static async Task AwaitTasksAsync(IEnumerable<Task> tasks)
+    private static async Task AwaitTasksAsync(
+        IEnumerable<Task> tasks,
+        CancellationToken cancellationToken = default)
     {
         foreach (var task in tasks)
         {
-            await AwaitTaskAsync(task).ConfigureAwait(false);
+            await AwaitTaskAsync(task, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private static async Task AwaitTaskAsync(Task task)
+    private static async Task AwaitTaskAsync(Task task, CancellationToken cancellationToken = default)
     {
         try
         {
-            await task.ConfigureAwait(false);
+            if (cancellationToken.CanBeCanceled)
+            {
+                await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await task.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void ObserveDetachedWorkers(RunState run, QueueReceiver[] receivers, Task workers) =>
+        _ = ObserveDetachedWorkersAsync(run, receivers, workers);
+
+    private async Task ObserveDetachedWorkersAsync(RunState run, QueueReceiver[] receivers, Task workers)
+    {
+        try
+        {
+            await workers.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
         }
+        catch (Exception exception)
+        {
+            _logger.LogDebug(
+                exception,
+                "A legacy message processing task completed with an exception after consumer shutdown was canceled");
+        }
+        finally
+        {
+            DisposeRunResources(run, receivers);
+        }
+    }
+
+    private static void DisposeRunResources(RunState run, IEnumerable<QueueReceiver> receivers)
+    {
+        foreach (var receiver in receivers)
+        {
+            receiver.Dispose();
+        }
+
+        run.Dispose();
     }
 
     private static int GetDelayLevel(TimeSpan delay)
@@ -1976,9 +2076,14 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
         private object FifoGate { get; } = new();
         private Dictionary<string, Task> FifoTails { get; } = new(StringComparer.Ordinal);
+        private int _abandonHandlerResults;
         private long _subscriptionVersion;
 
         public void BumpSubscriptionVersion() => Interlocked.Increment(ref _subscriptionVersion);
+
+        public bool ShouldAbandonHandlerResults => Volatile.Read(ref _abandonHandlerResults) != 0;
+
+        public void AbandonHandlerResults() => Interlocked.Exchange(ref _abandonHandlerResults, 1);
 
         public async ValueTask ReserveDeliverySlotsAsync(int count, CancellationToken cancellationToken)
         {

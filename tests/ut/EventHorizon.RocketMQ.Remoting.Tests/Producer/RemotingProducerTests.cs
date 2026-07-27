@@ -18,6 +18,7 @@ using System.Net;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Producer;
+using EventHorizon.RocketMQ.Remoting.Producer.Transactions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,6 +30,76 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Producer;
 
 public sealed class RemotingProducerTests
 {
+    [Fact]
+    public async Task StartAsync_RequiresPositiveHeartbeatInterval()
+    {
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            configureClient: options => options.HeartbeatBrokerInterval = TimeSpan.Zero);
+
+        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await producer.StartAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal("HeartbeatBrokerInterval", exception.ParamName);
+        remoting.Verify(value => value.RegisterRequestHandler(
+            It.IsAny<int>(),
+            It.IsAny<RemotingRequestHandler>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task StartAsync_IsIdempotent()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        await producer.StopAsync(TestContext.Current.CancellationToken);
+
+        remoting.Verify(value => value.RegisterRequestHandler(
+            RequestCode.PushReplyMessageToClient,
+            It.IsAny<RemotingRequestHandler>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartAsync_DisposesReplyRegistrationWhenTransactionRegistrationFails()
+    {
+        var replyRegistration = new Mock<IDisposable>(MockBehavior.Strict);
+        replyRegistration.Setup(value => value.Dispose());
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.RegisterRequestHandler(
+                RequestCode.PushReplyMessageToClient,
+                It.IsAny<RemotingRequestHandler>()))
+            .Returns(replyRegistration.Object);
+        remoting
+            .Setup(value => value.RegisterRequestHandler(
+                RequestCode.CheckTransactionState,
+                It.IsAny<RemotingRequestHandler>()))
+            .Throws(new InvalidOperationException("transaction handler registration failed"));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            options =>
+            {
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                options.TransactionChecker = static (_, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+            });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await producer.StartAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal("transaction handler registration failed", exception.Message);
+        replyRegistration.Verify(value => value.Dispose(), Times.Once);
+    }
+
     [Fact]
     public async Task SendAsync_MapsResponseAndEncodesRequest()
     {
@@ -333,10 +404,15 @@ public sealed class RemotingProducerTests
         await producer.SendAsync(
             new Message("orders", [3]) { LiteTopic = "lite-orders" },
             TestContext.Current.CancellationToken);
+        var keyedMessage = new Message("orders", [4]);
+        keyedMessage.Keys.Add("first");
+        keyedMessage.Keys.Add("second");
+        await producer.SendAsync(keyedMessage, TestContext.Current.CancellationToken);
 
         Assert.Equal("1893456000123", Properties(captured[0])["TIMER_DELIVER_MS"]);
         Assert.Equal("3", Properties(captured[1])["_SYS_MSG_PRIORITY_"]);
         Assert.Equal("lite-orders", Properties(captured[2])["__LITE_TOPIC"]);
+        Assert.Equal("first second", Properties(captured[3])["KEYS"]);
     }
 
     [Fact]
@@ -403,6 +479,21 @@ public sealed class RemotingProducerTests
         Assert.Equal("broker-a", queues[0].BrokerName);
         Assert.Equal(0, queues[0].QueueId);
         Assert.Contains(queues, queue => queue.BrokerName == "broker-b" && queue.QueueId == 7);
+    }
+
+    [Fact]
+    public async Task GetPublishMessageQueuesAsync_RejectsRouteWithoutWritableQueues()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(new TopicRouteData());
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(() => producer.GetPublishMessageQueuesAsync(
+            "orders",
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("No writable message queue is available for topic 'orders'.", exception.Message);
     }
 
     [Fact]
@@ -532,6 +623,93 @@ public sealed class RemotingProducerTests
     }
 
     [Fact]
+    public async Task SendOnewayAsync_RetriesTransientFailureWithRefreshedRoute()
+    {
+        var attempts = 0;
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.RegisterRequestHandler(
+                It.IsAny<int>(),
+                It.IsAny<RemotingRequestHandler>()))
+            .Returns(new NoopRegistration());
+        remoting
+            .Setup(value => value.InvokeOnewayAsync(
+                It.IsAny<EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() => Interlocked.Increment(ref attempts) == 1
+                ? Task.FromException(new IOException("first broker unavailable"))
+                : Task.CompletedTask);
+        var routes = CreateRouteServiceMock(
+            Route("broker-a", "localhost:10911"),
+            Route("broker-b", "localhost:20911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            options => options.RetryTimesWhenSendFailed = 1);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        await producer.SendOnewayAsync(
+            new Message("orders", "payload"u8.ToArray()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal([false, true], routes.ForceRefreshCalls);
+    }
+
+    [Fact]
+    public async Task SendOnewayAsync_ReportsFailureAfterLastAttempt()
+    {
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.RegisterRequestHandler(
+                It.IsAny<int>(),
+                It.IsAny<RemotingRequestHandler>()))
+            .Returns(new NoopRegistration());
+        remoting
+            .Setup(value => value.InvokeOnewayAsync(
+                It.IsAny<EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("broker unavailable"));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            options => options.RetryTimesWhenSendFailed = 0);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(() => producer.SendOnewayAsync(
+            new Message("orders", "payload"u8.ToArray()),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("Failed to send one-way message for topic 'orders' after 1 attempts.", exception.Message);
+        Assert.IsType<IOException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task SendAsync_WrapsFinalTransportFailure()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) =>
+            Task.FromException<RemotingCommand>(new IOException("broker unavailable")));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            options => options.RetryTimesWhenSendFailed = 0);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(() => producer.SendAsync(
+            new Message("orders", "payload"u8.ToArray()),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("Failed to send message for topic 'orders' after 1 attempts.", exception.Message);
+        Assert.IsType<IOException>(exception.InnerException);
+    }
+
+    [Fact]
     public async Task SendAsync_BatchEncodesMiniRecordsAndReturnsEachMessageId()
     {
         RemotingCommand? captured = null;
@@ -565,6 +743,72 @@ public sealed class RemotingProducerTests
     }
 
     [Fact]
+    public async Task SendAsync_BatchUsesExplicitWritableQueue()
+    {
+        RemotingCommand? captured = null;
+        var remoting = CreateRemotingClientMock((_, request, _, _) =>
+        {
+            captured = request;
+            return Task.FromResult(SuccessResponse());
+        });
+        var routes = CreateRouteServiceMock(Route(
+            ("broker-a", "localhost:10911"),
+            ("broker-b", "localhost:20911")));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        await producer.SendAsync(
+            [new Message("orders", "first"u8.ToArray()), new Message("orders", "second"u8.ToArray())],
+            new RemotingMessageQueue("orders", "broker-b", 3),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(captured);
+        Assert.Equal("broker-b", captured.ExtFields["bname"]);
+        Assert.Equal(3, captured.ExtFields["queueId"]);
+    }
+
+    [Fact]
+    public async Task SendAsync_BatchUsesSelectorAgainstCurrentWritableQueues()
+    {
+        RemotingCommand? captured = null;
+        IReadOnlyList<RemotingMessageQueue>? availableQueues = null;
+        var selectorArgument = new object();
+        var messages = new[]
+        {
+            new Message("orders", "first"u8.ToArray()),
+            new Message("orders", "second"u8.ToArray())
+        };
+        var remoting = CreateRemotingClientMock((_, request, _, _) =>
+        {
+            captured = request;
+            return Task.FromResult(SuccessResponse());
+        });
+        var routes = CreateRouteServiceMock(Route(
+            ("broker-a", "localhost:10911"),
+            ("broker-b", "localhost:20911")));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        await producer.SendAsync(
+            messages,
+            (queues, routingMessage, argument) =>
+            {
+                availableQueues = queues;
+                Assert.Same(messages[0], routingMessage);
+                Assert.Same(selectorArgument, argument);
+                return queues.Single(queue => queue.BrokerName == "broker-b" && queue.QueueId == 5);
+            },
+            selectorArgument,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(availableQueues);
+        Assert.Equal(16, availableQueues.Count);
+        Assert.NotNull(captured);
+        Assert.Equal("broker-b", captured.ExtFields["bname"]);
+        Assert.Equal(5, captured.ExtFields["queueId"]);
+    }
+
+    [Fact]
     public async Task SendAsync_BatchRejectsMixedTopicsAndDelayedMessagesBeforeRemoting()
     {
         var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
@@ -581,6 +825,91 @@ public sealed class RemotingProducerTests
 
         Assert.Contains("same topic", mixedTopics.Message);
         Assert.Contains("Delayed", delayed.Message);
+        remoting.Verify(value => value.InvokeAsync(
+            It.IsAny<EndPoint>(),
+            It.IsAny<RemotingCommand>(),
+            It.IsAny<TimeSpan>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendAsync_BatchRejectsEmptyAndOversizedPayloadsBeforeRemoting()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(
+            remoting.Object,
+            routes.Mock.Object,
+            options => options.MaxMessageSize = 1);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var empty = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            Array.Empty<Message>(),
+            TestContext.Current.CancellationToken));
+        var oversized = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            [new Message("orders", [1])],
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("cannot be empty", empty.Message);
+        Assert.Contains("maximum", oversized.Message);
+        remoting.Verify(value => value.InvokeAsync(
+            It.IsAny<EndPoint>(),
+            It.IsAny<RemotingCommand>(),
+            It.IsAny<TimeSpan>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendAsync_BatchRejectsRetryAndTransactionalMessagesBeforeRemoting()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        var transactional = new Message("orders", [1]);
+        transactional.Properties["TRAN_MSG"] = "true";
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var retryTopic = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            [new Message("%RETRY%tests", [1])],
+            TestContext.Current.CancellationToken));
+        var transaction = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            [transactional],
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("Retry-topic", retryTopic.Message);
+        Assert.Contains("Transactional", transaction.Message);
+        remoting.Verify(value => value.InvokeAsync(
+            It.IsAny<EndPoint>(),
+            It.IsAny<RemotingCommand>(),
+            It.IsAny<TimeSpan>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendAsync_RejectsInvalidMessageFieldsBeforeRemoting()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var emptyBody = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", []),
+            TestContext.Current.CancellationToken));
+        var emptyGroup = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1]) { MessageGroup = " " },
+            TestContext.Current.CancellationToken));
+        var negativePriority = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1]) { Priority = -1 },
+            TestContext.Current.CancellationToken));
+        var emptyLiteTopic = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1]) { LiteTopic = " " },
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("body cannot be empty", emptyBody.Message);
+        Assert.Contains("Message group cannot be empty", emptyGroup.Message);
+        Assert.Contains("priority must be greater", negativePriority.Message);
+        Assert.Contains("Lite topic cannot be empty", emptyLiteTopic.Message);
         remoting.Verify(value => value.InvokeAsync(
             It.IsAny<EndPoint>(),
             It.IsAny<RemotingCommand>(),
@@ -650,6 +979,154 @@ public sealed class RemotingProducerTests
             It.IsAny<RemotingCommand>(),
             It.IsAny<TimeSpan>(),
             It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RecallAsync_RejectsBrokerFailureAndResponseWithoutMessageId()
+    {
+        var response = new RemotingCommand
+        {
+            Code = ResponseCodes.ResSystemBusy,
+            Remark = "broker is busy"
+        };
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(response));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        var recallHandle = CreateRecallHandle("orders", "broker-a", "1893456000000", "message-id");
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var rejected = await Assert.ThrowsAsync<RemotingCommandException>(() => producer.RecallAsync(
+            "orders",
+            recallHandle,
+            TestContext.Current.CancellationToken));
+
+        response = new RemotingCommand { Code = ResponseCodes.ResSuccess };
+        var malformed = await Assert.ThrowsAsync<InvalidDataException>(() => producer.RecallAsync(
+            "orders",
+            recallHandle,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(ResponseCodes.ResSystemBusy, rejected.ResponseCode);
+        Assert.Equal("broker is busy", rejected.Message);
+        Assert.Equal("Broker response did not contain a valid recalled-message ID.", malformed.Message);
+    }
+
+    [Fact]
+    public async Task RecallAsync_RejectsRetryTopicBeforeParsingHandle()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => producer.RecallAsync(
+            "%RETRY%tests",
+            "not-a-recall-handle",
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("Retry and dead-letter topics", exception.Message);
+        remoting.Verify(value => value.InvokeAsync(
+            It.IsAny<EndPoint>(),
+            It.IsAny<RemotingCommand>(),
+            It.IsAny<TimeSpan>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RecallAsync_UsesAnAvailableBrokerWhenHandleBrokerIsNoLongerRouted()
+    {
+        EndPoint? capturedEndpoint = null;
+        var remoting = CreateRemotingClientMock((endpoint, _, _, _) =>
+        {
+            capturedEndpoint = endpoint;
+            return Task.FromResult(new RemotingCommand
+            {
+                Code = ResponseCodes.ResSuccess,
+                ExtFields = new Dictionary<string, object> { ["msgId"] = "recalled-message-id" }
+            });
+        });
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var messageId = await producer.RecallAsync(
+            "orders",
+            CreateRecallHandle("orders", "broker-removed", "1893456000000", "message-id"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("recalled-message-id", messageId);
+        var endpoint = Assert.IsType<DnsEndPoint>(capturedEndpoint);
+        Assert.Equal("localhost", endpoint.Host);
+        Assert.Equal(10911, endpoint.Port);
+    }
+
+    [Fact]
+    public async Task RecallAsync_RejectsRouteWithoutAnyBrokerEndpoint()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(new TopicRouteData());
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<RocketMQClientException>(() => producer.RecallAsync(
+            "orders",
+            CreateRecallHandle("orders", "broker-a", "1893456000000", "message-id"),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("No broker endpoint is available to recall a message for broker 'broker-a'.", exception.Message);
+    }
+
+    [Fact]
+    public async Task SendAsync_RejectsQueueWithAnotherTopicBeforeResolvingRoute()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendAsync(
+            new Message("orders", [1]),
+            new RemotingMessageQueue("payments", "broker-a", 0),
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("does not match queue topic", exception.Message);
+        remoting.Verify(value => value.InvokeAsync(
+            It.IsAny<EndPoint>(),
+            It.IsAny<RemotingCommand>(),
+            It.IsAny<TimeSpan>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RequestAsync_RequiresPositiveTimeoutBeforeStartingTheProducer()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+
+        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => producer.RequestAsync(
+            new Message("orders", [1]),
+            TimeSpan.Zero,
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal("timeout", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task SendTransactionAsync_RequiresBothTransactionCallbacks()
+    {
+        var remoting = CreateRemotingClientMock((_, _, _, _) => Task.FromResult(SuccessResponse()));
+        var routes = CreateRouteServiceMock(Route("broker-a", "localhost:10911"));
+        var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => producer.SendTransactionAsync(
+            new Message("orders", "payload"u8.ToArray()),
+            cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal(
+            "Both a local transaction executor and a transaction checker must be configured before sending transactional messages.",
+            exception.Message);
     }
 
     private static RemotingProducer CreateProducer(

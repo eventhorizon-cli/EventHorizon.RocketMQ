@@ -636,6 +636,18 @@ internal sealed class RemotingProducer : IRemotingProducer
             {
                 throw;
             }
+            catch (RemotingCommandException exception) when (
+                IsRetryableResponse(exception.ResponseCode) &&
+                attempt + 1 < attempts)
+            {
+                lastException = exception;
+                _logger.LogWarning(
+                    exception,
+                    "Failed to send message to broker {BrokerName}; retrying attempt {Attempt} of {Attempts}",
+                    lastBroker,
+                    attempt + 2,
+                    attempts);
+            }
             catch (RemotingCommandException)
             {
                 throw;

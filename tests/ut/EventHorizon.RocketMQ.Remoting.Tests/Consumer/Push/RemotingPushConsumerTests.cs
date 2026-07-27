@@ -2012,6 +2012,640 @@ public sealed class RemotingPushConsumerTests
         Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StopAsync_CancelsWhenFifoOrOrderlyHandlerIgnoresCancellation(bool consumeOrderly)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processCompleted = new TaskCompletionSource<(Exception? Exception, bool? Success, string? Outcome)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var processDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processOperation = new Mock<IRemotingRocketMQTelemetryOperation>(MockBehavior.Strict);
+        processOperation
+            .Setup(value => value.Complete(It.IsAny<Exception>()))
+            .Callback<Exception>(exception => { processCompleted.TrySetResult((exception, null, null)); });
+        processOperation
+            .Setup(value => value.Complete(It.IsAny<bool>(), It.IsAny<string?>()))
+            .Callback<bool, string?>((success, outcome) => { processCompleted.TrySetResult((null, success, outcome)); });
+        processOperation.Setup(value => value.Dispose()).Callback(() => { processDisposed.TrySetResult(); });
+        var telemetry = new ProcessTelemetry(processOperation.Object);
+        var delivered = 0;
+        var body = CreateMessageRecord(
+            "orders",
+            "stuck",
+            consumeOrderly ? null : "account-7",
+            0,
+            1_000);
+        var remoting = new FakeRemotingClient($"127.0.0.1@stop-cancellation-{consumeOrderly}")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = consumeOrderly,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (_, _, token) =>
+            {
+                handlerStarted.TrySetResult();
+                using var registration = token.Register(() => handlerCancellationRequested.TrySetResult());
+                await releaseHandler.Task;
+                handlerFinished.TrySetResult();
+                return ConsumeResult.Success;
+            }
+        };
+        options.Subscribe("orders");
+        var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            $"stop-cancellation-{consumeOrderly}",
+            telemetry);
+
+        try
+        {
+            await consumer.StartAsync(cancellationToken);
+            await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+            using var stopCancellation = new CancellationTokenSource();
+            var stop = consumer.StopAsync(stopCancellation.Token).AsTask();
+            await handlerCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            stopCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                stop.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+
+            releaseHandler.TrySetResult();
+            await handlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            var completion = await processCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await processDisposed.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+            Assert.IsType<OperationCanceledException>(completion.Exception);
+            Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+            Assert.DoesNotContain(
+                remoting.UpdatedOffsets,
+                static update => update.Topic == "orders" && update.Offset == 1);
+        }
+        finally
+        {
+            releaseHandler.TrySetResult();
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public void Constructor_DisposesFirstRequestHandlerRegistrationWhenSecondRegistrationFails()
+    {
+        var disposed = false;
+        var registration = new Mock<IDisposable>(MockBehavior.Strict);
+        registration.Setup(value => value.Dispose()).Callback(() => { disposed = true; });
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .SetupSequence(value => value.RegisterRequestHandler(
+                It.IsAny<int>(),
+                It.IsAny<RemotingRequestHandler>()))
+            .Returns(registration.Object)
+            .Throws(new InvalidOperationException("The reset-offset registration failed."));
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => new RemotingPushConsumer(
+            Options.Create(options),
+            Options.Create(new RemotingClientOptions()),
+            new Mock<IRemotingConsumerEngine>(MockBehavior.Strict).Object,
+            new Mock<ITopicRouteService>(MockBehavior.Strict).Object,
+            remoting.Object,
+            TimeProvider.System,
+            NullLogger<RemotingPushConsumer>.Instance));
+
+        Assert.Equal("The reset-offset registration failed.", exception.Message);
+        Assert.True(disposed);
+        registration.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task UnsubscribeAsync_ClearsPendingResetBoundaryBeforeResubscribing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var remoting = new FakeRemotingClient("127.0.0.1@clear-reset-boundary");
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "clear-reset-boundary");
+        var body = Encoding.UTF8.GetBytes(
+            """
+            {"offsetTable":[[{"topic":"orders","brokerName":"broker-a","queueId":0},9]]}
+            """);
+
+        var reset = await remoting.InvokeBrokerRequestAsync(
+            RequestCode.ResetConsumerOffset,
+            new Dictionary<string, object>
+            {
+                ["group"] = "legacy-group",
+                ["topic"] = "orders"
+            },
+            body,
+            cancellationToken);
+        Assert.True(reset.IsHandled);
+        Assert.True(reset.SuppressResponse);
+
+        await consumer.UnsubscribeAsync("orders", cancellationToken);
+        await consumer.SubscribeAsync("orders", cancellationToken: cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
+
+        Assert.Equal(
+            0,
+            remoting.PullOffsets.First(static pull => pull.Topic == "orders").Offset);
+    }
+
+    [Fact]
+    public async Task StartAsync_UsesReadableQueueWithSlaveAddressWhenRouteContainsInvalidEntries()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var route = new TopicRouteData
+        {
+            QueueDatas =
+            [
+                new QueueData
+                {
+                    BrokerName = "write-only",
+                    ReadQueueNums = 1,
+                    WriteQueueNums = 1,
+                    Perm = 2
+                },
+                new QueueData
+                {
+                    BrokerName = "missing-broker",
+                    ReadQueueNums = 1,
+                    WriteQueueNums = 1,
+                    Perm = 6
+                },
+                new QueueData
+                {
+                    BrokerName = "no-address",
+                    ReadQueueNums = 1,
+                    WriteQueueNums = 1,
+                    Perm = 6
+                },
+                new QueueData
+                {
+                    BrokerName = "slave-only",
+                    ReadQueueNums = 1,
+                    WriteQueueNums = 1,
+                    Perm = 6
+                }
+            ],
+            BrokerDatas =
+            [
+                new BrokerData { BrokerName = "no-address" },
+                new BrokerData
+                {
+                    BrokerName = "slave-only",
+                    BrokerAddrs = new ConcurrentDictionary<long, string>(
+                        [new KeyValuePair<long, string>(1, "127.0.0.1:10912")])
+                }
+            ]
+        };
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                It.IsAny<string>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<string, bool, CancellationToken>((topic, _, _) =>
+                Task.FromResult(topic == "orders" ? route : new TopicRouteData()));
+        var remoting = new FakeRemotingClient("127.0.0.1@route-with-invalid-entries");
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            routes.Object,
+            remoting,
+            "route-with-invalid-entries");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
+
+        var membershipRequest = Assert.Single(
+            remoting.Requests,
+            static request => request.Code == RequestCode.GetConsumerListByGroup);
+        Assert.Equal("slave-only", membershipRequest.ExtFields["bname"]);
+        Assert.Equal(
+            1,
+            remoting.PullOffsets.Count(static pull => pull.Topic == "orders"));
+    }
+
+    [Fact]
+    public async Task StopAsync_CompletesWhenBrokerRejectsUnregister()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var remoting = new FakeRemotingClient("127.0.0.1@unregister-rejected")
+        {
+            UnregisterHandler = static (_, _) => Task.FromResult(new RemotingCommand
+            {
+                Code = ResponseCodes.ResError,
+                Remark = "The broker rejected the unregister request."
+            })
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "unregister-rejected");
+
+        await consumer.StartAsync(cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(1, remoting.UnregisterCalls);
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_MapsRetryDelayBeyondBrokerScheduleToLastDelayLevel()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "slow-retry", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@maximum-delay-level")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            RetryDelay = TimeSpan.FromHours(3),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "maximum-delay-level");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        var sendBack = Assert.Single(
+            remoting.Requests,
+            static request => request.Code == RequestCode.ConsumerSendMsgBack);
+        Assert.Equal(18, Convert.ToInt32(sendBack.ExtFields["delayLevel"]));
+    }
+
+    [Fact]
+    public async Task Coordination_RecoversHealthyTopicAfterRouteMembershipAndHeartbeatFailures()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var membershipRequests = 0;
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                It.IsAny<string>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<string, bool, CancellationToken>((topic, _, _) => topic == "invoices"
+                ? Task.FromResult(Route(1))
+                : Task.FromException<TopicRouteData>(
+                    new IOException($"The route for {topic} is temporarily unavailable.")));
+        var remoting = new FakeRemotingClient("127.0.0.1@coordination-recovery")
+        {
+            HeartbeatHandler = static (_, _) => Task.FromResult(new RemotingCommand
+            {
+                Code = ResponseCodes.ResError,
+                Remark = "The heartbeat was rejected."
+            }),
+            ConsumerIdsHandler = (_, _) => Interlocked.Increment(ref membershipRequests) == 1
+                ? Task.FromResult(new RemotingCommand
+                {
+                    Code = ResponseCodes.ResError,
+                    Remark = "The consumer-list request failed."
+                })
+                : Task.FromResult(new RemotingCommand
+                {
+                    Code = ResponseCodes.ResSuccess,
+                    Body = JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        consumerIdList = new[] { "127.0.0.1@coordination-recovery" }
+                    })
+                })
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        options.Subscribe("invoices");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            routes.Object,
+            remoting,
+            "coordination-recovery");
+
+        await consumer.StartAsync(cancellationToken);
+        Assert.DoesNotContain(remoting.PullOffsets, static pull => pull.Topic == "invoices");
+
+        await remoting.NotifyConsumerIdsChangedAsync("legacy-group", cancellationToken);
+        await remoting.WaitForTopicPullsAsync("invoices", 1, cancellationToken);
+
+        Assert.Equal(2, membershipRequests);
+        Assert.Contains(remoting.Requests, static request => request.Code == RequestCode.HeartBeat);
+    }
+
+    [Fact]
+    public async Task PushConsumer_RetriesOffsetInitializationAfterTransientBrokerFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var offsetQueries = 0;
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                It.IsAny<string>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<string, bool, CancellationToken>((topic, _, _) =>
+                Task.FromResult(topic == "orders" ? Route(1) : new TopicRouteData()));
+        var remoting = new FakeRemotingClient("127.0.0.1@offset-initialization-retry")
+        {
+            ConsumerOffsetHandler = (_, _) => Interlocked.Increment(ref offsetQueries) == 1
+                ? Task.FromException<RemotingCommand>(
+                    new IOException("The broker did not respond to the initial offset query."))
+                : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResQueryNotFound })
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            routes.Object,
+            remoting,
+            "offset-initialization-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
+
+        Assert.Equal(2, offsetQueries);
+        Assert.Equal(
+            0,
+            remoting.PullOffsets.First(static pull => pull.Topic == "orders").Offset);
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_RecoversFromOffsetIllegalAndHandlerFailureWhenRetryTopicIsMissing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var orderPulls = 0;
+        var body = CreateMessageRecord("orders", "recoverable", null, 4, 1_004);
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                It.IsAny<string>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<string, bool, CancellationToken>((topic, _, _) =>
+                Task.FromResult(topic == "orders" ? Route(1) : new TopicRouteData()));
+        var remoting = new FakeRemotingClient("127.0.0.1@offset-illegal-recovery")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders")
+                {
+                    return Interlocked.Increment(ref orderPulls) switch
+                    {
+                        1 => PullOffsetIllegal(4),
+                        2 => PullSuccess(body, 5),
+                        _ => await WaitForCanceledPullAsync(token)
+                    };
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            },
+            MaxOffsetHandler = (request, _) => Task.FromResult(
+                Assert.IsType<string>(request.ExtFields["topic"]) == "%RETRY%legacy-group"
+                    ? new RemotingCommand { Code = ResponseCodes.ResTopicNotExist }
+                    : new RemotingCommand
+                    {
+                        Code = ResponseCodes.ResSuccess,
+                        ExtFields = new Dictionary<string, object> { ["offset"] = "17" }
+                    })
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => throw new InvalidOperationException("The application handler failed.")
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            routes.Object,
+            remoting,
+            "offset-illegal-recovery");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update =>
+                   update.Topic == "orders" && update.Offset == 5) ||
+               !remoting.UpdatedOffsets.Any(static update =>
+                   update.Topic == "%RETRY%legacy-group" && update.Offset == 0))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        Assert.Equal(
+            [0L, 4L],
+            remoting.PullOffsets
+                .Where(static pull => pull.Topic == "orders")
+                .Take(2)
+                .Select(static pull => pull.Offset));
+    }
+
+    [Fact]
+    public async Task ConcurrentPushConsumer_RedeliversWhenSendBackFails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var deliveries = 0;
+        var sendBackAttempts = 0;
+        var body = CreateMessageRecord("orders", "send-back-retry", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@send-back-retry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Increment(ref deliveries) <= 2)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            },
+            SendBackHandler = (_, _) => Interlocked.Increment(ref sendBackAttempts) == 1
+                ? Task.FromException<RemotingCommand>(
+                    new IOException("The broker did not accept the retry acknowledgement."))
+                : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess })
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            RetryDelay = TimeSpan.FromMilliseconds(10),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "send-back-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 2, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update =>
+                   update.Topic == "orders" && update.Offset == 1))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        Assert.Equal(2, sendBackAttempts);
+        Assert.Equal(
+            [0L, 0L],
+            remoting.PullOffsets
+                .Where(static pull => pull.Topic == "orders")
+                .Take(2)
+                .Select(static pull => pull.Offset));
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_DeadLettersMessageAndCommitsPastIt()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var delivered = 0;
+        var body = CreateMessageRecord("orders", "dead-letter", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-dead-letter")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(body, 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-dead-letter");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update =>
+                   update.Topic == "orders" && update.Offset == 1))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        var sendBack = Assert.Single(
+            remoting.Requests,
+            static request => request.Code == RequestCode.ConsumerSendMsgBack);
+        Assert.Equal(-1, Convert.ToInt32(sendBack.ExtFields["delayLevel"]));
+    }
+
     [Fact]
     public async Task OrderlyConsumer_UsesBrokerQueueLockBeforePulling()
     {
@@ -2487,6 +3121,23 @@ public sealed class RemotingPushConsumerTests
         }
     };
 
+    private static RemotingCommand PullOffsetIllegal(long nextOffset) => new()
+    {
+        Code = ResponseCodes.ResPullOffsetMoved,
+        ExtFields = new Dictionary<string, object>
+        {
+            ["nextBeginOffset"] = nextOffset.ToString(),
+            ["minOffset"] = "0",
+            ["maxOffset"] = nextOffset.ToString()
+        }
+    };
+
+    private static async Task<RemotingCommand> WaitForCanceledPullAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+    }
+
     private static byte[] CreateMessageRecord(
         string topic,
         string messageId,
@@ -2763,8 +3414,14 @@ public sealed class RemotingPushConsumerTests
         public ConcurrentQueue<(string Topic, long Offset)> UpdatedOffsets { get; } = new();
         public ConcurrentQueue<RemotingCommand> Requests { get; } = new();
         public ConcurrentQueue<RemotingCommand> OnewayRequests { get; } = new();
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? HeartbeatHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? ConsumerIdsHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? ConsumerOffsetHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? LockHandler { get; set; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? MaxOffsetHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? PullHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? SendBackHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? UnregisterHandler { get; init; }
         public bool TrackCommittedOffsets { get; init; }
         public int CanceledPulls;
         public int UnregisterCalls;
@@ -2839,17 +3496,26 @@ public sealed class RemotingPushConsumerTests
             {
                 case RequestCode.HeartBeat:
                     HeartbeatBodies.Enqueue(request.Body!);
-                    return Success();
+                    return HeartbeatHandler is null
+                        ? Success()
+                        : await HeartbeatHandler(request, cancellationToken);
                 case RequestCode.GetConsumerListByGroup:
-                    return Success(JsonSerializer.SerializeToUtf8Bytes(new
-                    {
-                        consumerIdList = Volatile.Read(ref _consumerIds)
-                    }));
+                    return ConsumerIdsHandler is null
+                        ? Success(JsonSerializer.SerializeToUtf8Bytes(new
+                        {
+                            consumerIdList = Volatile.Read(ref _consumerIds)
+                        }))
+                        : await ConsumerIdsHandler(request, cancellationToken);
                 case RequestCode.LockBatchMq:
                     return LockHandler is null
                         ? LockSuccess(request)
                         : await LockHandler(request, cancellationToken);
                 case RequestCode.QueryConsumerOffset:
+                    if (ConsumerOffsetHandler is not null)
+                    {
+                        return await ConsumerOffsetHandler(request, cancellationToken);
+                    }
+
                     if (TrackCommittedOffsets &&
                         _committedOffsets.TryGetValue((
                             Assert.IsType<string>(request.ExtFields["topic"]),
@@ -2862,7 +3528,9 @@ public sealed class RemotingPushConsumerTests
                 case RequestCode.GetMinOffset:
                     return Success(offset: 0);
                 case RequestCode.GetMaxOffset:
-                    return Success(offset: 17);
+                    return MaxOffsetHandler is null
+                        ? Success(offset: 17)
+                        : await MaxOffsetHandler(request, cancellationToken);
                 case RequestCode.SearchOffsetByTimestamp:
                     return Success(offset: 9);
                 case RequestCode.UpdateConsumerOffset:
@@ -2906,9 +3574,15 @@ public sealed class RemotingPushConsumerTests
                         _pullCanceled.TrySetResult();
                         throw;
                     }
+                case RequestCode.ConsumerSendMsgBack:
+                    return SendBackHandler is null
+                        ? Success()
+                        : await SendBackHandler(request, cancellationToken);
                 case RequestCode.UnregisterClient:
                     Interlocked.Increment(ref UnregisterCalls);
-                    return Success();
+                    return UnregisterHandler is null
+                        ? Success()
+                        : await UnregisterHandler(request, cancellationToken);
                 default:
                     return Success();
             }

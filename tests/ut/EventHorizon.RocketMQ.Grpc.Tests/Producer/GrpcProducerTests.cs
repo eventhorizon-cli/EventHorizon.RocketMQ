@@ -154,6 +154,80 @@ public sealed class GrpcProducerTests
     }
 
     [Fact]
+    public async Task SendAsync_ConcurrentNewTopicsKeepEveryTopicInTelemetrySettings()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var firstSettingsRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSettingsRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settingsUpdates = new ConcurrentQueue<Proto.Settings>();
+        var serverSettingsReads = 0;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new Mock<IGrpcTelemetrySession>(MockBehavior.Strict);
+        session
+            .SetupGet(value => value.ServerSettings)
+            .Returns(() =>
+            {
+                if (Interlocked.Increment(ref serverSettingsReads) == 1)
+                {
+                    firstSettingsRead.TrySetResult();
+                    releaseFirstSettingsRead.Task.GetAwaiter().GetResult();
+                }
+
+                return null;
+            });
+        session.SetupGet(value => value.Completion).Returns(completion.Task);
+        session
+            .Setup(value => value.WriteSettingsAsync(
+                It.IsAny<Proto.Settings>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<Proto.Settings, CancellationToken>((settings, _) => settingsUpdates.Enqueue(settings.Clone()))
+            .Returns(Task.CompletedTask);
+        session
+            .Setup(value => value.WriteCommandAsync(
+                It.IsAny<Proto.TelemetryCommand>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        session
+            .Setup(value => value.DisposeAsync())
+            .Callback(() => completion.TrySetResult())
+            .Returns(ValueTask.CompletedTask);
+        var client = new FakeGrpcClient
+        {
+            OpenTelemetryHandler = _ => Task.FromResult(session.Object)
+        };
+        var options = new GrpcProducerOptions
+        {
+            RetryTimesWhenSendFailed = 0,
+            TransactionChecker = static (_, _) => ValueTask.FromResult(TransactionResolution.Unknown)
+        };
+        await using var producer = CreateProducer(client, options);
+        await producer.StartAsync(cancellationToken);
+
+        var firstSend = Task.Run(async () => await producer.SendAsync(
+            new Message("alpha", [1]), cancellationToken).ConfigureAwait(false));
+        await firstSettingsRead.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        try
+        {
+            await producer.SendAsync(new Message("beta", [2]), cancellationToken);
+        }
+        finally
+        {
+            releaseFirstSettingsRead.TrySetResult();
+        }
+
+        await firstSend.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        var updates = settingsUpdates.ToArray();
+        Assert.Equal(2, updates.Length);
+        Assert.All(
+            updates,
+            settings => Assert.Equal(
+                ["alpha", "beta"],
+                settings.Publishing.Topics.Select(static topic => topic.Name).OrderBy(static topic => topic)));
+    }
+
+    [Fact]
     public async Task SendAsync_RetryExcludesEveryQueueOnFailedBroker()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

@@ -673,6 +673,75 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
+    public async Task StopAsync_CancelsNonCooperativeFifoHandlerAndIgnoresLateSuccess()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiveCalls = 0;
+        var client = new FakeGrpcClient
+        {
+            QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
+            ReceiveHandler = async (_, _, receiverCancellationToken) =>
+            {
+                if (Interlocked.Increment(ref receiveCalls) == 1)
+                {
+                    return
+                    [
+                        new Proto.ReceiveMessageResponse { Message = ProtoMessage("first", "account-7") },
+                        ReceiveStatus(Proto.Code.Ok)
+                    ];
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, receiverCancellationToken);
+                return [];
+            }
+        };
+        var consumer = CreateConsumer(
+            client,
+            async (_, handlerCancellationToken) =>
+            {
+                handlerStarted.TrySetResult();
+                await releaseHandler.Task.ConfigureAwait(false);
+                using var registration = handlerCancellationToken.Register(static () => { });
+                return ConsumeResult.Success;
+            },
+            options => options.MaxConcurrency = 1,
+            CreateRouteService(queue));
+        Task? worker = null;
+
+        try
+        {
+            await consumer.StartAsync(cancellationToken);
+            await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            var workersField = typeof(GrpcPushConsumer).GetField("_workers", BindingFlags.Instance | BindingFlags.NonPublic);
+            worker = Assert.Single(Assert.IsType<Task[]>(workersField?.GetValue(consumer)));
+
+            using var stopCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => consumer.StopAsync(stopCancellation.Token).AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+
+            await consumer.StartAsync(cancellationToken);
+            releaseHandler.TrySetResult();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+
+            Assert.Empty(client.AckRequests);
+            Assert.Empty(client.ChangeInvisibleRequests);
+            Assert.Empty(client.DeadLetterRequests);
+
+            await consumer.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            releaseHandler.TrySetResult();
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentMessageTimeout_CancelsHandlerRequestsRetryAndIgnoresLateSuccess()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

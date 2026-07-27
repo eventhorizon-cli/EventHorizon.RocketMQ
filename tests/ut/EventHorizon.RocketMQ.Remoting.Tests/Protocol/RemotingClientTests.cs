@@ -687,6 +687,216 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
+    public async Task UnsupportedTransactionStateCheck_IsIgnoredWithoutWritingResponse()
+    {
+        const int BrokerOpaque = 7006;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateBrokerRequest(RequestCode.CheckTransactionState, BrokerOpaque),
+                server.CancellationToken);
+
+            using var noResponseCts = CancellationTokenSource.CreateLinkedTokenSource(server.CancellationToken);
+            noResponseCts.CancelAfter(TimeSpan.FromMilliseconds(250));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                connection.ReadAsync(noResponseCts.Token));
+
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedOnewayBrokerRequest_IsIgnoredWithoutWritingResponse()
+    {
+        const int UnknownRequestCode = 1206;
+        const int BrokerOpaque = 7007;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateBrokerRequest(UnknownRequestCode, BrokerOpaque, oneway: true),
+                server.CancellationToken);
+
+            using var noResponseCts = CancellationTokenSource.CreateLinkedTokenSource(server.CancellationToken);
+            noResponseCts.CancelAfter(TimeSpan.FromMilliseconds(250));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                connection.ReadAsync(noResponseCts.Token));
+
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task DisposedBrokerRequestHandler_ReturnsNotSupportedResponse()
+    {
+        const int BrokerRequestCode = 1207;
+        const int BrokerOpaque = 7008;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+        var registration = client.RegisterRequestHandler(
+            BrokerRequestCode,
+            static _ => ValueTask.FromResult(RemotingRequestResult.NoResponse));
+        registration.Dispose();
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                server.CancellationToken);
+
+            var unsupportedResponse = await connection.ReadAsync(server.CancellationToken);
+            Assert.Equal(ResponseCodes.ResRequestCodeNotSupported, unsupportedResponse.Code);
+            Assert.Equal(BrokerOpaque, unsupportedResponse.Opaque);
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task MultipleBrokerRequestHandlers_UseFirstHandledResponse()
+    {
+        const int BrokerRequestCode = 1208;
+        const int BrokerOpaque = 7009;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+        using var firstRegistration = client.RegisterRequestHandler(
+            BrokerRequestCode,
+            static _ => ValueTask.FromResult(RemotingRequestResult.NotHandled));
+        using var secondRegistration = client.RegisterRequestHandler(
+            BrokerRequestCode,
+            static _ => ValueTask.FromResult(RemotingRequestResult.Respond(new RemotingCommand
+            {
+                Code = ResponseCodes.ResSuccess,
+                Body = Encoding.UTF8.GetBytes("first-handler-response")
+            })));
+        using var thirdRegistration = client.RegisterRequestHandler(
+            BrokerRequestCode,
+            static _ => ValueTask.FromResult(RemotingRequestResult.Respond(new RemotingCommand
+            {
+                Code = ResponseCodes.ResError,
+                Body = Encoding.UTF8.GetBytes("second-handler-response")
+            })));
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                server.CancellationToken);
+
+            var handlerResponse = await connection.ReadAsync(server.CancellationToken);
+            Assert.Equal(ResponseCodes.ResSuccess, handlerResponse.Code);
+            Assert.Equal(BrokerOpaque, handlerResponse.Opaque);
+            Assert.Equal("first-handler-response", Encoding.UTF8.GetString(handlerResponse.Body!));
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task TransactionStateHandlerWithoutResponse_SuppressesResponse()
+    {
+        const int BrokerOpaque = 7010;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var handlerInvoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+        using var registration = client.RegisterRequestHandler(
+            RequestCode.CheckTransactionState,
+            _ =>
+            {
+                handlerInvoked.TrySetResult();
+                return ValueTask.FromResult(RemotingRequestResult.NoResponse);
+            });
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateBrokerRequest(RequestCode.CheckTransactionState, BrokerOpaque),
+                server.CancellationToken);
+            await handlerInvoked.Task.WaitAsync(OperationTimeout, server.CancellationToken);
+
+            using var noResponseCts = CancellationTokenSource.CreateLinkedTokenSource(server.CancellationToken);
+            noResponseCts.CancelAfter(TimeSpan.FromMilliseconds(250));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                connection.ReadAsync(noResponseCts.Token));
+
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task SyncHandlerWithoutResponse_ReturnsErrorInsteadOfTimingOut()
     {
         const int BrokerRequestCode = 1205;
@@ -769,6 +979,63 @@ public sealed class RemotingClientTests
                 CreateBrokerRequest(BrokerRequestCode, opaque: 7003, oneway: true),
                 server.CancellationToken);
             await handlerEntered.Task.WaitAsync(OperationTimeout, server.CancellationToken);
+            await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task FullInboundRequestQueue_ReturnsSystemBusyResponse()
+    {
+        const int BrokerRequestCode = 1209;
+        const int InitialBrokerOpaque = 8000;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var workersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerCount = 0;
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+        using var registration = client.RegisterRequestHandler(BrokerRequestCode, async context =>
+        {
+            if (Interlocked.Increment(ref handlerCount) == 2)
+            {
+                workersStarted.TrySetResult();
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken);
+            return RemotingRequestResult.NoResponse;
+        });
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            CreateRequest("open-connection"),
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal("normal-response", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            var connection = new CommandConnection(socket.GetStream());
+            var request = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteManyAsync(
+                [
+                    CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque),
+                    CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + 1)
+                ],
+                server.CancellationToken);
+            await workersStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
+
+            await connection.WriteManyAsync(
+                Enumerable.Range(2, 129)
+                    .Select(index => CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + index)),
+                server.CancellationToken);
+
+            var busyResponse = await connection.ReadAsync(server.CancellationToken);
+            Assert.Equal(ResponseCodes.ResSystemBusy, busyResponse.Code);
+            Assert.Equal(InitialBrokerOpaque + 130, busyResponse.Opaque);
+            Assert.True(busyResponse.IsResponseType());
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
         }
     }

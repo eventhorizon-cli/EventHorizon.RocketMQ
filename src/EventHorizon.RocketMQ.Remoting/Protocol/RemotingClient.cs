@@ -130,6 +130,12 @@ internal class RemotingClient : IRemotingClient
                 {
                     await HandleConnectionFailureAsync(endPoint, connection, exception, pending)
                         .ConfigureAwait(false);
+                    // A matching response can arrive before the concurrent receive failure cancels this flush.
+                    if (pending.Completion.Task.IsCompletedSuccessfully)
+                    {
+                        return await pending.Completion.Task.ConfigureAwait(false);
+                    }
+
                     throw;
                 }
 

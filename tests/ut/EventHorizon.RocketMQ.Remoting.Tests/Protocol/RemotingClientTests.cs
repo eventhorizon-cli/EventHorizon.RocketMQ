@@ -441,6 +441,44 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
+    public async Task InvokeAsync_ReturnsResponseReceivedBeforePeerClosesDuringSend()
+    {
+        const int BodyLength = 8 * 1024 * 1024;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackServer(cancellationToken);
+        var request = CreateRequest("response-before-close");
+        request.Body = GC.AllocateUninitializedArray<byte>(BodyLength);
+        var serverTask = ServeAsync();
+        await using var client = CreateClient();
+
+        var response = await client.InvokeAsync(
+            server.EndPoint,
+            request,
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal(request.Opaque, response.Opaque);
+        Assert.Equal("response-before-close", Encoding.UTF8.GetString(response.Body!));
+        await serverTask;
+
+        async Task ServeAsync()
+        {
+            using var socket = await server.AcceptAsync();
+            socket.ReceiveBufferSize = 1024;
+            var stream = socket.GetStream();
+            var prefix = new byte[1];
+            var received = await stream.ReadAsync(prefix, server.CancellationToken);
+            Assert.Equal(1, received);
+
+            var connection = new CommandConnection(stream);
+            await connection.WriteAsync(
+                CreateResponse(request, "response-before-close"),
+                server.CancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(100), server.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task RemoteDisconnect_FailsPendingRequestAndNextRequestReconnects()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

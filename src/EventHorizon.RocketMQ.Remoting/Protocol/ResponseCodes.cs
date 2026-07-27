@@ -14,6 +14,7 @@
 // limitations under the License.
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal static class ResponseCodes
 {
     public const int ResSuccess = 0;

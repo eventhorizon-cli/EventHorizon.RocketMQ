@@ -21,6 +21,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal class RemotingClient : IRemotingClient
 {
     private const int InboundRequestCapacity = 128;

@@ -23,7 +23,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../../src/EventHorizon.RocketMQ.Remoting/EventHorizon.RocketMQ.Remoting.csproj" />
+        <ProjectReference Include="../../../src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj" />
         <ProjectReference Include="../EventHorizon.RocketMQ.IntegrationTestInfrastructure/EventHorizon.RocketMQ.IntegrationTestInfrastructure.csproj" />
     </ItemGroup>
 

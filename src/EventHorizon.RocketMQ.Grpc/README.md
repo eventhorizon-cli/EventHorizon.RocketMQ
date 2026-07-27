@@ -4,7 +4,7 @@
 [简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
 
 `EventHorizon.RocketMQ.Grpc` is the repository's unofficial Apache RocketMQ 5 protobuf/gRPC project and
-NuGet package for .NET 8 or later. It connects only to a RocketMQ Proxy through `Endpoint`; it does not
+NuGet package targeting `net8.0` and `net10.0`. It connects only to a RocketMQ Proxy through `Endpoint`; it does not
 connect directly to a NameServer or Broker.
 
 Client behavior is covered by high-coverage unit tests and Docker-backed integration tests against real
@@ -411,7 +411,7 @@ docker compose -f test-environments/rocketmq/compose.yaml down -v --remove-orpha
 The isolated Docker-backed gRPC integration tests can be run with:
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+dotnet test tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
 ```
 
 ## License

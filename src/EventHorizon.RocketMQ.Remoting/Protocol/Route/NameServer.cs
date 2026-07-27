@@ -23,6 +23,7 @@ using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol.Route;
+
 internal sealed class NameServer : INameServer
 {
     private readonly IRemotingClient _remotingClient;

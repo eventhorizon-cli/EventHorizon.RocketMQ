@@ -85,15 +85,15 @@ You are an AI coding assistant for this repository.
   `RemotingProducerOptions`, `RemotingSendResult`, `RemotingSendStatus`, `RemotingMessageQueue`, and
   `AddRemotingProducer`. Do not introduce a transport-independent Producer interface, result, status, queue,
   options type, or registration method.
-- `tests/EventHorizon.RocketMQ.Grpc.Tests` and `tests/EventHorizon.RocketMQ.Remoting.Tests` contain isolated xUnit
+- `tests/ut/EventHorizon.RocketMQ.Grpc.Tests` and `tests/ut/EventHorizon.RocketMQ.Remoting.Tests` contain isolated xUnit
   unit tests for their matching production Project.
-- `tests/EventHorizon.RocketMQ.Compatibility.Tests` references both protocol Projects. It verifies both public APIs,
+- `tests/ut/EventHorizon.RocketMQ.Compatibility.Tests` references both protocol Projects. It verifies both public APIs,
   distinct protocol namespaces, and the ability to consume both protocol assemblies together.
-- `tests/EventHorizon.RocketMQ.Grpc.IntegrationTests` and `tests/EventHorizon.RocketMQ.Remoting.IntegrationTests` contain
+- `tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests` and `tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests` contain
   protocol-isolated Docker-backed integration tests.
-- `tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure` contains reusable Testcontainers infrastructure and is
+- `tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure` contains reusable Testcontainers infrastructure and is
   not a test assembly. It must not reference a production protocol Project.
-- `tests/EventHorizon.RocketMQ.Benchmarks` contains BenchmarkDotNet benchmarks.
+- `tests/benchmarks/EventHorizon.RocketMQ.Benchmarks` contains BenchmarkDotNet benchmarks.
 - `test-environments` groups Docker Compose environments for manual local testing. Each environment includes a local
   RocketMQ Dashboard at `http://localhost:8082`:
   - `rocketmq` is the general single-Broker stack for standard Remoting and gRPC exploration.
@@ -142,9 +142,9 @@ These rules apply to C# files under both `src` and `tests`.
 
 ### General guidelines
 
-- Use the .NET SDK pinned by `global.json` (currently 8.0.419). Do not change or bypass the pinned SDK as an
+- Use the .NET SDK pinned by `global.json` (currently 10.0.100). Do not change or bypass the pinned SDK as an
   incidental part of another task.
-- Target .NET 8 and use only language features supported by C# 12.
+- Target .NET 8 and .NET 10, and use only language features supported by C# 12.
 - Prefer C# and .NET best practices when they do not conflict with `.editorconfig` or nearby code.
 - Keep nullable-reference-type annotations correct and do not suppress warnings without a concrete reason.
 - Propagate `CancellationToken` through asynchronous operations where the API provides one.
@@ -231,9 +231,9 @@ constructors for straightforward dependency or state initialization.
   another behavior that would be substantially less clear with Moq.
 - Unit tests must be deterministic and must not require an external RocketMQ installation or network access.
 - Changes to matching foundational models require both protocol unit-test Projects and
-  `EventHorizon.RocketMQ.Compatibility.Tests` to pass.
+  `tests/ut/EventHorizon.RocketMQ.Compatibility.Tests` to pass.
 - Put Docker-backed behavior in the matching protocol integration-test project and reuse
-  `EventHorizon.RocketMQ.IntegrationTestInfrastructure` for Testcontainers infrastructure.
+  `tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure` for Testcontainers infrastructure.
 - Add or update benchmarks only when the task affects a performance-sensitive path or explicitly requires a
   benchmark.
 
@@ -243,12 +243,12 @@ After modifying C# code, run formatting and the relevant tests. From the reposit
 are:
 
 ```bash
-dotnet format EventHorizon.RocketMQ.sln
-dotnet restore EventHorizon.RocketMQ.sln
-dotnet build EventHorizon.RocketMQ.sln --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
+dotnet format EventHorizon.RocketMQ.slnx
+dotnet restore EventHorizon.RocketMQ.slnx
+dotnet build EventHorizon.RocketMQ.slnx --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
 ```
 
 Rules:
@@ -259,8 +259,8 @@ Rules:
   or transport interoperability changes and Docker is available:
 
 ```bash
-dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
 ```
 
 - Validate the affected test environment with its Compose file. For example:

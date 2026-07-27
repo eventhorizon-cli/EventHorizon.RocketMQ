@@ -18,6 +18,7 @@ using System.Threading;
 using Newtonsoft.Json;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal class RemotingCommand
 {
     private const int ResponseType = 1;

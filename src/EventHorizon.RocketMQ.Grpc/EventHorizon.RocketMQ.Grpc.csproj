@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <LangVersion>12.0</LangVersion>
@@ -46,8 +46,8 @@
                   ProtoRoot="Protocol/Protos"
                   GrpcServices="Client"
                   Access="Internal" />
-        <None Update="README.md" Pack="true" PackagePath="/" />
-        <None Update="README.zh-CN.md" Pack="true" PackagePath="/" />
+        <Content Include="README.md" Pack="true" PackagePath="/" />
+        <Content Include="README.zh-CN.md" Pack="true" PackagePath="/" />
         <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     </ItemGroup>
 

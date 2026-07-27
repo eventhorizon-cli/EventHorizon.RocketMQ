@@ -41,9 +41,9 @@ reference it and keep their assertions protocol-specific.
 Protocol behavior has matching unit-test projects, while one compatibility project references both
 protocol Projects:
 
-- [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests)
-- [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests)
-- [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests)
+- [`tests/ut/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Grpc.Tests)
+- [`tests/ut/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Remoting.Tests)
+- [`tests/ut/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Compatibility.Tests)
 
 They validate isolated behavior such as serialization, route caching, client lifecycle, handler
 lifetimes, batch-prefix acknowledgement, and public contracts without depending on a Broker. The compatibility tests compile
@@ -52,9 +52,16 @@ consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
 that would be less clear with a mock.
 
+The publishable gRPC and Remoting packages target `net8.0` and `net10.0`. The three unit and compatibility
+test projects run on both targets. Docker-backed integration tests remain on `net8.0` so the focused four-job
+integration matrix does not double its container startup cost; the solution build still compiles both package targets.
+
+BenchmarkDotNet measurements remain separate from the test runner in
+[`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks).
+
 ### Integration tests and Testcontainers
 
-[`RocketMQContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
+[`RocketMQContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
 creates an isolated Docker network, starts an Apache RocketMQ 5.5.0 NameServer and Broker, then
 starts a cluster-mode Proxy after the Broker registers. A lazy xUnit v3 assembly-fixture registry
 owns one baseline fixture per integration-test assembly, so independent test classes can share the
@@ -72,15 +79,15 @@ semantics.
 The fixture obtains host ports dynamically, so parallel or repeated test runs are not tied to the
 manual Compose ports. The protocol-specific test projects are:
 
-- [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests)
-- [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests)
+- [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests)
+- [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests)
 
 The multi-Broker fixtures complement the baseline fixture:
 
-- [`RocketMQMultiBrokerRemotingContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerRemotingContainerFixture.cs)
+- [`RocketMQMultiBrokerRemotingContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerRemotingContainerFixture.cs)
   starts a NameServer and three host-reachable master Brokers. The Remoting test requires a complete route for
   `broker-a`, `broker-b`, and `broker-c`, then sends to an explicit queue on each Broker.
-- [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
+- [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
   starts a NameServer, three master Brokers, and a cluster-mode Proxy on an isolated Docker network. The gRPC test
   sends through the Proxy and confirms that every Broker has stored messages.
 
@@ -91,8 +98,8 @@ Run the relevant project when a change affects live Proxy, Broker, NameServer, w
 interoperability behavior:
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
 ```
 
 Docker must be available to run these tests. The manual Compose stack is not a prerequisite for
@@ -100,9 +107,10 @@ them.
 
 ### CI coverage
 
-GitHub Actions runs the Docker-backed gRPC and Remoting integration-test projects in four parallel
-`ubuntu-latest` matrix jobs after formatting, build, and unit-test validation complete: one
-single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
+GitHub Actions runs formatting and a full build in one job while three protocol/compatibility unit-test jobs run
+in parallel. Each unit-test job restores, builds, tests both target frameworks, and uploads its own coverage report.
+After both stages complete, Docker-backed gRPC and Remoting integration tests run in four parallel `ubuntu-latest`
+matrix jobs: one single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
 selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores
 and builds only its protocol-specific integration-test dependency graph, has its own timeout budget,
 and reuses the repository's NuGet package cache. Within a single-Broker job, isolated test classes

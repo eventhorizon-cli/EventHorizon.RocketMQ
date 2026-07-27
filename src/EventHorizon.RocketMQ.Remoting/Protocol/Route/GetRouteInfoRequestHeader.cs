@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol.Route;
+
 internal sealed class GetRouteInfoRequestHeader : CommandCustomHeader
 {
     public string Topic { get; set; } = string.Empty;

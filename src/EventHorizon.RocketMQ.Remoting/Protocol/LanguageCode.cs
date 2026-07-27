@@ -14,6 +14,7 @@
 // limitations under the License.
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal enum LanguageCode : sbyte
 {
     Java = 0,

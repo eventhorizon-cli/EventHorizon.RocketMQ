@@ -19,6 +19,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol.Route;
+
 internal interface INameServer
 {
     Task<TopicRouteData> GetTopicRouteInfoAsync(

@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Grpc.Protocol;
-using Google.Protobuf;
 using Proto = Apache.Rocketmq.V2;
 
 namespace EventHorizon.RocketMQ.Grpc.Consumer;

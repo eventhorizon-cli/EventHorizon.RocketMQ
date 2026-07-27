@@ -17,9 +17,6 @@ using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Admin;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Samples.Remoting.Admin;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);

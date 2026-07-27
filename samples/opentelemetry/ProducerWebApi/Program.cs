@@ -19,8 +19,6 @@ using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;

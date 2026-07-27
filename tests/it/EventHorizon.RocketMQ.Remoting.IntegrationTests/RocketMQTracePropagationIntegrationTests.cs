@@ -16,7 +16,6 @@
 using System.Diagnostics;
 using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
-using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Producer;

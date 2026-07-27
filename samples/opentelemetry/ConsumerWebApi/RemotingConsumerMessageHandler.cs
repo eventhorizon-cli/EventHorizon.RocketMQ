@@ -16,7 +16,6 @@
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using Microsoft.Extensions.Logging;
 
 namespace EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi;
 

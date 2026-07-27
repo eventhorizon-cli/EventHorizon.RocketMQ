@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Grpc.Consumer;
 using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Grpc.Consumer.Simple;

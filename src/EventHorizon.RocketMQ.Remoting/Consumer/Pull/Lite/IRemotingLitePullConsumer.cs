@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Consumer;
-
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 
 /// <summary>

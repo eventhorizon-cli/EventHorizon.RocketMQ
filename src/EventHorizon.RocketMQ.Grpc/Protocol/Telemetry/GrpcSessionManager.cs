@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
-using EventHorizon.RocketMQ.Grpc.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;

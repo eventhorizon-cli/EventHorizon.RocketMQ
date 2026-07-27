@@ -15,7 +15,6 @@
 
 using System.Diagnostics;
 using System.Globalization;
-using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;

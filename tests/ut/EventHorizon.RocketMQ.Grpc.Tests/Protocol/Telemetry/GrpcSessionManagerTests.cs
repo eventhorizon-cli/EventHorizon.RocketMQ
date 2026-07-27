@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System.IO;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;

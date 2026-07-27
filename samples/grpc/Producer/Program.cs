@@ -17,9 +17,6 @@ using System.Text;
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Samples.Grpc.Producer;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 
 // A registration name identifies an independent client registration and doubles as its keyed-service key;

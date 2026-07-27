@@ -15,8 +15,6 @@
 
 using System.Collections.Concurrent;
 using System.Threading.Channels;
-using EventHorizon.RocketMQ.Grpc.Protocol;
-using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Grpc.Core;
 using Moq;

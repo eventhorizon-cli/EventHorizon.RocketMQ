@@ -17,9 +17,6 @@ using System.Text;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Samples.Remoting.Producer;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 
 // This registration name is also the .NET keyed-service key for the explicit audit route.

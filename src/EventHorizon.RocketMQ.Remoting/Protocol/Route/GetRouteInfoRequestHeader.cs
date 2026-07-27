@@ -13,9 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System.Collections.Generic;
-using EventHorizon.RocketMQ.Remoting.Protocol;
-
 namespace EventHorizon.RocketMQ.Remoting.Protocol.Route;
 
 internal sealed class GetRouteInfoRequestHeader : CommandCustomHeader

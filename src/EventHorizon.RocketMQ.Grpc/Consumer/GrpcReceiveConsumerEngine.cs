@@ -15,7 +15,6 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
 using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using EventHorizon.RocketMQ.Grpc.Protocol;

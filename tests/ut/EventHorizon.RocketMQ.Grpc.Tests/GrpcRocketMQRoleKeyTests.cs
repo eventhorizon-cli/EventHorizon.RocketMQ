@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Grpc;
 using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.Tests;

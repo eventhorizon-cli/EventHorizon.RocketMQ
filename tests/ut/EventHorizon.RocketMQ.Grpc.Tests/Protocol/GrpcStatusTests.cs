@@ -15,8 +15,6 @@
 
 using EventHorizon.RocketMQ.Grpc.Exceptions;
 using EventHorizon.RocketMQ.Grpc.Protocol;
-using EventHorizon.RocketMQ.Grpc.Protocol.Route;
-using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Xunit;
 using Proto = Apache.Rocketmq.V2;
 

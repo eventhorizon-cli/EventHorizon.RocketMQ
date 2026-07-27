@@ -22,8 +22,6 @@ using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;

@@ -19,7 +19,6 @@ using System.Text;
 using System.Threading.Channels;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
 using EventHorizon.RocketMQ.Grpc.Instrumentation;
-using EventHorizon.RocketMQ.Grpc.Producer;
 using EventHorizon.RocketMQ.Grpc.Producer.Transactions;
 using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;

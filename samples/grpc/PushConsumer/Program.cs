@@ -15,7 +15,6 @@
 
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Consumer;
-using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Samples.Grpc.PushConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;

@@ -16,8 +16,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Protocol;
-using EventHorizon.RocketMQ.Grpc.Protocol.Route;
-using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Grpc.Core;
 using Microsoft.Extensions.Options;
 using Xunit;

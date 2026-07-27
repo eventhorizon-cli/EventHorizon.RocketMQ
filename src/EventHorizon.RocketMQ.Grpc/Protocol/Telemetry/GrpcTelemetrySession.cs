@@ -19,6 +19,12 @@ using Proto = Apache.Rocketmq.V2;
 
 namespace EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 
+/// <summary>
+/// Maintains one RocketMQ Telemetry RPC control stream for a gRPC endpoint.
+/// </summary>
+/// <remarks>
+/// This protocol session synchronizes client settings and transports server commands; it is not OpenTelemetry instrumentation.
+/// </remarks>
 internal sealed class GrpcTelemetrySession : IGrpcTelemetrySession
 {
     private static readonly Task _never = new TaskCompletionSource(

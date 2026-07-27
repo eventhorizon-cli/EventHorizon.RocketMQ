@@ -468,6 +468,63 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
+    public async Task LitePushConsumer_RetriesStopAfterSubscriptionManagerCancellation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var endpoint = new Uri("http://127.0.0.1:8081");
+        var subscriptionSynchronizationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSubscriptionSynchronization = new TaskCompletionSource<Proto.SyncLiteSubscriptionResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var synchronizationCalls = 0;
+        var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
+        client
+            .Setup(value => value.SyncLiteSubscriptionAsync(
+                endpoint,
+                It.IsAny<Proto.SyncLiteSubscriptionRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                if (Interlocked.Increment(ref synchronizationCalls) == 2)
+                {
+                    subscriptionSynchronizationStarted.TrySetResult();
+                    return releaseSubscriptionSynchronization.Task;
+                }
+
+                return Task.FromResult(new Proto.SyncLiteSubscriptionResponse { Status = OkStatus() });
+            });
+        var manager = CreateManager(client.Object, CreateRouteService(endpoint));
+        var dispatcher = new Mock<IGrpcPushConsumer>(MockBehavior.Strict);
+        dispatcher.Setup(value => value.StartAsync(cancellationToken)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.StopAsync(CancellationToken.None)).Returns(ValueTask.CompletedTask);
+        dispatcher.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var consumer = new GrpcLitePushConsumer(dispatcher.Object, manager);
+
+        try
+        {
+            await consumer.StartAsync(cancellationToken);
+            var subscribe = consumer.SubscribeLiteAsync("alpha", cancellationToken: cancellationToken);
+            await subscriptionSynchronizationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+            using var stopCancellation = new CancellationTokenSource();
+            var canceledStop = consumer.StopAsync(stopCancellation.Token).AsTask();
+            Assert.False(canceledStop.IsCompleted);
+            stopCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledStop);
+
+            releaseSubscriptionSynchronization.TrySetResult(new Proto.SyncLiteSubscriptionResponse { Status = OkStatus() });
+            await subscribe.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await consumer.StopAsync(CancellationToken.None);
+
+            dispatcher.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
+        }
+        finally
+        {
+            releaseSubscriptionSynchronization.TrySetResult(new Proto.SyncLiteSubscriptionResponse { Status = OkStatus() });
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task LitePushConsumer_StopsTheDispatcherWhenSubscriptionStartupFails()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

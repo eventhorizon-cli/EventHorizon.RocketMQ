@@ -79,6 +79,123 @@ public sealed class RemotingRequestReplyTests
     }
 
     [Fact]
+    public async Task RequestAsync_RetriesRetryableHeartbeatBeforeSending()
+    {
+        var remoting = new RequestReplyRemotingClient();
+        remoting.HeartbeatResponses.Enqueue(new RemotingCommand
+        {
+            Code = ResponseCodes.ResSystemBusy,
+            Remark = "broker is busy"
+        });
+        var producer = CreateProducer(remoting, retryTimesWhenSendFailed: 1);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            var replyTask = producer.RequestAsync(
+                new Message("orders", "request"u8.ToArray()),
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken);
+            var sentRequest = await remoting.WaitForSendMessageAsync(TestContext.Current.CancellationToken);
+            var invocations = remoting.Invocations.ToArray();
+
+            Assert.Collection(
+                invocations,
+                invocation => Assert.Equal(RequestCode.HeartBeat, invocation.Request.Code),
+                invocation => Assert.Equal(RequestCode.HeartBeat, invocation.Request.Code),
+                invocation => Assert.Equal(RequestCode.SendMessage, invocation.Request.Code));
+
+            var properties = MessagePropertyCodec.Deserialize(
+                Assert.IsType<string>(sentRequest.ExtFields["properties"]));
+            var correlationId = Assert.IsType<string>(properties["CORRELATION_ID"]);
+            await remoting.DispatchInboundAsync(CreateReplyCallback(correlationId, "reply"u8.ToArray()));
+
+            var reply = await replyTask;
+            Assert.Equal("reply"u8.ToArray(), reply.Body);
+        }
+        finally
+        {
+            await producer.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task RequestAsync_UsesExplicitWritableQueue()
+    {
+        var remoting = new RequestReplyRemotingClient();
+        var producer = CreateProducer(remoting);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            var replyTask = producer.RequestAsync(
+                new Message("orders", "request"u8.ToArray()),
+                new RemotingMessageQueue("orders", "broker-a", 0),
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken);
+            var sentRequest = await remoting.WaitForSendMessageAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal("broker-a", sentRequest.ExtFields["bname"]);
+            Assert.Equal(0, sentRequest.ExtFields["queueId"]);
+            var properties = MessagePropertyCodec.Deserialize(
+                Assert.IsType<string>(sentRequest.ExtFields["properties"]));
+            await remoting.DispatchInboundAsync(CreateReplyCallback(
+                Assert.IsType<string>(properties["CORRELATION_ID"]),
+                "reply"u8.ToArray()));
+
+            var reply = await replyTask;
+            Assert.Equal("reply"u8.ToArray(), reply.Body);
+        }
+        finally
+        {
+            await producer.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task RequestAsync_UsesSelectorAgainstCurrentWritableQueues()
+    {
+        var remoting = new RequestReplyRemotingClient();
+        var producer = CreateProducer(remoting);
+        var message = new Message("orders", "request"u8.ToArray());
+        var selectorArgument = new object();
+        IReadOnlyList<RemotingMessageQueue>? availableQueues = null;
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            var replyTask = producer.RequestAsync(
+                message,
+                (queues, selectedMessage, argument) =>
+                {
+                    availableQueues = queues;
+                    Assert.Same(message, selectedMessage);
+                    Assert.Same(selectorArgument, argument);
+                    return Assert.Single(queues);
+                },
+                selectorArgument,
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken);
+            var sentRequest = await remoting.WaitForSendMessageAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotNull(availableQueues);
+            Assert.Equal("orders", Assert.Single(availableQueues).Topic);
+            var properties = MessagePropertyCodec.Deserialize(
+                Assert.IsType<string>(sentRequest.ExtFields["properties"]));
+            await remoting.DispatchInboundAsync(CreateReplyCallback(
+                Assert.IsType<string>(properties["CORRELATION_ID"]),
+                "reply"u8.ToArray()));
+
+            var reply = await replyTask;
+            Assert.Equal("reply"u8.ToArray(), reply.Body);
+        }
+        finally
+        {
+            await producer.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task ReplyCallback_AcknowledgesUnknownCorrelation()
     {
         var remoting = new RequestReplyRemotingClient();
@@ -287,7 +404,9 @@ public sealed class RemotingRequestReplyTests
         }
     }
 
-    private static RemotingProducer CreateProducer(RequestReplyRemotingClient remoting)
+    private static RemotingProducer CreateProducer(
+        RequestReplyRemotingClient remoting,
+        int retryTimesWhenSendFailed = 0)
     {
         var routeService = new Mock<ITopicRouteService>(MockBehavior.Strict);
         routeService
@@ -300,7 +419,7 @@ public sealed class RemotingRequestReplyTests
             Options.Create(new RemotingProducerOptions
             {
                 GroupName = "request-reply-tests",
-                RetryTimesWhenSendFailed = 0
+                RetryTimesWhenSendFailed = retryTimesWhenSendFailed
             }),
             Options.Create(new RemotingClientOptions
             {
@@ -370,6 +489,8 @@ public sealed class RemotingRequestReplyTests
 
         public ConcurrentQueue<Invocation> Invocations { get; } = new();
 
+        public ConcurrentQueue<RemotingCommand> HeartbeatResponses { get; } = new();
+
         public int RequestHandlerCount => _requestHandlers.Count;
 
         public Task<RemotingCommand> InvokeAsync(
@@ -379,6 +500,11 @@ public sealed class RemotingRequestReplyTests
             CancellationToken cancellationToken = default)
         {
             Invocations.Enqueue(new Invocation(endPoint, request));
+            if (request.Code == RequestCode.HeartBeat && HeartbeatResponses.TryDequeue(out var heartbeatResponse))
+            {
+                return Task.FromResult(heartbeatResponse);
+            }
+
             if (request.Code is RequestCode.SendMessage or RequestCode.SendReplyMessage)
             {
                 _sendMessage.TrySetResult(request);

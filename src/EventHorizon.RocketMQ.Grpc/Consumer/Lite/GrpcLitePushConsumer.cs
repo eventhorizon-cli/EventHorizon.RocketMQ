@@ -74,9 +74,9 @@ internal sealed class GrpcLitePushConsumer : IGrpcLitePushConsumer
                 return;
             }
 
-            Volatile.Write(ref _started, 0);
             await _subscriptions.StopAsync(cancellationToken).ConfigureAwait(false);
             await _dispatcher.StopAsync(cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _started, 0);
         }
         finally
         {

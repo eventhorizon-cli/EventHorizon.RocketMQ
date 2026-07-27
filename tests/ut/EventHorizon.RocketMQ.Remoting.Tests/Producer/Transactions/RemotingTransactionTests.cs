@@ -98,6 +98,55 @@ public sealed class RemotingTransactionTests
     }
 
     [Fact]
+    public async Task SendTransactionAsync_ReturnsLocalOutcomeWhenEndTransactionFails()
+    {
+        var remoting = new FakeRemotingClient
+        {
+            OnewayHandler = static (_, _) => Task.FromException(new IOException("broker unavailable"))
+        };
+        var producer = CreateProducer(
+            remoting,
+            options =>
+            {
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                options.TransactionChecker = static (_, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Unknown);
+            });
+
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        var result = await producer.SendTransactionAsync(
+            new Message("orders", "transactional"u8.ToArray()),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(RemotingTransactionResolution.Commit, result.LocalTransactionResolution);
+        Assert.Single(remoting.OnewayInvocations);
+    }
+
+    [Fact]
+    public async Task SendTransactionAsync_RejectsSpecializedMessagesBeforeSendingHalfMessage()
+    {
+        var remoting = new FakeRemotingClient();
+        var producer = CreateProducer(
+            remoting,
+            options =>
+            {
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                options.TransactionChecker = static (_, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Unknown);
+            });
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => producer.SendTransactionAsync(
+            new Message("orders", "transactional"u8.ToArray()) { Priority = 0 },
+            cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("Transactional messages cannot use", exception.Message);
+        Assert.Empty(remoting.Invocations);
+    }
+
+    [Fact]
     public async Task TransactionCheck_QueuesCheckerAndEndsTransactionAtCallingBroker()
     {
         var remoting = new FakeRemotingClient();
@@ -151,6 +200,72 @@ public sealed class RemotingTransactionTests
         Assert.True(Assert.IsType<bool>(endTransaction.Request.ExtFields["fromTransactionCheck"]));
         Assert.Equal(1234L, endTransaction.Request.ExtFields["commitLogOffset"]);
         Assert.Equal(42L, endTransaction.Request.ExtFields["tranStateTableOffset"]);
+    }
+
+    [Fact]
+    public async Task TransactionCheck_IgnoresMalformedOrUnrelatedRequests()
+    {
+        var remoting = new FakeRemotingClient();
+        var producer = CreateProducer(
+            remoting,
+            options =>
+            {
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                options.TransactionChecker = static (_, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+            });
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        var endpoint = new IPEndPoint(IPAddress.Loopback, 10911);
+
+        var malformedHeader = await remoting.DispatchInboundAsync(endpoint, new RemotingCommand
+        {
+            Code = RequestCode.CheckTransactionState,
+            ExtFields = new Dictionary<string, object>()
+        });
+        var missingMessageId = await remoting.DispatchInboundAsync(endpoint, CreateTransactionCheckRequest(messageId: null));
+        var malformedBody = await remoting.DispatchInboundAsync(
+            endpoint,
+            CreateTransactionCheckRequest(body: []));
+        var unrelatedGroup = await remoting.DispatchInboundAsync(
+            endpoint,
+            CreateTransactionCheckRequest(producerGroup: "other-producer"));
+
+        Assert.False(malformedHeader.IsHandled);
+        Assert.True(missingMessageId.IsHandled);
+        Assert.True(missingMessageId.SuppressResponse);
+        Assert.True(malformedBody.IsHandled);
+        Assert.True(malformedBody.SuppressResponse);
+        Assert.False(unrelatedGroup.IsHandled);
+        Assert.Empty(remoting.OnewayInvocations);
+    }
+
+    [Fact]
+    public async Task TransactionCheck_CheckerFailureReportsUnknown()
+    {
+        var remoting = new FakeRemotingClient();
+        var producer = CreateProducer(
+            remoting,
+            options =>
+            {
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                options.TransactionChecker = static (_, _) =>
+                    ValueTask.FromException<RemotingTransactionResolution>(
+                        new InvalidOperationException("transaction store unavailable"));
+            });
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        var handlerResult = await remoting.DispatchInboundAsync(
+            new IPEndPoint(IPAddress.Loopback, 10911),
+            CreateTransactionCheckRequest());
+        await WaitForAsync(() => remoting.OnewayInvocations.Count == 1, TestContext.Current.CancellationToken);
+
+        Assert.True(handlerResult.IsHandled);
+        Assert.True(handlerResult.SuppressResponse);
+        var endTransaction = Assert.Single(remoting.OnewayInvocations);
+        Assert.Equal(MessageSysFlag.TransactionNotType, endTransaction.Request.ExtFields["commitOrRollback"]);
+        Assert.Contains("transaction checker failed", endTransaction.Request.Remark, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -213,6 +328,33 @@ public sealed class RemotingTransactionTests
             }
         ]
     };
+
+    private static RemotingCommand CreateTransactionCheckRequest(
+        string producerGroup = "tests",
+        string? messageId = "message-id",
+        byte[]? body = null)
+    {
+        var fields = new Dictionary<string, object>
+        {
+            ["topic"] = "orders",
+            ["tranStateTableOffset"] = "42",
+            ["commitLogOffset"] = "1234",
+            ["transactionId"] = "transaction-id",
+            ["offsetMsgId"] = CreateOffsetMessageId(1234),
+            ["bname"] = "broker-a"
+        };
+        if (messageId is not null)
+        {
+            fields["msgId"] = messageId;
+        }
+
+        return new RemotingCommand
+        {
+            Code = RequestCode.CheckTransactionState,
+            ExtFields = fields,
+            Body = body ?? (messageId is null ? [] : CreateTransactionCheckMessage("orders", messageId, producerGroup))
+        };
+    }
 
     private static RemotingCommand SendSuccessResponse() => new()
     {
@@ -304,6 +446,8 @@ public sealed class RemotingTransactionTests
 
         public List<(EndPoint EndPoint, RemotingCommand Request)> OnewayInvocations { get; } = [];
 
+        public Func<EndPoint, RemotingCommand, Task>? OnewayHandler { get; init; }
+
         public int RequestHandlerCount => _requestHandlers.Count;
 
         public Task<RemotingCommand> InvokeAsync(
@@ -323,7 +467,7 @@ public sealed class RemotingTransactionTests
             CancellationToken cancellationToken = default)
         {
             OnewayInvocations.Add((endPoint, request));
-            return Task.CompletedTask;
+            return OnewayHandler?.Invoke(endPoint, request) ?? Task.CompletedTask;
         }
 
         public IDisposable RegisterRequestHandler(int requestCode, RemotingRequestHandler handler)

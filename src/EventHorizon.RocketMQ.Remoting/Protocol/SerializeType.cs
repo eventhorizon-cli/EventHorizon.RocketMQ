@@ -14,6 +14,7 @@
 // limitations under the License.
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal enum SerializeType : byte
 {
     Json = 0,

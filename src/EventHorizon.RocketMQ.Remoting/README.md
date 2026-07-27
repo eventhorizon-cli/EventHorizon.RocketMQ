@@ -3,8 +3,8 @@
 [English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
 [简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
 
-`EventHorizon.RocketMQ.Remoting` is an unofficial Apache RocketMQ classic Remoting Project and NuGet Package for
-.NET 8 or later. It integrates with Microsoft dependency injection, options, logging, and Generic Host lifecycle
+`EventHorizon.RocketMQ.Remoting` is an unofficial Apache RocketMQ classic Remoting Project and NuGet Package targeting
+`net8.0` and `net10.0`. It integrates with Microsoft dependency injection, options, logging, and Generic Host lifecycle
 management.
 
 The client connects to RocketMQ NameServer, then uses route data to discover Broker endpoints and connect directly to
@@ -713,7 +713,7 @@ The Remoting integration tests use isolated Testcontainers fixtures and do not r
 stack to be running:
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+dotnet test tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
 ```
 
 ## License

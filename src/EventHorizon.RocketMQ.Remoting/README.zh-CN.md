@@ -3,8 +3,8 @@
 [English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
 [简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
 
-`EventHorizon.RocketMQ.Remoting` 是面向 .NET 8 及更高版本的非官方 Apache RocketMQ classic Remoting Project
-和 NuGet Package，并集成 Microsoft 依赖注入、Options、日志记录和 Generic Host 生命周期管理。
+`EventHorizon.RocketMQ.Remoting` 是提供 `net8.0` 和 `net10.0` 目标的非官方 Apache RocketMQ classic Remoting
+Project 和 NuGet Package，并集成 Microsoft 依赖注入、Options、日志记录和 Generic Host 生命周期管理。
 
 客户端先连接 RocketMQ NameServer，再根据路由信息发现 Broker 并直接建立连接。应用需要使用经典协议时，
 请使用该 Package；需要通过 Proxy 使用 RocketMQ 5 protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
@@ -668,7 +668,7 @@ docker compose -f test-environments/rocketmq/compose.yaml down -v --remove-orpha
 Remoting 集成测试使用相互隔离的 Testcontainers Fixture，不要求预先启动上述手动环境：
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+dotnet test tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
 ```
 
 ## 许可证

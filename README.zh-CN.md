@@ -12,7 +12,7 @@
 项目提供**完整的客户端功能**，支持 RocketMQ 5 protobuf/gRPC 协议和 classic Remoting 协议，覆盖 Producer、
 Consumer 和 Admin API，以及事务消息、定时/延迟消息、FIFO 消息、优先级消息等能力。
 
-当前版本支持 **.NET 8 及更高版本**，原生集成 **Microsoft DI**，可直接接入 Generic Host、Options 和日志体系，
+当前版本提供 `net8.0` 和 `net10.0` 目标，原生集成 **Microsoft DI**，可直接接入 Generic Host、Options 和日志体系，
 提供**现代化、强类型的 API 编程体验**。
 
 客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy

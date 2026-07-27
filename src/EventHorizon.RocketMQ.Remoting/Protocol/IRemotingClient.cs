@@ -19,6 +19,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal interface IRemotingClient : IAsyncDisposable, IRemotingRequestHandlerRegistry
 {
     Task<RemotingCommand> InvokeAsync(

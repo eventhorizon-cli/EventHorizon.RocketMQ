@@ -22,7 +22,7 @@ env:
 
 jobs:
   validate:
-    name: Format, build, and unit tests
+    name: Format and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -34,6 +34,7 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+          dotnet-version: 8.0.x
 
       - name: Cache NuGet packages
         uses: actions/cache@v4
@@ -44,60 +45,93 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: Restore
-        run: dotnet restore EventHorizon.RocketMQ.sln
+        run: dotnet restore EventHorizon.RocketMQ.slnx
 
       - name: Verify formatting
         run: >-
-          dotnet format EventHorizon.RocketMQ.sln
+          dotnet format EventHorizon.RocketMQ.slnx
           --no-restore
           --verify-no-changes
           --verbosity diagnostic
 
       - name: Build
         run: >-
-          dotnet build EventHorizon.RocketMQ.sln
+          dotnet build EventHorizon.RocketMQ.slnx
           --configuration Release
           --no-restore
 
-      - name: Test gRPC
+  unit_tests:
+    name: ${{ matrix.name }} unit tests and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: gRPC
+            test_project: tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+            coverage_directory: grpc
+            coverage_name: dotnet-grpc-unit-tests
+          - name: Remoting
+            test_project: tests/ut/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj
+            coverage_directory: remoting
+            coverage_name: dotnet-remoting-unit-tests
+          - name: Compatibility
+            test_project: tests/ut/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj
+            coverage_directory: compatibility
+            coverage_name: dotnet-compatibility-unit-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.*.props', '**/Directory.*.targets', 'NuGet.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore unit tests
         run: >-
-          dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+          dotnet restore "${{ matrix.test_project }}"
+
+      - name: Build unit tests
+        run: >-
+          dotnet build "${{ matrix.test_project }}"
+          --configuration Release
+          --no-restore
+
+      - name: Test unit tests
+        run: >-
+          dotnet test "${{ matrix.test_project }}"
           --configuration Release
           --no-build
           --no-restore
           --collect:"XPlat Code Coverage"
-          --results-directory "${{ runner.temp }}/coverage/grpc"
+          --results-directory "${{ runner.temp }}/coverage/${{ matrix.coverage_directory }}"
 
-      - name: Test package compatibility
-        run: >-
-          dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj
-          --configuration Release
-          --no-build
-          --no-restore
-          --collect:"XPlat Code Coverage"
-          --results-directory "${{ runner.temp }}/coverage/compatibility"
-
-      - name: Test Remoting
-        run: >-
-          dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj
-          --configuration Release
-          --no-build
-          --no-restore
-          --collect:"XPlat Code Coverage"
-          --results-directory "${{ runner.temp }}/coverage/remoting"
-
-      - name: Upload coverage to Codecov
+      - name: Upload unit coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          directory: ${{ runner.temp }}/coverage
+          directory: ${{ runner.temp }}/coverage/${{ matrix.coverage_directory }}
           fail_ci_if_error: true
           flags: unit-tests
-          name: dotnet-unit-tests
+          name: ${{ matrix.coverage_name }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
   integration:
     name: ${{ matrix.protocol }} ${{ matrix.topology }} Docker integration tests and coverage
-    needs: validate
+    needs: [validate, unit_tests]
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -107,25 +141,25 @@ jobs:
         include:
           - protocol: gRPC
             topology: single-Broker
-            test_project: tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+            test_project: tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
             test_filter: Topology!=MultiBroker
             coverage_directory: grpc-single-broker-integration
             coverage_name: dotnet-grpc-single-broker-integration-tests
           - protocol: gRPC
             topology: multi-Broker
-            test_project: tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+            test_project: tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
             test_filter: Topology=MultiBroker
             coverage_directory: grpc-multi-broker-integration
             coverage_name: dotnet-grpc-multi-broker-integration-tests
           - protocol: Remoting
             topology: single-Broker
-            test_project: tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+            test_project: tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
             test_filter: Topology!=MultiBroker
             coverage_directory: remoting-single-broker-integration
             coverage_name: dotnet-remoting-single-broker-integration-tests
           - protocol: Remoting
             topology: multi-Broker
-            test_project: tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
+            test_project: tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj
             test_filter: Topology=MultiBroker
             coverage_directory: remoting-multi-broker-integration
             coverage_name: dotnet-remoting-multi-broker-integration-tests
@@ -138,6 +172,7 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+          dotnet-version: 8.0.x
 
       - name: Cache NuGet packages
         uses: actions/cache@v4

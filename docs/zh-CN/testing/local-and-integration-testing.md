@@ -20,16 +20,20 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 
 | 位置 | 类型 | 责任 |
 | --- | --- | --- |
-| [`tests/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
-| [`tests/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
-| [`tests/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
-| [`tests/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
-| [`tests/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
-| [`tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
-| [`tests/EventHorizon.RocketMQ.Benchmarks`](../../../tests/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
+| [`tests/ut/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
+| [`tests/ut/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
+| [`tests/ut/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
+| [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
+| [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
+| [`tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
+| [`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
 
 单元测试优先使用 `MockBehavior.Strict` 的 Moq，以明确可替换协作者的交互。对于流式 framing、竞争、
 时序或有状态协议协作，保留小型专用 fake 比堆叠 Mock 更清晰时可以例外。
+
+可发布的 gRPC 与 Remoting Package 提供 `net8.0` 和 `net10.0` 两个目标；三套单元测试与兼容性测试都会在这两个
+目标上运行。Docker 驱动的集成测试继续使用 `net8.0`，以免专门优化过的四 job 集成测试矩阵把容器启动成本翻倍；
+solution build 仍会编译两个 Package 目标。
 
 ## 如何工作
 
@@ -49,7 +53,7 @@ test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
 ### 2. Integration fixture 启动受控的 RocketMQ 集群
 
 共享
-[`RocketMQContainerFixture`](../../../tests/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
+[`RocketMQContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
 使用 Testcontainers 和 `apache/rocketmq:5.5.0`：
 
 ```text
@@ -107,29 +111,31 @@ volume 与可选的宿主机目录持久化覆盖文件。该 Compose 环境不�
 在仓库根目录执行：
 
 ```shell
-dotnet format EventHorizon.RocketMQ.sln
-dotnet restore EventHorizon.RocketMQ.sln
-dotnet build EventHorizon.RocketMQ.sln --no-restore
+dotnet format EventHorizon.RocketMQ.slnx
+dotnet restore EventHorizon.RocketMQ.slnx
+dotnet build EventHorizon.RocketMQ.slnx --no-restore
 
-dotnet test tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj --no-restore
+dotnet test tests/ut/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj --no-restore
 ```
 
 涉及 Broker、NameServer、Proxy、wire interoperability 或实际协议行为时，再运行匹配的 integration test：
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
-dotnet test tests/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj --no-restore
+dotnet test tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj --no-restore
 ```
 
 Docker 不可用时，应报告没有运行哪一个 integration test 以及原因，不能用 unit test 的成功替代它。
 
 ### 4.1 CI 也采集 integration coverage
 
-GitHub Actions 在格式化、构建和单元测试验证通过后，于四个并行的 `ubuntu-latest` matrix job 运行 Docker
-驱动的 gRPC 与 Remoting integration test：每个协议各有一个 single-Broker 与一个 multi-Broker job。类级别
-的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；single-Broker job 运行其余测试。每个 job 只 restore
+GitHub Actions 会在一个 job 中完成格式化和全量构建，同时并行运行三个按协议/兼容性拆分的单元测试 job。每个
+单元测试 job 都会 restore、build、运行两个目标框架的测试，并单独上传覆盖率报告。两层验证均通过后，再于四个
+并行的 `ubuntu-latest` matrix job 运行 Docker 驱动的 gRPC 与 Remoting integration test：每个协议各有一个
+single-Broker 与一个 multi-Broker job。类级别的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；
+single-Broker job 运行其余测试。每个 job 只 restore
 和 build 对应协议的 integration-test 依赖图，使用独立超时预算，并复用仓库的 NuGet 包缓存。Testcontainers
 仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture。single-Broker job 内，已经隔离的测试类
 会在 runner 上限内并发执行；legacy Remoting suite 则按设计保持串行。四个 job 都会生成 Cobertura 报告，以不同

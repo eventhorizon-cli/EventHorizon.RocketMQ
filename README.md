@@ -12,8 +12,8 @@ An **unofficial Apache RocketMQ client for .NET**.
 It provides **full client functionality** across RocketMQ 5 protobuf/gRPC and classic Remoting, covering Producer,
 Consumer, and Admin APIs as well as transactional, timed/delay, FIFO, and priority messages.
 
-Designed for **.NET 8 or later**, it integrates with **Microsoft dependency injection**, Generic Host, options, and
-logging, and provides a **modern, strongly typed API experience**.
+It ships `net8.0` and `net10.0` targets, integrates with **Microsoft dependency injection**, Generic Host, options,
+and logging, and provides a **modern, strongly typed API experience**.
 
 Client behavior is backed by high-coverage unit tests and Docker-backed integration tests that exercise real
 NameServer, Broker, and Proxy paths.

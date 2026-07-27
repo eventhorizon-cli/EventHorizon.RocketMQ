@@ -18,7 +18,7 @@ env:
   DOTNET_NOLOGO: "true"
   NUGET_SOURCE: https://api.nuget.org/v3/index.json
   PROTOCOL_PROJECT: src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj
-  PROTOCOL_TEST_PROJECT: tests/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+  PROTOCOL_TEST_PROJECT: tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
 
 jobs:
   publish:
@@ -34,6 +34,7 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+          dotnet-version: 8.0.x
 
       - name: Resolve package version
         id: version
@@ -70,6 +71,16 @@ jobs:
           --configuration Release
           --no-build
           --no-restore
+
+      - name: Build gRPC package
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          dotnet build "$PROTOCOL_PROJECT"
+          --configuration Release
+          --no-restore
+          -p:Version="$VERSION"
+          -p:ContinuousIntegrationBuild=true
 
       - name: Pack gRPC
         env:

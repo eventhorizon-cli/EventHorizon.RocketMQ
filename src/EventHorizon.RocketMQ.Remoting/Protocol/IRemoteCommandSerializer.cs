@@ -16,6 +16,7 @@
 using System.Buffers;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal interface IRemoteCommandSerializer
 {
     bool TryParseMessage(

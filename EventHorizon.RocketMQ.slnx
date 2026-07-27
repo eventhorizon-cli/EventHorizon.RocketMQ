@@ -1,0 +1,44 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/samples/" />
+  <Folder Name="/samples/grpc/">
+    <Project Path="samples/grpc/LitePushConsumer/EventHorizon.RocketMQ.Samples.Grpc.LitePushConsumer.csproj" />
+    <Project Path="samples/grpc/Producer/EventHorizon.RocketMQ.Samples.Grpc.Producer.csproj" />
+    <Project Path="samples/grpc/PushConsumer/EventHorizon.RocketMQ.Samples.Grpc.PushConsumer.csproj" />
+    <Project Path="samples/grpc/SimpleConsumer/EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer.csproj" />
+  </Folder>
+  <Folder Name="/samples/opentelemetry/">
+    <Project Path="samples/opentelemetry/ConsumerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi.csproj" />
+    <Project Path="samples/opentelemetry/ProducerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi.csproj" />
+  </Folder>
+  <Folder Name="/samples/remoting/">
+    <Project Path="samples/remoting/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj" />
+    <Project Path="samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj" />
+    <Project Path="samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj" />
+    <Project Path="samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj" />
+    <Project Path="samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj" />
+    <Project Path="samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj" />
+    <Project Path="src/EventHorizon.RocketMQ.Remoting/EventHorizon.RocketMQ.Remoting.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/benchmarks/">
+    <Project Path="tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/tests/it/">
+    <Project Path="tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj" />
+    <Project Path="tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/EventHorizon.RocketMQ.IntegrationTestInfrastructure.csproj" />
+    <Project Path="tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/ut/">
+    <Project Path="tests/ut/EventHorizon.RocketMQ.Compatibility.Tests/EventHorizon.RocketMQ.Compatibility.Tests.csproj" />
+    <Project Path="tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj" />
+    <Project Path="tests/ut/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -22,6 +22,7 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 
 namespace EventHorizon.RocketMQ.Remoting.Protocol;
+
 internal abstract class CommandCustomHeader
 {
     private static readonly ConcurrentDictionary<Type, Func<CommandCustomHeader, Dictionary<string, object>>>

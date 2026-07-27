@@ -3,7 +3,7 @@
 [English](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
 [简体中文](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)
 
-`EventHorizon.RocketMQ.Grpc` 是本仓库面向 .NET 8 及更高版本的非官方 Apache RocketMQ 5
+`EventHorizon.RocketMQ.Grpc` 是本仓库提供 `net8.0` 和 `net10.0` 目标的非官方 Apache RocketMQ 5
 protobuf/gRPC Project 和 NuGet Package。它只通过 `Endpoint` 连接 RocketMQ Proxy，不会直接连接 NameServer 或
 Broker。
 
@@ -392,7 +392,7 @@ docker compose -f test-environments/rocketmq/compose.yaml down -v --remove-orpha
 可通过以下命令运行相互隔离、由 Docker 支持的 gRPC 集成测试：
 
 ```shell
-dotnet test tests/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+dotnet test tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
 ```
 
 ## 许可证

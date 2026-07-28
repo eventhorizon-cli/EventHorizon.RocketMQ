@@ -92,6 +92,13 @@ topology, or manual environment.
   is not a test assembly and must not reference a production protocol project.
 - Add or update tests for behavior changes. Use xUnit v3 and normally strict Moq mocks. A stateful fake is appropriate
   only when a mock would obscure streaming, framing, or concurrency behavior.
+- Integration coverage does not replace unit coverage for deterministic client-owned behavior. Even when an
+  integration test covers the full workflow, add or retain focused unit tests for the underlying state transitions,
+  allocation, scheduling, offset, retry, and failure invariants; use integration tests to complement them at real
+  Broker, NameServer, Proxy, transport, persistence, and cross-process boundaries.
+- Integration suites must cover both the normal workflow and relevant abnormal behavior at those real boundaries,
+  including failure isolation, retries, blocked work, recovery, and persistence when the changed behavior involves
+  them.
 - Matching foundational-model changes require both protocol unit-test projects and the compatibility project. Run the
   matching integration project when behavior crosses a live Broker, NameServer, Proxy, or transport boundary and
   Docker is available.

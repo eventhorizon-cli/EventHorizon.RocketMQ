@@ -13,7 +13,7 @@
 | --- | --- | --- | --- |
 | [`rocketmq`](rocketmq) | 运行普通 Remoting 或 gRPC 示例，或排查单 Broker 场景。 | NameServer、一个 Broker、一个 cluster-mode Proxy、RocketMQ Dashboard，以及普通示例 Topic 初始化服务。 | [中文说明](rocketmq/README.zh-CN.md) |
 | [`rocketmq-litepush`](rocketmq-litepush) | 直接运行仓库提供的 gRPC LitePush 示例，不想手动创建 RocketMQ 资源。 | NameServer、一个启用 Lite 的 Broker、一个 cluster-mode Proxy、RocketMQ Dashboard，以及自动创建 LITE parent Topic 和 Consumer Group 的初始化服务。 | [中文说明](rocketmq-litepush/README.zh-CN.md) |
-| [`rocketmq-multi-broker`](rocketmq-multi-broker) | 检查三个 Broker 间的路由、队列分布或客户端行为。 | NameServer、三个独立 master Broker、一个 cluster-mode Proxy 和 RocketMQ Dashboard。 | [中文说明](rocketmq-multi-broker/README.zh-CN.md) |
+| [`rocketmq-multi-broker`](rocketmq-multi-broker) | 检查三个 Broker 间的路由、队列分布或客户端行为。 | NameServer、三个各含三个队列的独立 master Broker、一个 cluster-mode Proxy 和 RocketMQ Dashboard。 | [中文说明](rocketmq-multi-broker/README.zh-CN.md) |
 | [`otel-lgtm`](otel-lgtm) | 在 Grafana 中查看本地 RocketMQ 客户端 traces 和 metrics。 | 包含 OTLP collector、Grafana、Tempo、Prometheus、Loki 和 Pyroscope 的 Grafana OTEL LGTM。 | [中文说明](otel-lgtm/README.zh-CN.md) |
 
 运行 LitePush 时，优先选择 `rocketmq-litepush`。它的资源初始化服务会随

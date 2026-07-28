@@ -101,6 +101,32 @@ application code that ignores cancellation; its late result is ignored and can o
 cooperate with the token and remain idempotent. FIFO and orderly delivery intentionally remain outside this recovery
 path to preserve ordering guarantees.
 
+#### Concurrent Push dispatch and offset safety
+
+In concurrent mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue` holds
+locally pulled messages and their consumption state; it is not another Broker queue and does not create any
+server-side resource. Pulling can advance independently of handler completion. `MaxCachedMessages` bounds admission
+of newly pulled messages waiting for their first dispatch. Batches already handed to handlers and messages retained
+for settlement retry do not reacquire that admission capacity, so it is not a strict limit on every resident message.
+
+Ready `ProcessQueue` instances enter a coalesced ready queue at most once. The shared logical consume loops take one
+handler batch from a ready queue, put it at the back again when more work remains, and thereby round-robin across
+active physical queues instead of allowing one hot queue to occupy the entire dispatch path. `MaxConcurrency` is the
+total concurrency shared by all assigned queues. These loops are asynchronous tasks scheduled by the .NET ThreadPool;
+they are not dedicated or thread-affine consumer threads.
+
+Each `ProcessQueue` also maintains its own contiguous completion watermark. A later batch that finishes first cannot
+move the persisted offset past an earlier unresolved message, and a faster queue cannot advance another queue's
+offset. Failed retry/dead-letter settlement remains unresolved and is retried locally after `RetryDelay` without
+invoking the application handler again; offset persistence is also retried without crossing the gap. When an
+assignment is dropped, its `ProcessQueue` is marked dropped so a late handler completion cannot mutate the replacement
+assignment or commit its offset.
+
+The `ProcessQueue` name and per-physical-queue ownership follow the role used by the official RocketMQ Java client.
+The Java concurrent path creates consume requests from a newly pulled message list; this implementation's coalesced
+ready queue and one-batch-per-turn extraction from `ProcessQueue` are a .NET scheduling design, not an exact copy of
+the Java data path.
+
 ### Read-only Admin and physical message IDs
 
 `IRemotingAdmin` is intentionally a separate, read-only role. It can discover writable queues,

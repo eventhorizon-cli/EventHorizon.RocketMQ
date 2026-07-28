@@ -10,6 +10,8 @@
 - 一个 RocketMQ Dashboard，访问地址为 `http://localhost:8082`。
 
 这套环境用于验证多 Broker 路由和分区行为，不是高可用部署。
+每台 Broker 默认每个 Topic 使用三个队列。资源初始化服务还会在每台 Broker 上为普通 Topic 和 LITE parent Topic
+显式创建三个可读队列及三个可写队列，因此完整路由包含九个物理队列。
 
 三个 Broker 之间没有副本同步。
 
@@ -166,12 +168,16 @@ do
   docker compose exec proxy sh mqadmin updateTopic \
     -n nameserver:9876 \
     -b "$broker" \
-    -t rocketmq-dotnet-multi-broker-manual
+    -t rocketmq-dotnet-multi-broker-manual \
+    -r 3 \
+    -w 3
 done
 
 docker compose exec proxy sh mqadmin topicRoute \
   -n nameserver:9876 -t rocketmq-dotnet-multi-broker-manual
 ```
+
+路由中每台 Broker 都应包含三个可读及可写队列，总计九个物理队列。
 
 三个 Broker 都设置了 `autoCreateSubscriptionGroup=true`，标准 Consumer Group 会在首次使用时自动创建。
 如果关闭该配置，或需要显式配置 Group 属性，请以同样方式对每台 Broker 执行 `mqadmin updateSubGroup -b`。
@@ -198,6 +204,8 @@ do
     -n nameserver:9876 \
     -b "$broker" \
     -t rocketmq-dotnet-multi-broker-lite-manual \
+    -r 3 \
+    -w 3 \
     -a +message.type=LITE
 
   docker compose exec proxy sh mqadmin updateSubGroup \

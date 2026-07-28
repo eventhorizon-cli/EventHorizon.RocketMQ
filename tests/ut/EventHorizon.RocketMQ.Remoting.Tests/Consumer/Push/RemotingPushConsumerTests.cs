@@ -265,12 +265,23 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotification_RetainsBoundaryWhenBrokerUpdateFails()
+    public async Task ResetOffsetNotification_RetriesBoundaryWhileReplacementPullIsPending()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var resetPersisted = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
         var remoting = new FakeRemotingClient("127.0.0.1@reset-failure")
         {
-            TrackCommittedOffsets = true
+            TrackCommittedOffsets = true,
+            UpdateOffsetHandler = (request, _) =>
+            {
+                var offset = Convert.ToInt64(request.ExtFields["commitOffset"]);
+                if (offset == 7)
+                {
+                    resetPersisted.TrySetResult(offset);
+                }
+
+                return Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess });
+            }
         };
         var options = new RemotingPushConsumerOptions
         {
@@ -315,15 +326,14 @@ public sealed class RemotingPushConsumerTests
             body,
             cancellationToken));
         await remoting.WaitForTopicPullsAsync("tenant-a%orders", 2, cancellationToken);
+        var persistedOffset = await resetPersisted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
 
         Assert.Equal(
             [0, 7],
             remoting.PullOffsets
                 .Where(static pull => pull.Topic == "tenant-a%orders")
                 .Select(static pull => pull.Offset));
-        Assert.DoesNotContain(
-            remoting.UpdatedOffsets,
-            static update => update.Topic == "tenant-a%orders" && update.Offset == 7);
+        Assert.Equal(7, persistedOffset);
     }
 
     [Fact]
@@ -406,23 +416,27 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotifications_BeforeStartApplyLatestOffsetWhenReceiverIsCreated()
+    public async Task ResetOffsetNotifications_BeforeStartPersistLatestOffsetWhileFirstPullIsPending()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var returnedResetEmptyPull = 0;
+        var resetPersisted = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
         var remoting = new FakeRemotingClient("127.0.0.1@reset-before-start")
         {
             TrackCommittedOffsets = true,
-            PullHandler = async (request, token) =>
+            PullHandler = async (_, token) =>
             {
-                var offset = Convert.ToInt64(request.ExtFields["queueOffset"]);
-                if (offset == 9 && Interlocked.Exchange(ref returnedResetEmptyPull, 1) == 0)
-                {
-                    return PullEmpty(offset);
-                }
-
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            },
+            UpdateOffsetHandler = (request, _) =>
+            {
+                var offset = Convert.ToInt64(request.ExtFields["commitOffset"]);
+                if (offset == 9)
+                {
+                    resetPersisted.TrySetResult(offset);
+                }
+
+                return Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess });
             }
         };
         var options = new RemotingPushConsumerOptions
@@ -483,15 +497,12 @@ public sealed class RemotingPushConsumerTests
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForTopicPullsAsync("tenant-a%orders", 1, cancellationToken);
+        var persistedOffset = await resetPersisted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
 
         Assert.Equal(
             9,
             remoting.PullOffsets.First(static pull => pull.Topic == "tenant-a%orders").Offset);
-
-        await remoting.WaitForTopicPullsAsync("tenant-a%orders", 2, cancellationToken);
-        Assert.Contains(
-            remoting.UpdatedOffsets,
-            static update => update.Topic == "tenant-a%orders" && update.Offset == 9);
+        Assert.Equal(9, persistedOffset);
     }
 
     [Fact]

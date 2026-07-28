@@ -73,24 +73,7 @@ public class RemotingPushDispatchBenchmarks
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var consumed = 0;
         var processQueues = new ProcessQueue[workloads.Count];
-        var dispatcher = new ConcurrentConsumeDispatcher(
-            MaxConcurrency,
-            ConsumeMessageBatchSize,
-            (request, _) =>
-            {
-                request.ProcessQueue.CompleteConsumeRequest(
-                    request,
-                    CompletedStates[request.Entries.Count]);
-                if (Interlocked.Add(ref consumed, request.Entries.Count) == MessageCount)
-                {
-                    completion.TrySetResult();
-                }
-
-                return ValueTask.CompletedTask;
-            },
-            static _ => { },
-            stopping.Token,
-            NullLogger.Instance);
+        ConcurrentConsumeDispatcher? dispatcher = null;
 
         try
         {
@@ -102,6 +85,28 @@ public class RemotingPushDispatchBenchmarks
                 processQueue.Initialize(0, forcePersist: false);
                 processQueue.PutMessages(workload.Messages);
                 processQueue.AdvanceNextPullOffset(workload.Messages.Count);
+            }
+
+            dispatcher = new ConcurrentConsumeDispatcher(
+                MaxConcurrency,
+                ConsumeMessageBatchSize,
+                (request, _) =>
+                {
+                    request.ProcessQueue.CompleteConsumeRequest(
+                        request,
+                        CompletedStates[request.Entries.Count]);
+                    if (Interlocked.Add(ref consumed, request.Entries.Count) == MessageCount)
+                    {
+                        completion.TrySetResult();
+                    }
+
+                    return ValueTask.CompletedTask;
+                },
+                static _ => { },
+                stopping.Token,
+                NullLogger.Instance);
+            foreach (var processQueue in processQueues)
+            {
                 dispatcher.NotifyReady(processQueue);
             }
 
@@ -111,15 +116,18 @@ public class RemotingPushDispatchBenchmarks
         }
         finally
         {
-            dispatcher.Complete();
+            dispatcher?.Complete();
             await stopping.CancelAsync().ConfigureAwait(false);
 
-            try
+            if (dispatcher is not null)
             {
-                await Task.WhenAll(dispatcher.ConsumeLoopTasks).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stopping.IsCancellationRequested)
-            {
+                try
+                {
+                    await Task.WhenAll(dispatcher.ConsumeLoopTasks).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+                {
+                }
             }
 
             foreach (var processQueue in processQueues)

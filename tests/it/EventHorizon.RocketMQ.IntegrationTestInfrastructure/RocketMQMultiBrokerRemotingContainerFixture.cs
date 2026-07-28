@@ -49,6 +49,11 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
     /// </summary>
     public const string TestTopic = "rocketmq-dotnet-remoting-multi-broker-it";
 
+    /// <summary>
+    /// Gets the number of readable and writable queues created on each Broker for the test topic.
+    /// </summary>
+    public const int QueuesPerBroker = 3;
+
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly IContainer _nameServer;
     private readonly IContainer _brokerA;
@@ -130,7 +135,8 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
             "brokerIP1=127.0.0.1\n" +
             $"namesrvAddr=nameserver:{NameServerPort}\n" +
             $"listenPort={port}\n" +
-            "autoCreateTopicEnable=true\n");
+            "autoCreateTopicEnable=true\n" +
+            "autoCreateSubscriptionGroup=true\n");
 
         return new ContainerBuilder(Image)
             .WithNetwork(_network)
@@ -182,6 +188,8 @@ public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
                 "-n", $"nameserver:{NameServerPort}",
                 "-b", $"{brokerName}:{port}",
                 "-t", TestTopic,
+                "-r", QueuesPerBroker.ToString(),
+                "-w", QueuesPerBroker.ToString(),
                 "-a", "+message.type=NORMAL"
             ]).ConfigureAwait(false);
             if (createTopic.ExitCode != 0)

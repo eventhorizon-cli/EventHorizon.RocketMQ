@@ -83,8 +83,10 @@ Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注�
 
 多 Broker 覆盖使用两套协议隔离的 fixture：
 
-- Remoting fixture 启动 NameServer 和三个宿主机可达的 master Broker。测试断言 NameServer 返回
-  `broker-a`、`broker-b`、`broker-c` 的完整 route，并向每台 Broker 的指定队列发送消息。
+- Remoting fixture 启动 NameServer 和三个宿主机可达的 master Broker，并在每台 Broker 上显式创建三个读写队列。
+  测试断言完整的九个物理队列 route，逐队列定向发送消息，验证一个 PushConsumer 会提交每个队列的 offset，
+  并验证同组的三个及十个 PushConsumer 的分配。十个 Consumer 多于九个队列时，多出的实例保持未分配，
+  且不会产生重复投递。
 - gRPC fixture 在隔离 Docker network 中启动 NameServer、三个 master Broker 和 cluster-mode Proxy。测试通过 Proxy
   发送消息，再查询每台 Broker 的 topic 状态，确认三台 Broker 都有实际写入。
 

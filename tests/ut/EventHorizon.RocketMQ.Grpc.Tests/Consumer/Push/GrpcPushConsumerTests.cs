@@ -817,6 +817,189 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
+    public async Task Worker_ContinuesWhenProcessTelemetryStartFails()
+    {
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Throws(new InvalidOperationException("process telemetry failed"));
+        var client = new FakeGrpcClient();
+        var handled = 0;
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) =>
+            {
+                Interlocked.Increment(ref handled);
+                return ValueTask.FromResult(ConsumeResult.Success);
+            },
+            out var engine,
+            telemetry: telemetry.Object);
+
+        await RunWorkerAsync(
+            consumer,
+            engine,
+            TestContext.Current.CancellationToken,
+            Message("first"),
+            Message("second"));
+
+        Assert.Equal(2, Volatile.Read(ref handled));
+        Assert.Equal(2, client.AckRequests.Count);
+        telemetry.Verify(
+            value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()),
+            Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Worker_ContinuesWhenProcessTelemetryCompletionOrDisposalFails()
+    {
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation
+            .Setup(value => value.Complete(true, ConsumeResult.Success.ToString()))
+            .Throws(new InvalidOperationException("process telemetry completion failed"));
+        operation
+            .Setup(value => value.Dispose())
+            .Throws(new InvalidOperationException("process telemetry disposal failed"));
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        var handled = 0;
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) =>
+            {
+                Interlocked.Increment(ref handled);
+                return ValueTask.FromResult(ConsumeResult.Success);
+            },
+            out var engine,
+            telemetry: telemetry.Object);
+
+        await RunWorkerAsync(
+            consumer,
+            engine,
+            TestContext.Current.CancellationToken,
+            Message("first"),
+            Message("second"));
+
+        Assert.Equal(2, Volatile.Read(ref handled));
+        Assert.Equal(2, client.AckRequests.Count);
+        operation.Verify(value => value.Complete(true, ConsumeResult.Success.ToString()), Times.Exactly(2));
+        operation.Verify(value => value.Dispose(), Times.Exactly(2));
+        telemetry.VerifyAll();
+    }
+
+    [Fact]
+    public async Task Worker_ContinuesAfterUnexpectedMessageProcessingFailure()
+    {
+        var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine
+            .Setup(value => value.GetMaxDeliveryAttempts(It.IsAny<GrpcMessageView>(), It.IsAny<int>()))
+            .Returns((GrpcMessageView message, int fallback) =>
+            {
+                if (message.MessageId == "first")
+                {
+                    throw new InvalidOperationException("processing failed before handling");
+                }
+
+                return fallback;
+            });
+        engine
+            .Setup(value => value.AckAsync(
+                It.Is<GrpcMessageView>(message => message.MessageId == "second"),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var handled = new ConcurrentQueue<string>();
+        await using var consumer = new GrpcPushConsumer(
+            Options.Create(PushOptions((message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(ConsumeResult.Success);
+            })),
+            engine.Object,
+            NullLogger<GrpcPushConsumer>.Instance);
+
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [TestContext.Current.CancellationToken]));
+        await channel.Writer.WriteAsync(Message("first"), TestContext.Current.CancellationToken);
+        await channel.Writer.WriteAsync(Message("second"), TestContext.Current.CancellationToken);
+        channel.Writer.Complete();
+
+        await worker.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Equal(["second"], handled);
+        engine.Verify(
+            value => value.AckAsync(
+                It.Is<GrpcMessageView>(message => message.MessageId == "second"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task UnexpectedFifoProcessingFailureKeepsSuccessorBlocked()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine
+            .Setup(value => value.GetMaxDeliveryAttempts(
+                It.Is<GrpcMessageView>(message => message.MessageId == "first"),
+                It.IsAny<int>()))
+            .Throws(new InvalidOperationException("processing failed before handling"));
+        engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var handled = 0;
+        await using var consumer = new GrpcPushConsumer(
+            Options.Create(PushOptions((_, _) =>
+            {
+                Interlocked.Increment(ref handled);
+                return ValueTask.FromResult(ConsumeResult.Success);
+            })),
+            engine.Object,
+            NullLogger<GrpcPushConsumer>.Instance);
+
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var blockedSignal = Assert.IsType<TaskCompletionSource>(blockedSignalField?.GetValue(consumer));
+        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [processingCancellation.Token]));
+        await InvokeEnqueueAsync(consumer, Message("first", "account-7"), cancellationToken);
+        await InvokeEnqueueAsync(consumer, Message("second", "account-7"), cancellationToken);
+        channel.Writer.Complete();
+
+        await blockedSignal.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.Equal(0, Volatile.Read(ref handled));
+
+        processingCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+    }
+
+    [Fact]
     public async Task Worker_RetriesAckAfterTransientFailureAndContinues()
     {
         var client = new FakeGrpcClient();

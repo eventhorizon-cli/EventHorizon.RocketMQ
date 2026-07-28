@@ -104,6 +104,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
                 options.BatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
@@ -184,6 +185,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
                 options.BatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
@@ -297,6 +299,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
                 options.BatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
@@ -456,6 +459,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             .AddRemotingPushConsumer(options =>
             {
                 options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 1;
                 options.BatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;

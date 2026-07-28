@@ -922,9 +922,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     .ConfigureAwait(false);
                 if (result.Status == RemotingPullStatus.OffsetIllegal)
                 {
-                    offset = result.NextOffset;
-                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
                         .ConfigureAwait(false);
+                    offset = result.NextOffset;
                     continue;
                 }
 
@@ -1046,9 +1046,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     }
                 }
 
-                offset = result.NextOffset;
-                await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
                     .ConfigureAwait(false);
+                offset = result.NextOffset;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1128,9 +1128,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
                 if (result.Status == RemotingPullStatus.OffsetIllegal)
                 {
-                    offset = result.NextOffset;
-                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
                         .ConfigureAwait(false);
+                    offset = result.NextOffset;
                     continue;
                 }
 
@@ -1195,9 +1195,10 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         break;
                     }
 
-                    offset = checked(message.QueueOffset + 1);
-                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                    var nextOffset = checked(message.QueueOffset + 1);
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, nextOffset, cancellationToken)
                         .ConfigureAwait(false);
+                    offset = nextOffset;
                 }
 
                 if (!completed)
@@ -1207,9 +1208,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
                 if (result.NextOffset > offset)
                 {
-                    offset = result.NextOffset;
-                    await PersistOffsetAndClearResetBoundaryAsync(queue, offset, cancellationToken)
+                    await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
                         .ConfigureAwait(false);
+                    offset = result.NextOffset;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -85,8 +85,10 @@ manual Compose ports. The protocol-specific test projects are:
 The multi-Broker fixtures complement the baseline fixture:
 
 - [`RocketMQMultiBrokerRemotingContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerRemotingContainerFixture.cs)
-  starts a NameServer and three host-reachable master Brokers. The Remoting test requires a complete route for
-  `broker-a`, `broker-b`, and `broker-c`, then sends to an explicit queue on each Broker.
+  starts a NameServer and three host-reachable master Brokers, each with three explicit read and write queues.
+  The Remoting tests require the complete nine-queue route, send to every physical queue, verify a Push consumer
+  commits each queue, and verify clustered groups with three consumers and ten consumers. The latter confirms that
+  consumers in excess of the nine queues remain unassigned without duplicate delivery.
 - [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
   starts a NameServer, three master Brokers, and a cluster-mode Proxy on an isolated Docker network. The gRPC test
   sends through the Proxy and confirms that every Broker has stored messages.

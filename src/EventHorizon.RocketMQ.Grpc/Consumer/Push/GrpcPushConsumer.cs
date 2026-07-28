@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading.Channels;
 using EventHorizon.RocketMQ.Grpc.Instrumentation;
 using Microsoft.Extensions.Logging;
@@ -549,6 +550,14 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             {
                 await ProcessOrderedMessageAsync(message, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                HandleUnexpectedMessageProcessingFailure(messages, message, exception);
+            }
             finally
             {
                 ReleaseCachedMessageBytes(message);
@@ -761,14 +770,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         while (true)
         {
             ConsumeResult result;
-            using var telemetry = _telemetry.StartProcess(
-                message.Topic,
-                _options.GroupName,
-                message.MessageId,
-                message.QueueId,
-                message.Body.LongLength,
-                message.Properties,
-                message.ReceiveActivityContext);
+            var telemetry = StartMessageProcessingTelemetry(message);
             try
             {
                 HandlerExecution execution;
@@ -787,20 +789,29 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 }
 
                 result = execution.Result;
-                telemetry.Complete(
+                CompleteMessageProcessingTelemetry(
+                    telemetry,
+                    message,
                     result == ConsumeResult.Success,
                     execution.TimedOut ? "timeout" : result.ToString());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                telemetry.Complete(new OperationCanceledException(cancellationToken));
+                CompleteMessageProcessingTelemetry(
+                    telemetry,
+                    message,
+                    new OperationCanceledException(cancellationToken));
                 throw;
             }
             catch (Exception exception)
             {
-                telemetry.Complete(exception);
+                CompleteMessageProcessingTelemetry(telemetry, message, exception);
                 _logger.LogError(exception, "Message handler failed for message {MessageId}", message.MessageId);
                 result = ConsumeResult.Retry;
+            }
+            finally
+            {
+                DisposeMessageProcessingTelemetry(telemetry, message);
             }
 
             if (!fifo || result != ConsumeResult.Retry)
@@ -826,6 +837,95 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 retryDelay,
                 fifoRetryCancellationToken,
                 cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void HandleUnexpectedMessageProcessingFailure(
+        Channel<GrpcMessageView> messages,
+        GrpcMessageView message,
+        Exception exception)
+    {
+        if (ReferenceEquals(messages, _messages) && _fifoOrders.TryGetValue(message, out var order))
+        {
+            BlockFifoOrder(message, order);
+            _logger.LogError(
+                exception,
+                "Unexpected failure while processing FIFO message {MessageId}; the group remains blocked to preserve ordering and the message may be redelivered",
+                message.MessageId);
+            return;
+        }
+
+        _logger.LogError(
+            exception,
+            "Unexpected failure while processing message {MessageId}; it will not be acknowledged and may be redelivered",
+            message.MessageId);
+    }
+
+    private IGrpcRocketMQTelemetryOperation StartMessageProcessingTelemetry(GrpcMessageView message)
+    {
+        try
+        {
+            return _telemetry.StartProcess(
+                       message.Topic,
+                       _options.GroupName,
+                       message.MessageId,
+                       message.QueueId,
+                       message.Body.LongLength,
+                       message.Properties,
+                       message.ReceiveActivityContext) ?? NoopTelemetryOperation.Instance;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Failed to start process telemetry for message {MessageId}", message.MessageId);
+            return NoopTelemetryOperation.Instance;
+        }
+    }
+
+    private void CompleteMessageProcessingTelemetry(
+        IGrpcRocketMQTelemetryOperation telemetry,
+        GrpcMessageView message,
+        bool success,
+        string? outcome)
+    {
+        try
+        {
+            telemetry.Complete(success, outcome);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Failed to complete process telemetry for message {MessageId}", message.MessageId);
+        }
+    }
+
+    private void CompleteMessageProcessingTelemetry(
+        IGrpcRocketMQTelemetryOperation telemetry,
+        GrpcMessageView message,
+        Exception exception)
+    {
+        try
+        {
+            telemetry.Complete(exception);
+        }
+        catch (Exception telemetryException)
+        {
+            _logger.LogWarning(
+                telemetryException,
+                "Failed to complete failed-process telemetry for message {MessageId}",
+                message.MessageId);
+        }
+    }
+
+    private void DisposeMessageProcessingTelemetry(
+        IGrpcRocketMQTelemetryOperation telemetry,
+        GrpcMessageView message)
+    {
+        try
+        {
+            telemetry.Dispose();
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Failed to dispose process telemetry for message {MessageId}", message.MessageId);
         }
     }
 
@@ -1077,6 +1177,29 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         public string Key { get; }
         public Task Predecessor { get; }
         public TaskCompletionSource Completion { get; }
+    }
+
+    private sealed class NoopTelemetryOperation : IGrpcRocketMQTelemetryOperation
+    {
+        public static NoopTelemetryOperation Instance { get; } = new();
+
+        public Activity? Activity => null;
+
+        public void Complete()
+        {
+        }
+
+        public void Complete(bool success, string? outcome = null)
+        {
+        }
+
+        public void Complete(Exception exception)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class AssignmentReceiver(

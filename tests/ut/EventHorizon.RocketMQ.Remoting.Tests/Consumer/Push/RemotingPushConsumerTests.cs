@@ -1926,6 +1926,59 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
+    public async Task ConcurrentPushConsumer_RepullsBatchFromSameOffsetWhenCommitFails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var releaseFirstPull = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var orderPulls = 0;
+        var body = CreateMessageRecord("orders", "commit-retry", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@concurrent-commit-retry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Increment(ref orderPulls) == 1)
+                {
+                    await releaseFirstPull.Task.WaitAsync(token);
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            RetryDelay = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "concurrent-commit-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
+        remoting.FailNextOffsetUpdate();
+        releaseFirstPull.TrySetResult();
+        await remoting.WaitForTopicPullsAsync("orders", 2, cancellationToken);
+
+        Assert.Equal(
+            [0L, 0L],
+            remoting.PullOffsets
+                .Where(static pull => pull.Topic == "orders")
+                .Take(2)
+                .Select(static pull => pull.Offset));
+    }
+
+    [Fact]
     public async Task FifoRetryKeepsSameGroupSuccessorBlockedUntilPredecessorSucceedsAndIgnoresBatchAcknowledgementContext()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -2895,6 +2948,60 @@ public sealed class RemotingPushConsumerTests
         Assert.Contains(
             remoting.UpdatedOffsets,
             static update => update.Topic == "orders" && update.Offset == 2);
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_RepullsMessageFromSameOffsetWhenCommitFails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var releaseFirstPull = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var orderPulls = 0;
+        var body = CreateMessageRecord("orders", "orderly-commit-retry", null, 0, 1_000);
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-commit-retry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Increment(ref orderPulls) == 1)
+                {
+                    await releaseFirstPull.Task.WaitAsync(token);
+                    return PullSuccess(body, 1);
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            RetryDelay = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-commit-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
+        remoting.FailNextOffsetUpdate();
+        releaseFirstPull.TrySetResult();
+        await remoting.WaitForTopicPullsAsync("orders", 2, cancellationToken);
+
+        Assert.Equal(
+            [0L, 0L],
+            remoting.PullOffsets
+                .Where(static pull => pull.Topic == "orders")
+                .Take(2)
+                .Select(static pull => pull.Offset));
     }
 
     [Fact]

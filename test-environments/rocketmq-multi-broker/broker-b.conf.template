@@ -12,7 +12,7 @@ flushDiskType=ASYNC_FLUSH
 deleteWhen=04
 fileReservedTime=24
 
-defaultTopicQueueNums=8
+defaultTopicQueueNums=3
 autoCreateTopicEnable=true
 autoCreateSubscriptionGroup=true
 enablePropertyFilter=true

@@ -35,6 +35,14 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 目标上运行。Docker 驱动的集成测试继续使用 `net8.0`，以免专门优化过的四 job 集成测试矩阵把容器启动成本翻倍；
 solution build 仍会编译两个 Package 目标。
 
+BenchmarkDotNet 测量独立于 test runner，位于
+[`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks)。
+在仓库根目录使用 Release 模式单独运行 Remoting Push 分发 benchmark：
+
+```shell
+dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
+```
+
 ## 如何工作
 
 ### 1. 单元测试不依赖网络或 Docker
@@ -46,6 +54,17 @@ solution build 仍会编译两个 Package 目标。
 - message 编解码、frame 长度限制、ACL 签名和 response correlation；
 - route cache、重试、取消、连接故障和 handler 生命周期；
 - Consumer 对 `Success`、部分批量确认、`Retry`、`DeadLetter` 的处理决策。
+
+对于客户端能够确定性验证的行为，IT 覆盖不能替代 UT。即使 IT 已覆盖完整工作流，底层状态转换、分配、调度、
+offset、重试和失败不变量仍必须保留聚焦的 UT；IT 只在此基础上补充真实 Broker、NameServer、Proxy、transport、
+持久化和跨进程边界验证。
+
+IT 必须同时覆盖这些真实边界上的正常链路与相关异常行为。改动涉及故障隔离、重试、阻塞、恢复或持久化时，
+需要执行对应的真实失败路径，不能只验证成功路径。
+
+例如，多 Broker、多 Queue 行为必须用 UT 覆盖 route 展开、每个队列只分配一次、Consumer 数量多于队列时的
+空闲分配，以及逐队列调度与 offset 隔离；Docker IT 再验证对应的真实 NameServer route、Broker 持久化和
+跨客户端进程协调，并验证单个队列阻塞或重试时不会干扰已成功的队列。
 
 这样失败信息能直接指向客户端逻辑。若测试需要真实 endpoint 才能成立，它应迁移到对应的 integration
 test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。

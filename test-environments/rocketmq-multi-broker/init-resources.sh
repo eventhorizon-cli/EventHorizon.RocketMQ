@@ -7,6 +7,7 @@ nameserver_address=nameserver:9876
 standard_topic=eventhorizon-test-topic
 lite_parent_topic=eventhorizon-test-lite-parent-topic
 lite_consumer_group=eventhorizon-test-lite-push-consumer
+queues_per_broker=3
 
 attempt=1
 while [ "$attempt" -le 60 ]; do
@@ -31,12 +32,16 @@ for broker in broker-a:10911 broker-b:10921 broker-c:10931; do
     $mqadmin updateTopic \
         -n "$nameserver_address" \
         -b "$broker" \
-        -t "$standard_topic"
+        -t "$standard_topic" \
+        -r "$queues_per_broker" \
+        -w "$queues_per_broker"
 
     $mqadmin updateTopic \
         -n "$nameserver_address" \
         -b "$broker" \
         -t "$lite_parent_topic" \
+        -r "$queues_per_broker" \
+        -w "$queues_per_broker" \
         -a +message.type=LITE
 
     $mqadmin updateSubGroup \
@@ -49,4 +54,4 @@ done
 $mqadmin topicRoute -n "$nameserver_address" -t "$standard_topic"
 $mqadmin topicRoute -n "$nameserver_address" -t "$lite_parent_topic"
 
-echo "Sample resources are ready across all Brokers: standard topic $standard_topic; Lite parent topic $lite_parent_topic; Lite consumer group $lite_consumer_group."
+echo "Sample resources are ready across all Brokers with $queues_per_broker queues per Broker: standard topic $standard_topic; Lite parent topic $lite_parent_topic; Lite consumer group $lite_consumer_group."

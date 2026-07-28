@@ -11,6 +11,8 @@ This directory defines a local Apache RocketMQ 5.5.0 environment for manual mult
 - RocketMQ Dashboard on `http://localhost:8082`.
 
 This is a three-master route and partitioning environment, not a high-availability topology.
+Each Broker defaults to three queues per Topic. The resource initializer also creates the standard and Lite parent
+Topics with exactly three readable and three writable queues on each Broker, producing a nine-queue route.
 
 The Brokers do not replicate each other's data.
 
@@ -168,12 +170,16 @@ do
   docker compose exec proxy sh mqadmin updateTopic \
     -n nameserver:9876 \
     -b "$broker" \
-    -t rocketmq-dotnet-multi-broker-manual
+    -t rocketmq-dotnet-multi-broker-manual \
+    -r 3 \
+    -w 3
 done
 
 docker compose exec proxy sh mqadmin topicRoute \
   -n nameserver:9876 -t rocketmq-dotnet-multi-broker-manual
 ```
+
+The route should contain three readable and writable queues for each Broker, for nine physical queues in total.
 
 All three Brokers set `autoCreateSubscriptionGroup=true`. A standard Consumer Group is therefore created on first
 use. If you disable that setting or need explicit Group attributes, apply `mqadmin updateSubGroup -b` to each Broker
@@ -202,6 +208,8 @@ do
     -n nameserver:9876 \
     -b "$broker" \
     -t rocketmq-dotnet-multi-broker-lite-manual \
+    -r 3 \
+    -w 3 \
     -a +message.type=LITE
 
   docker compose exec proxy sh mqadmin updateSubGroup \

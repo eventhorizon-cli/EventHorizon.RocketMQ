@@ -52,12 +52,31 @@ consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
 that would be less clear with a mock.
 
+Integration coverage never substitutes for unit coverage of deterministic client-owned behavior. Even when an
+integration test covers the complete workflow, keep focused unit tests for the underlying state transitions,
+allocation, scheduling, offsets, retries, and failure invariants. Integration tests complement those checks at real
+Broker, NameServer, Proxy, transport, persistence, and cross-process boundaries.
+
+Integration suites cover both normal workflows and relevant abnormal behavior at those real boundaries. When a
+change involves failure isolation, retries, blocked work, recovery, or persistence, exercise the corresponding live
+failure path instead of limiting the integration suite to the successful path.
+
+For example, multi-Broker and multi-queue tests must cover route expansion, exactly-once queue assignment, more
+Consumers than queues, and per-queue scheduling and offset isolation in unit tests. Docker integration tests then
+validate the corresponding real NameServer route, Broker persistence, and coordination between client processes,
+including a blocked queue and a retried queue without disrupting successful queues.
+
 The publishable gRPC and Remoting packages target `net8.0` and `net10.0`. The three unit and compatibility
 test projects run on both targets. Docker-backed integration tests remain on `net8.0` so the focused four-job
 integration matrix does not double its container startup cost; the solution build still compiles both package targets.
 
 BenchmarkDotNet measurements remain separate from the test runner in
 [`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks).
+Run the Remoting Push dispatch benchmark independently in Release mode from the repository root:
+
+```shell
+dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
+```
 
 ### Integration tests and Testcontainers
 

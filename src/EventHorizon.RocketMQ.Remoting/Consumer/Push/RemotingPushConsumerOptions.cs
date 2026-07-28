@@ -47,8 +47,13 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public int ConsumeMessageBatchSize { get; set; } = 1;
 
     /// <summary>
-    /// Gets or sets the maximum number of messages that may wait for local dispatch.
+    /// Gets or sets the maximum number of newly pulled messages that may wait for their first local dispatch.
     /// </summary>
+    /// <remarks>
+    /// Messages already handed to a handler or retained behind unresolved settlement or an incomplete FIFO
+    /// predecessor do not hold admission capacity. A blocked queue also pauses new admission until it can make
+    /// progress, so this is not a strict limit on every message resident in the Consumer process.
+    /// </remarks>
     public int MaxCachedMessages { get; set; } = 1024;
 
     /// <summary>

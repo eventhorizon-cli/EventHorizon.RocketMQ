@@ -14,7 +14,7 @@ guide. Add a new scenario as a new directory rather than combining unrelated ser
 | --- | --- | --- | --- |
 | [`rocketmq`](rocketmq) | You need the normal starting point for standard Remoting or gRPC samples, or a single-Broker diagnostic environment. | NameServer, one Broker, a cluster-mode Proxy, RocketMQ Dashboard, and the standard sample Topic initializer. | [README](rocketmq/README.md) |
 | [`rocketmq-litepush`](rocketmq-litepush) | You want to run the bundled gRPC LitePush sample without manually creating RocketMQ resources. | NameServer, one Lite-enabled Broker, a cluster-mode Proxy, RocketMQ Dashboard, and an initialization service that creates the sample's LITE parent Topic and Consumer Group. | [README](rocketmq-litepush/README.md) |
-| [`rocketmq-multi-broker`](rocketmq-multi-broker) | You need to inspect route discovery, queue distribution, or behavior across three Brokers. | NameServer, three independent master Brokers, a cluster-mode Proxy, and RocketMQ Dashboard. | [README](rocketmq-multi-broker/README.md) |
+| [`rocketmq-multi-broker`](rocketmq-multi-broker) | You need to inspect route discovery, queue distribution, or behavior across three Brokers. | NameServer, three independent master Brokers with three queues each, a cluster-mode Proxy, and RocketMQ Dashboard. | [README](rocketmq-multi-broker/README.md) |
 | [`otel-lgtm`](otel-lgtm) | You want to inspect local RocketMQ client traces and metrics in Grafana. | Grafana OTEL LGTM with an OTLP collector, Grafana, Tempo, Prometheus, Loki, and Pyroscope. | [README](otel-lgtm/README.md) |
 
 The `rocketmq-litepush` environment is the recommended starting point for LitePush. Its resource initializer runs as

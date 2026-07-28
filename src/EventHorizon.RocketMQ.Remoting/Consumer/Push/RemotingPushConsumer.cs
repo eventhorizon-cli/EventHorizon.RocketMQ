@@ -15,7 +15,6 @@
 
 using System.Collections.Concurrent;
 using System.Text;
-using System.Threading.Channels;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
@@ -118,16 +117,23 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
             await _consumerEngine.StartAsync(cancellationToken).ConfigureAwait(false);
             var run = new RunState(
-                CreateDeliveryChannel(),
                 _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                 _options.MaxConcurrency,
                 _options.MaxCachedMessages);
             _run = run;
             try
             {
-                run.Workers = Enumerable.Range(0, _options.MaxConcurrency)
-                    .Select(_ => ProcessAsync(run))
-                    .ToArray();
+                if (!_options.ConsumeOrderly)
+                {
+                    run.ConcurrentConsumeDispatcher = new ConcurrentConsumeDispatcher(
+                        _options.MaxConcurrency,
+                        _options.ConsumeMessageBatchSize,
+                        (request, token) => ProcessConsumeRequestAsync(run, request, token),
+                        run.ReleaseDeliverySlots,
+                        run.Stopping.Token,
+                        _logger);
+                }
+
                 await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false);
                 run.Coordinator = CoordinateAsync(run);
             }
@@ -340,7 +346,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     continue;
                 }
 
-                receiver.Stopping.Cancel();
+                DropReceiver(run, receiver);
                 removed.Add(new ResetReceiver(receiver, offset));
             }
 
@@ -406,13 +412,6 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             run.CoordinationGate.Release();
         }
     }
-
-    private Channel<DeliveryBatch> CreateDeliveryChannel() =>
-        Channel.CreateUnbounded<DeliveryBatch>(new UnboundedChannelOptions
-        {
-            SingleReader = _options.MaxConcurrency == 1,
-            SingleWriter = false
-        });
 
     private async Task CoordinateAsync(RunState run)
     {
@@ -676,7 +675,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             if (entry.Key.Topic == topic && !desired.ContainsKey(entry.Key) &&
                 run.Receivers.TryRemove(entry.Key, out var receiver))
             {
-                receiver.Stopping.Cancel();
+                DropReceiver(run, receiver);
                 removed.Add(receiver);
             }
         }
@@ -715,7 +714,10 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 continue;
             }
 
-            var receiver = new QueueReceiver(entry.Value, run.Stopping.Token);
+            var receiver = new QueueReceiver(
+                entry.Value,
+                run.Stopping.Token,
+                createProcessQueue: !_options.ConsumeOrderly);
             if (UsesBrokerQueueLocks)
             {
                 receiver.MarkBrokerLockAcquired(_timeProvider.GetUtcNow());
@@ -729,7 +731,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
 
             receiver.Task = _options.ConsumeOrderly
                 ? PollOrderlyAsync(run, receiver)
-                : PollAsync(run, receiver);
+                : RunConcurrentQueueAsync(run, receiver);
         }
     }
 
@@ -909,11 +911,33 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         queue.BrokerName,
         queue.QueueId);
 
-    private async Task PollAsync(RunState run, QueueReceiver receiver)
+    private async Task RunConcurrentQueueAsync(RunState run, QueueReceiver receiver)
     {
-        var queue = receiver.Queue;
+        var processQueue = receiver.ProcessQueue!;
         var cancellationToken = receiver.Stopping.Token;
-        var offset = await InitializeOffsetAsync(run, queue, cancellationToken).ConfigureAwait(false);
+        var initialOffset = await InitializeOffsetAsync(run, receiver.Queue, cancellationToken).ConfigureAwait(false);
+        var persistInitialOffset = _resetBoundaries.ContainsKey(ResetQueueKey.Create(receiver.Queue));
+        processQueue.Initialize(initialOffset, persistInitialOffset);
+
+        await Task.WhenAll(
+            PollIntoProcessQueueAsync(
+                run,
+                processQueue,
+                initialOffset,
+                persistInitialOffset,
+                cancellationToken),
+            PersistProcessQueueOffsetsAsync(processQueue, cancellationToken)).ConfigureAwait(false);
+    }
+
+    private async Task PollIntoProcessQueueAsync(
+        RunState run,
+        ProcessQueue processQueue,
+        long initialOffset,
+        bool persistInitialOffset,
+        CancellationToken cancellationToken)
+    {
+        var queue = processQueue.MessageQueue;
+        var offset = initialOffset;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -922,132 +946,60 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     .ConfigureAwait(false);
                 if (result.Status == RemotingPullStatus.OffsetIllegal)
                 {
-                    await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
+                    await processQueue.WaitUntilEmptyAsync(cancellationToken).ConfigureAwait(false);
+                    processQueue.RequestOffsetReset(result.NextOffset);
+                    await processQueue.WaitUntilOffsetPersistedAsync(result.NextOffset, cancellationToken)
                         .ConfigureAwait(false);
+                    persistInitialOffset = false;
                     offset = result.NextOffset;
                     continue;
                 }
 
-                if (result.Messages.Count == 0)
+                if (result.Messages.Count > 0)
                 {
-                    var hasResetBoundary = _resetBoundaries.ContainsKey(ResetQueueKey.Create(queue));
-                    if (hasResetBoundary ||
-                        (_options.ConsumerMode == ConsumerMode.Broadcasting && result.NextOffset != offset))
-                    {
-                        await PersistOffsetAndClearResetBoundaryAsync(
-                            queue,
-                            result.NextOffset,
-                            cancellationToken).ConfigureAwait(false);
-                    }
-
-                    offset = result.NextOffset;
-                    continue;
-                }
-
-                var pending = result.Messages
-                    .Select(message => new Delivery(message, cancellationToken))
-                    .ToArray();
-                foreach (var delivery in pending)
-                {
-                    run.ReserveFifoOrder(delivery);
-                }
-
-                var deliveryBatches = CreateDeliveryBatches(pending);
-                try
-                {
-                    foreach (var batch in deliveryBatches)
+                    foreach (var messages in result.Messages
+                                 .OrderBy(static message => message.QueueOffset)
+                                 .Chunk(_options.ConsumeMessageBatchSize))
                     {
                         var slotsReserved = false;
                         try
                         {
-                            await run.ReserveDeliverySlotsAsync(batch.Deliveries.Count, cancellationToken)
+                            await processQueue.WaitUntilAdmissionAllowedAsync(cancellationToken)
+                                .ConfigureAwait(false);
+                            await run.ReserveDeliverySlotsAsync(messages.Length, cancellationToken)
                                 .ConfigureAwait(false);
                             slotsReserved = true;
-                            await run.Deliveries.Writer.WriteAsync(batch, cancellationToken).ConfigureAwait(false);
-                            batch.MarkQueued();
+                            var added = processQueue.PutMessages(
+                                messages,
+                                entry => run.ReserveFifoOrder(processQueue, entry));
+                            var unusedSlots = messages.Length - added.Count;
+                            if (unusedSlots > 0)
+                            {
+                                run.ReleaseDeliverySlots(unusedSlots);
+                            }
+
+                            slotsReserved = false;
+                            run.ReleaseDeliverySlots(processQueue.ReleaseAdmissionBlockedDeliverySlots());
+                            run.ConcurrentConsumeDispatcher!.NotifyReady(processQueue);
                         }
-                        catch
+                        finally
                         {
                             if (slotsReserved)
                             {
-                                run.ReleaseDeliverySlots(batch.Deliveries.Count);
+                                run.ReleaseDeliverySlots(messages.Length);
                             }
-
-                            throw;
-                        }
-                    }
-                }
-                catch
-                {
-                    foreach (var batch in deliveryBatches.Where(static batch => !batch.IsQueued))
-                    {
-                        foreach (var delivery in batch.Deliveries)
-                        {
-                            run.CompleteFifoOrder(delivery);
-                        }
-                    }
-
-                    throw;
-                }
-
-                var outcomes = await Task.WhenAll(pending.Select(static delivery => delivery.Completion.Task))
-                    .WaitAsync(cancellationToken).ConfigureAwait(false);
-                if (run.ShouldAbandonHandlerResults)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                }
-
-                if (_options.ConsumerMode == ConsumerMode.Broadcasting)
-                {
-                    for (var index = 0; index < outcomes.Length; index++)
-                    {
-                        if (outcomes[index].Result != ConsumeResult.Success)
-                        {
-                            _logger.LogWarning(
-                                "Broadcast consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
-                                pending[index].Message.MessageId,
-                                outcomes[index].Result);
-                        }
-                    }
-                }
-                else
-                {
-                    for (var index = 0; index < outcomes.Length; index++)
-                    {
-                        var outcome = outcomes[index];
-                        if (outcome.Result == ConsumeResult.Success)
-                        {
-                            continue;
-                        }
-
-                        var message = pending[index].Message;
-                        var deadLetter = outcome.Result == ConsumeResult.DeadLetter ||
-                                         outcome.DelayLevelWhenNextConsume < 0 ||
-                                         message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
-                        var retryOffset = deadLetter
-                            ? null
-                            : await PrepareRetryOffsetAsync(run, queue, cancellationToken).ConfigureAwait(false);
-                        await _consumerEngine.SendBackAsync(
-                            queue,
-                            message,
-                            deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
-                            _options.MaxDeliveryAttempts,
-                            cancellationToken).ConfigureAwait(false);
-                        if (!deadLetter)
-                        {
-                            if (retryOffset is { } initialization)
-                            {
-                                run.RetryBoundaries[QueueKey.Create(initialization.Queue)] = initialization.Offset;
-                                await PersistRetryOffsetAsync(initialization, CancellationToken.None).ConfigureAwait(false);
-                            }
-
-                            SignalRebalance(run);
                         }
                     }
                 }
 
-                await PersistOffsetAndClearResetBoundaryAsync(queue, result.NextOffset, cancellationToken)
-                    .ConfigureAwait(false);
+                processQueue.AdvanceNextPullOffset(result.NextOffset);
+                if (persistInitialOffset)
+                {
+                    await processQueue.WaitUntilOffsetPersistedAsync(initialOffset, cancellationToken)
+                        .ConfigureAwait(false);
+                    persistInitialOffset = false;
+                }
+
                 offset = result.NextOffset;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1067,38 +1019,44 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private IReadOnlyList<DeliveryBatch> CreateDeliveryBatches(IReadOnlyList<Delivery> deliveries)
+    private async Task PersistProcessQueueOffsetsAsync(
+        ProcessQueue processQueue,
+        CancellationToken cancellationToken)
     {
-        var batches = new List<DeliveryBatch>();
-        var batch = new List<Delivery>(Math.Min(_options.ConsumeMessageBatchSize, deliveries.Count));
-        foreach (var delivery in deliveries)
+        var queue = processQueue.MessageQueue;
+        while (!cancellationToken.IsCancellationRequested)
         {
-            if (!string.IsNullOrEmpty(delivery.Message.MessageGroup))
+            try
             {
-                AddBatch();
-                batches.Add(new DeliveryBatch([delivery]));
-                continue;
+                await processQueue.WaitForCommitAsync(cancellationToken).ConfigureAwait(false);
+                while (processQueue.TryGetOffsetCommit(out var commit))
+                {
+                    try
+                    {
+                        await PersistOffsetAndClearResetBoundaryAsync(queue, commit.Offset, cancellationToken)
+                            .ConfigureAwait(false);
+                        processQueue.MarkOffsetPersisted(commit);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogWarning(
+                            exception,
+                            "Unable to persist legacy process-queue offset for {Topic}/{BrokerName}/{QueueId}; retrying",
+                            queue.Topic,
+                            queue.BrokerName,
+                            queue.QueueId);
+                        await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+                    }
+                }
             }
-
-            batch.Add(delivery);
-            if (batch.Count == _options.ConsumeMessageBatchSize)
-            {
-                AddBatch();
-            }
-        }
-
-        AddBatch();
-        return batches;
-
-        void AddBatch()
-        {
-            if (batch.Count == 0)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-
-            batches.Add(new DeliveryBatch(batch.ToArray()));
-            batch.Clear();
         }
     }
 
@@ -1441,9 +1399,15 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         CancellationToken cancellationToken)
     {
         var retryQueue = CreateRetryQueue(sourceQueue);
-        if (run.Receivers.ContainsKey(QueueKey.Create(retryQueue)))
+        var retryQueueKey = QueueKey.Create(retryQueue);
+        if (run.Receivers.ContainsKey(retryQueueKey))
         {
             return null;
+        }
+
+        if (run.RetryBoundaries.TryGetValue(retryQueueKey, out var pendingBoundary))
+        {
+            return new RetryOffsetInitialization(retryQueue, pendingBoundary);
         }
 
         try
@@ -1458,11 +1422,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 retryQueue,
                 QueryOffsetPolicy.End,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            return new RetryOffsetInitialization(retryQueue, end);
+            var boundary = run.RetryBoundaries.GetOrAdd(retryQueueKey, end);
+            return new RetryOffsetInitialization(retryQueue, boundary);
         }
         catch (RemotingCommandException exception) when (exception.ResponseCode == ResponseCodes.ResTopicNotExist)
         {
-            return new RetryOffsetInitialization(retryQueue, 0);
+            var boundary = run.RetryBoundaries.GetOrAdd(retryQueueKey, 0);
+            return new RetryOffsetInitialization(retryQueue, boundary);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1485,113 +1451,222 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private async Task ProcessAsync(RunState run)
+    private async ValueTask ProcessConsumeRequestAsync(
+        RunState run,
+        ConsumeRequest request,
+        CancellationToken cancellationToken)
     {
+        var completed = new bool[request.Entries.Count];
+        var fifoReleased = new bool[request.Entries.Count];
+        var retryLocally = false;
         try
         {
-            await foreach (var batch in run.Deliveries.Reader.ReadAllAsync(run.Stopping.Token).ConfigureAwait(false))
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var entry in request.Entries)
             {
-                run.ReleaseDeliverySlots(batch.Deliveries.Count);
+                if (entry.FifoOrder is { } order)
+                {
+                    await order.Predecessor.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batchResult = default(BatchDeliveryResult);
+            if (!request.IsSettlementRetry)
+            {
                 try
                 {
-                    if (batch.QueueCancellation.IsCancellationRequested)
-                    {
-                        foreach (var delivery in batch.Deliveries)
-                        {
-                            delivery.Completion.TrySetCanceled(batch.QueueCancellation);
-                        }
-
-                        continue;
-                    }
-
-                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                        run.Stopping.Token,
-                        batch.QueueCancellation);
-                    try
-                    {
-                        foreach (var delivery in batch.Deliveries)
-                        {
-                            if (delivery.FifoOrder is { } order)
-                            {
-                                await order.Predecessor.WaitAsync(linked.Token).ConfigureAwait(false);
-                            }
-                        }
-
-                        var result = UsesConcurrentTimeoutRecovery(batch)
-                            ? await InvokeConcurrentDeliveryBatchAsync(run, batch, linked.Token).ConfigureAwait(false)
-                            : await HandleDeliveryBatchAsync(run, batch, linked.Token).ConfigureAwait(false);
-                        if (run.ShouldAbandonHandlerResults)
-                        {
-                            linked.Token.ThrowIfCancellationRequested();
-                        }
-
-                        for (var index = 0; index < batch.Deliveries.Count; index++)
-                        {
-                            batch.Deliveries[index].Completion.TrySetResult(result.GetOutcome(index));
-                        }
-                    }
-                    catch (OperationCanceledException) when (linked.IsCancellationRequested)
-                    {
-                        foreach (var delivery in batch.Deliveries)
-                        {
-                            delivery.Completion.TrySetCanceled(linked.Token);
-                        }
-
-                        if (run.Stopping.IsCancellationRequested)
-                        {
-                            return;
-                        }
-                    }
-                    catch (Exception exception)
-                    {
-                        _logger.LogError(
-                            exception,
-                            "Legacy message handler failed for a batch containing {MessageCount} messages",
-                            batch.Deliveries.Count);
-                        foreach (var delivery in batch.Deliveries)
-                        {
-                            delivery.Completion.TrySetResult(
-                                MessageConsumeResult.Retry(GetDelayLevel(_options.RetryDelay)));
-                        }
-                    }
+                    batchResult = UsesConcurrentTimeoutRecovery(request)
+                        ? await InvokeConcurrentConsumeRequestAsync(run, request, cancellationToken).ConfigureAwait(false)
+                        : await HandleConsumeRequestAsync(run, request, cancellationToken).ConfigureAwait(false);
                 }
-                finally
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    foreach (var delivery in batch.Deliveries)
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogError(
+                        exception,
+                        "Legacy message handler failed for a consume request containing {MessageCount} messages",
+                        request.Messages.Count);
+                    batchResult = BatchDeliveryResult.Retry(
+                        request.Messages.Count,
+                        GetDelayLevel(_options.RetryDelay));
+                }
+
+                if (run.ShouldAbandonHandlerResults)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+
+            for (var index = 0; index < request.Entries.Count; index++)
+            {
+                var entry = request.Entries[index];
+                var outcome = request.IsSettlementRetry
+                    ? new MessageConsumeResult(
+                        entry.PendingSettlementResult ?? throw new InvalidOperationException(
+                            "A settlement retry requires a stored consume result."),
+                        entry.PendingSettlementDelayLevel)
+                    : batchResult.GetOutcome(index);
+                if (_options.ConsumerMode == ConsumerMode.Broadcasting)
+                {
+                    if (outcome.Result != ConsumeResult.Success)
                     {
-                        run.CompleteFifoOrder(delivery);
+                        _logger.LogWarning(
+                            "Broadcast consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
+                            entry.Message.MessageId,
+                            outcome.Result);
                     }
+
+                    completed[index] = true;
+                    continue;
+                }
+
+                if (outcome.Result == ConsumeResult.Success)
+                {
+                    completed[index] = true;
+                    continue;
+                }
+
+                var message = entry.Message;
+                var deadLetter = outcome.Result == ConsumeResult.DeadLetter ||
+                                 outcome.DelayLevelWhenNextConsume < 0 ||
+                                 message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
+                run.ReleaseDeliverySlots(request.ProcessQueue.BeginSettlement(
+                    entry,
+                    deadLetter ? ConsumeResult.DeadLetter : ConsumeResult.Retry,
+                    deadLetter ? -1 : outcome.DelayLevelWhenNextConsume));
+                RetryOffsetInitialization? retryOffset;
+                try
+                {
+                    retryOffset = deadLetter
+                        ? null
+                        : await PrepareRetryOffsetAsync(run, request.ProcessQueue.MessageQueue, cancellationToken)
+                            .ConfigureAwait(false);
+                    await _consumerEngine.SendBackAsync(
+                        request.ProcessQueue.MessageQueue,
+                        message,
+                        deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
+                        _options.MaxDeliveryAttempts,
+                        cancellationToken).ConfigureAwait(false);
+                    completed[index] = true;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    retryLocally = true;
+                    request.ProcessQueue.DelaySettlementRetry(entry);
+                    _logger.LogWarning(
+                        exception,
+                        "Unable to settle message {MessageId} from {Topic}/{BrokerName}/{QueueId}; retrying locally",
+                        entry.Message.MessageId,
+                        request.ProcessQueue.MessageQueue.Topic,
+                        request.ProcessQueue.MessageQueue.BrokerName,
+                        request.ProcessQueue.MessageQueue.QueueId);
+                    continue;
+                }
+
+                if (!deadLetter)
+                {
+                    if (retryOffset is { } initialization)
+                    {
+                        try
+                        {
+                            await PersistRetryOffsetAsync(initialization, CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception exception)
+                        {
+                            _logger.LogWarning(
+                                exception,
+                                "Unable to initialize retry-queue offset for {Topic}/{BrokerName}/{QueueId}",
+                                initialization.Queue.Topic,
+                                initialization.Queue.BrokerName,
+                                initialization.Queue.QueueId);
+                        }
+                    }
+
+                    SignalRebalance(run);
+                }
+            }
+
+            for (var index = 0; index < request.Entries.Count; index++)
+            {
+                if (completed[index])
+                {
+                    run.CompleteFifoOrder(request.Entries[index]);
+                    fifoReleased[index] = true;
+                }
+            }
+
+            var hasPending = request.ProcessQueue.CompleteConsumeRequest(request, completed);
+            if (retryLocally)
+            {
+                _ = NotifyProcessQueueAfterDelayAsync(run, request.ProcessQueue, request.Entries);
+            }
+            else if (hasPending)
+            {
+                run.ConcurrentConsumeDispatcher!.NotifyReady(request.ProcessQueue);
+            }
+        }
+        finally
+        {
+            for (var index = 0; index < request.Entries.Count; index++)
+            {
+                if (!fifoReleased[index] && (completed[index] || request.ProcessQueue.IsDropped))
+                {
+                    run.CompleteFifoOrder(request.Entries[index]);
                 }
             }
         }
-        catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
+    }
+
+    private async Task NotifyProcessQueueAfterDelayAsync(
+        RunState run,
+        ProcessQueue processQueue,
+        IReadOnlyList<ProcessQueue.MessageEntry> entries)
+    {
+        try
+        {
+            await Task.Delay(_options.RetryDelay, processQueue.QueueCancellation).ConfigureAwait(false);
+            if (processQueue.ActivateSettlementRetries(entries))
+            {
+                run.ConcurrentConsumeDispatcher!.NotifyReady(processQueue);
+            }
+        }
+        catch (OperationCanceledException) when (processQueue.QueueCancellation.IsCancellationRequested)
         {
         }
     }
 
-    private async ValueTask<BatchDeliveryResult> HandleDeliveryBatchAsync(
+    private async ValueTask<BatchDeliveryResult> HandleConsumeRequestAsync(
         RunState run,
-        DeliveryBatch batch,
+        ConsumeRequest request,
         CancellationToken cancellationToken)
     {
-        if (batch.Deliveries.Count == 1)
+        if (request.Entries.Count == 1)
         {
-            var outcome = await HandleMessageAsync(run, batch.Deliveries[0], cancellationToken).ConfigureAwait(false);
+            var outcome = await HandleMessageAsync(run, request.Entries[0], cancellationToken).ConfigureAwait(false);
             return BatchDeliveryResult.All(outcome.Result, 1, outcome.DelayLevelWhenNextConsume);
         }
 
         return await InvokeMessageHandlerAsync(
             run,
-            batch.Deliveries.Select(static delivery => delivery.Message).ToArray(),
+            request.Messages,
             cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<MessageConsumeResult> HandleMessageAsync(
         RunState run,
-        Delivery delivery,
+        ProcessQueue.MessageEntry entry,
         CancellationToken cancellationToken)
     {
-        var attempt = delivery.Message.DeliveryAttempt;
+        var attempt = entry.Message.DeliveryAttempt;
         while (true)
         {
             MessageConsumeResult outcome;
@@ -1599,9 +1674,9 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             {
                 var batchResult = await InvokeMessageHandlerAsync(
                     run,
-                    new[] { delivery.Message },
+                    new[] { entry.Message },
                     cancellationToken).ConfigureAwait(false);
-                outcome = delivery.FifoOrder is null
+                outcome = entry.FifoOrder is null
                     ? batchResult.GetOutcome(0)
                     : new MessageConsumeResult(batchResult.Result, batchResult.DelayLevelWhenNextConsume);
             }
@@ -1614,12 +1689,12 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 _logger.LogError(
                     exception,
                     "Legacy message handler failed for message {MessageId}",
-                    delivery.Message.MessageId);
+                    entry.Message.MessageId);
                 outcome = MessageConsumeResult.Retry(GetDelayLevel(_options.RetryDelay));
             }
 
             if (_options.ConsumerMode == ConsumerMode.Broadcasting ||
-                delivery.FifoOrder is null || outcome.Result != ConsumeResult.Retry)
+                entry.FifoOrder is null || outcome.Result != ConsumeResult.Retry)
             {
                 return outcome;
             }
@@ -1689,13 +1764,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         DelayLevelWhenNextConsume = GetDelayLevel(_options.RetryDelay)
     };
 
-    private bool UsesConcurrentTimeoutRecovery(DeliveryBatch batch) =>
+    private bool UsesConcurrentTimeoutRecovery(ConsumeRequest request) =>
         _options.ConsumerMode == ConsumerMode.Clustering &&
-        batch.Deliveries.All(static delivery => delivery.FifoOrder is null);
+        request.Entries.All(static entry => entry.FifoOrder is null);
 
-    private async ValueTask<BatchDeliveryResult> InvokeConcurrentDeliveryBatchAsync(
+    private async ValueTask<BatchDeliveryResult> InvokeConcurrentConsumeRequestAsync(
         RunState run,
-        DeliveryBatch batch,
+        ConsumeRequest request,
         CancellationToken cancellationToken)
     {
         CancellationTokenSource? handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1703,7 +1778,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         try
         {
             var activeHandlerCancellation = handlerCancellation;
-            var messages = batch.Deliveries.Select(static delivery => delivery.Message).ToArray();
+            var messages = request.Messages;
             var context = CreateConsumeContext();
             var telemetry = StartMessageHandlerTelemetry(messages);
             var handler = InvokeTrackedMessageHandlerAsync(
@@ -1730,7 +1805,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             if (cancellationToken.IsCancellationRequested)
             {
                 telemetry.Complete(new OperationCanceledException(cancellationToken));
-                _ = ObserveTimedOutDeliveryBatchAsync(handlerTask, activeHandlerCancellation, batch.Deliveries.Count);
+                _ = ObserveTimedOutConsumeRequestAsync(handlerTask, activeHandlerCancellation, request.Messages.Count);
                 handlerCancellation = null;
                 cancellationToken.ThrowIfCancellationRequested();
             }
@@ -1747,13 +1822,13 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     "A cancellation callback failed after a legacy message handler exceeded the consume timeout");
             }
 
-            _ = ObserveTimedOutDeliveryBatchAsync(handlerTask, activeHandlerCancellation, batch.Deliveries.Count);
+            _ = ObserveTimedOutConsumeRequestAsync(handlerTask, activeHandlerCancellation, request.Messages.Count);
             handlerCancellation = null;
             _logger.LogWarning(
                 "Legacy message handler exceeded the configured consume timeout of {ConsumeTimeout} for a batch containing {MessageCount} messages; cancellation was requested and the batch will be retried",
                 _options.ConsumeTimeout,
-                batch.Deliveries.Count);
-            return BatchDeliveryResult.Retry(batch.Deliveries.Count, GetDelayLevel(_options.RetryDelay));
+                request.Messages.Count);
+            return BatchDeliveryResult.Retry(request.Messages.Count, GetDelayLevel(_options.RetryDelay));
         }
         finally
         {
@@ -1761,7 +1836,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private async Task ObserveTimedOutDeliveryBatchAsync(
+    private async Task ObserveTimedOutConsumeRequestAsync(
         Task<BatchDeliveryResult> handlerTask,
         CancellationTokenSource handlerCancellation,
         int messageCount)
@@ -1793,18 +1868,18 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         QueueReceiver[] receivers = [];
         run.Stopping.Cancel();
         SignalRebalance(run);
-        run.Deliveries.Writer.TryComplete();
+        run.ConcurrentConsumeDispatcher?.Complete();
         await AwaitTaskAsync(run.Coordinator).ConfigureAwait(false);
 
         receivers = run.Receivers.Values.ToArray();
         foreach (var receiver in receivers)
         {
-            receiver.Stopping.Cancel();
+            DropReceiver(run, receiver);
         }
 
         var activeTasks = receivers
             .Select(static receiver => receiver.Task)
-            .Concat(run.Workers)
+            .Concat(run.ConcurrentConsumeDispatcher?.ConsumeLoopTasks ?? [])
             .ToArray();
         try
         {
@@ -1842,7 +1917,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             }
             else
             {
-                ObserveDetachedWorkers(run, receivers, detachedTasks);
+                ObserveDetachedConsumeLoops(run, receivers, detachedTasks);
             }
         }
 
@@ -1927,6 +2002,17 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         sourceQueue.BrokerName,
         sourceQueue.BrokerAddress);
 
+    private static void DropReceiver(RunState run, QueueReceiver receiver)
+    {
+        var reservedDeliverySlots = receiver.ProcessQueue?.MarkDropped(run.DropFifoOrder) ?? 0;
+        if (reservedDeliverySlots > 0)
+        {
+            run.ReleaseDeliverySlots(reservedDeliverySlots);
+        }
+
+        receiver.Stopping.Cancel();
+    }
+
     private static void SignalRebalance(RunState run)
     {
         try
@@ -1979,14 +2065,17 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
     }
 
-    private void ObserveDetachedWorkers(RunState run, QueueReceiver[] receivers, Task workers) =>
-        _ = ObserveDetachedWorkersAsync(run, receivers, workers);
+    private void ObserveDetachedConsumeLoops(RunState run, QueueReceiver[] receivers, Task consumeLoops) =>
+        _ = ObserveDetachedConsumeLoopsAsync(run, receivers, consumeLoops);
 
-    private async Task ObserveDetachedWorkersAsync(RunState run, QueueReceiver[] receivers, Task workers)
+    private async Task ObserveDetachedConsumeLoopsAsync(
+        RunState run,
+        QueueReceiver[] receivers,
+        Task consumeLoops)
     {
         try
         {
-            await workers.ConfigureAwait(false);
+            await consumeLoops.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -2050,18 +2139,15 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
     private sealed class RunState : IDisposable
     {
         public RunState(
-            Channel<DeliveryBatch> deliveries,
             long subscriptionVersion,
             int maxConcurrency,
             int maxCachedMessages)
         {
-            Deliveries = deliveries;
             _subscriptionVersion = subscriptionVersion;
             OrderlyConcurrency = new SemaphoreSlim(maxConcurrency, maxConcurrency);
             DeliverySlots = new SemaphoreSlim(maxCachedMessages, maxCachedMessages);
         }
 
-        public Channel<DeliveryBatch> Deliveries { get; }
         public long SubscriptionVersion => Interlocked.Read(ref _subscriptionVersion);
         public CancellationTokenSource Stopping { get; } = new();
         public SemaphoreSlim RebalanceSignal { get; } = new(0, 1);
@@ -2072,7 +2158,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         public ConcurrentDictionary<QueueKey, QueueReceiver> Receivers { get; } = new();
         public ConcurrentDictionary<QueueKey, long> RetryBoundaries { get; } = new();
         public ConcurrentDictionary<string, BrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
-        public Task[] Workers { get; set; } = [];
+        public ConcurrentConsumeDispatcher? ConcurrentConsumeDispatcher { get; set; }
         public Task Coordinator { get; set; } = Task.CompletedTask;
 
         private object FifoGate { get; } = new();
@@ -2113,27 +2199,55 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             }
         }
 
-        public void ReleaseDeliverySlots(int count) => DeliverySlots.Release(count);
-
-        public void ReserveFifoOrder(Delivery delivery)
+        public void ReleaseDeliverySlots(int count)
         {
-            if (string.IsNullOrEmpty(delivery.Message.MessageGroup))
+            if (count > 0)
+            {
+                DeliverySlots.Release(count);
+            }
+        }
+
+        public void ReserveFifoOrder(ProcessQueue processQueue, ProcessQueue.MessageEntry entry)
+        {
+            if (string.IsNullOrEmpty(entry.Message.MessageGroup))
             {
                 return;
             }
 
-            var key = $"{delivery.Message.Topic}\0{delivery.Message.MessageGroup}";
+            var key = $"{entry.Message.Topic}\0{entry.Message.MessageGroup}";
             lock (FifoGate)
             {
                 var predecessor = FifoTails.TryGetValue(key, out var tail) ? tail : Task.CompletedTask;
-                delivery.FifoOrder = new FifoOrder(key, predecessor);
-                FifoTails[key] = delivery.FifoOrder.Completion.Task;
+                entry.FifoOrder = new ProcessQueue.FifoOrder(key, predecessor);
+                FifoTails[key] = entry.FifoOrder.Completion.Task;
+            }
+
+            if (!entry.FifoOrder.Predecessor.IsCompleted)
+            {
+                _ = NotifyFifoSuccessorAsync(processQueue, entry.FifoOrder.Predecessor);
             }
         }
 
-        public void CompleteFifoOrder(Delivery delivery)
+        public void DropFifoOrder(ProcessQueue.MessageEntry entry)
         {
-            if (delivery.FifoOrder is not { } order)
+            if (entry.FifoOrder is not { } order)
+            {
+                return;
+            }
+
+            if (order.Predecessor.IsCompleted)
+            {
+                CompleteFifoOrder(entry);
+            }
+            else
+            {
+                _ = CompleteDroppedFifoOrderAsync(entry, order.Predecessor);
+            }
+        }
+
+        public void CompleteFifoOrder(ProcessQueue.MessageEntry entry)
+        {
+            if (entry.FifoOrder is not { } order)
             {
                 return;
             }
@@ -2147,6 +2261,19 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                     FifoTails.Remove(order.Key);
                 }
             }
+        }
+
+        private async Task NotifyFifoSuccessorAsync(ProcessQueue processQueue, Task predecessor)
+        {
+            await predecessor.ConfigureAwait(false);
+            processQueue.NotifyFifoPredecessorCompleted();
+            ConcurrentConsumeDispatcher?.NotifyReady(processQueue);
+        }
+
+        private async Task CompleteDroppedFifoOrderAsync(ProcessQueue.MessageEntry entry, Task predecessor)
+        {
+            await predecessor.ConfigureAwait(false);
+            CompleteFifoOrder(entry);
         }
 
         public void Dispose()
@@ -2171,13 +2298,18 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         private long _brokerLockTimestamp;
         private int _brokerLockHeld;
 
-        public QueueReceiver(RemotingPullMessageQueue queue, CancellationToken stopping)
+        public QueueReceiver(
+            RemotingPullMessageQueue queue,
+            CancellationToken stopping,
+            bool createProcessQueue)
         {
             Queue = queue;
             Stopping = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+            ProcessQueue = createProcessQueue ? new ProcessQueue(queue, Stopping.Token) : null;
         }
 
         public RemotingPullMessageQueue Queue { get; }
+        public ProcessQueue? ProcessQueue { get; }
         public CancellationTokenSource Stopping { get; }
         public Task Task { get; set; } = Task.CompletedTask;
 
@@ -2223,27 +2355,6 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             _brokerLockAvailable.Dispose();
             Stopping.Dispose();
         }
-    }
-
-    private sealed class DeliveryBatch
-    {
-        public DeliveryBatch(IReadOnlyList<Delivery> deliveries)
-        {
-            ArgumentNullException.ThrowIfNull(deliveries);
-            if (deliveries.Count == 0)
-            {
-                throw new ArgumentException("At least one delivery is required.", nameof(deliveries));
-            }
-
-            Deliveries = deliveries;
-            QueueCancellation = deliveries[0].QueueCancellation;
-        }
-
-        public IReadOnlyList<Delivery> Deliveries { get; }
-        public CancellationToken QueueCancellation { get; }
-        public bool IsQueued { get; private set; }
-
-        public void MarkQueued() => IsQueued = true;
     }
 
     private sealed class MessageHandlerTelemetry(IRemotingRocketMQTelemetryOperation operation)
@@ -2343,35 +2454,6 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 Result == ConsumeResult.Success && index >= AcknowledgedCount ? ConsumeResult.Retry : Result,
                 DelayLevelWhenNextConsume);
         }
-    }
-
-    private sealed class Delivery
-    {
-        public Delivery(RemotingMessageView message, CancellationToken queueCancellation)
-        {
-            Message = message;
-            QueueCancellation = queueCancellation;
-            Completion = new TaskCompletionSource<MessageConsumeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        public RemotingMessageView Message { get; }
-        public CancellationToken QueueCancellation { get; }
-        public TaskCompletionSource<MessageConsumeResult> Completion { get; }
-        public FifoOrder? FifoOrder { get; set; }
-    }
-
-    private sealed class FifoOrder
-    {
-        public FifoOrder(string key, Task predecessor)
-        {
-            Key = key;
-            Predecessor = predecessor;
-            Completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        public string Key { get; }
-        public Task Predecessor { get; }
-        public TaskCompletionSource Completion { get; }
     }
 
     private readonly record struct QueueKey(string Topic, string BrokerName, int QueueId, string BrokerAddress)

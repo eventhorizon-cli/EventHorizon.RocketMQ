@@ -561,6 +561,30 @@ dispatch, only non-`MessageGroup` messages received from the same Broker physica
 FIFO messages and all `ConsumeOrderly` deliveries are passed as singleton lists to preserve ordering and retry
 semantics. Eligible concurrent batches can run in parallel up to `MaxConcurrency`.
 
+Concurrent dispatch maintains one client-side `ProcessQueue` for each assigned Broker physical queue. It buffers
+locally pulled messages and their consumption state; it is not another Broker queue and creates no server-side
+resource. Pulling can advance independently of handler completion. `MaxCachedMessages` bounds admission of newly
+pulled messages waiting for their first dispatch. In-flight batches do not retain that capacity. When settlement is
+unresolved or a FIFO message has an incomplete predecessor, including one in another physical queue, messages already
+cached by that `ProcessQueue` release their admission and new admission for the queue pauses until it can make
+progress. A blocked queue therefore cannot monopolize capacity needed by healthy queues. This also means the setting
+is not a strict limit on every resident message.
+
+Ready notifications are coalesced to one per `ProcessQueue`. Shared logical consume loops take one batch per ready
+queue and put a queue with remaining work at the back, providing fair round-robin dispatch across active queues.
+`MaxConcurrency` limits these loops across the whole Consumer, not per queue. They are asynchronous .NET ThreadPool
+tasks and are neither dedicated nor bound to fixed threads.
+
+Offsets are persisted from a contiguous completion watermark maintained independently by each `ProcessQueue`.
+Finishing a later batch or a batch from another queue cannot skip an unresolved earlier offset. Failed
+retry/dead-letter settlement is retried locally after `RetryDelay`, without invoking the application handler again,
+and cannot advance the watermark; offset persistence failures are also retried. A dropped assignment ignores late
+handler completion so it cannot affect a replacement assignment.
+
+The name and ownership role of `ProcessQueue` follow the official RocketMQ Java client. The fair ready-queue scheduler
+and its one-batch-per-turn extraction from `ProcessQueue` are a .NET design; the Java concurrent path creates consume
+requests directly from each newly pulled message list, so the data paths are not exact copies.
+
 `ConsumeTimeout` defaults to 15 minutes. For a concurrent clustered non-FIFO batch that exceeds the timeout, the
 consumer cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate
 application code that ignores cancellation; its late result is ignored and can overlap a redelivered invocation, so

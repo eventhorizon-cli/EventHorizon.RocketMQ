@@ -59,8 +59,9 @@ dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Benchmark
 offset、重试和失败不变量仍必须保留聚焦的 UT；IT 只在此基础上补充真实 Broker、NameServer、Proxy、transport、
 持久化和跨进程边界验证。
 
-IT 必须同时覆盖这些真实边界上的正常链路与相关异常行为。改动涉及故障隔离、重试、阻塞、恢复或持久化时，
-需要执行对应的真实失败路径，不能只验证成功路径。
+IT 必须同时覆盖这些真实边界上可以确定性执行的正常链路与相关异常行为。改动涉及故障隔离、重试、阻塞、恢复或
+持久化时，需要执行稳定的真实失败路径，不能只验证成功路径。若真实环境无法可靠注入底层 transport 或持久化失败，
+这些场景仍必须由确定性 UT 覆盖，不能用易抖动的 Docker 故障注入替代。
 
 例如，多 Broker、多 Queue 行为必须用 UT 覆盖 route 展开、每个队列只分配一次、Consumer 数量多于队列时的
 空闲分配，以及逐队列调度与 offset 隔离；Docker IT 再验证对应的真实 NameServer route、Broker 持久化和

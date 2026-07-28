@@ -57,9 +57,11 @@ integration test covers the complete workflow, keep focused unit tests for the u
 allocation, scheduling, offsets, retries, and failure invariants. Integration tests complement those checks at real
 Broker, NameServer, Proxy, transport, persistence, and cross-process boundaries.
 
-Integration suites cover both normal workflows and relevant abnormal behavior at those real boundaries. When a
-change involves failure isolation, retries, blocked work, recovery, or persistence, exercise the corresponding live
-failure path instead of limiting the integration suite to the successful path.
+Integration suites cover both normal workflows and relevant abnormal behavior that can be exercised deterministically
+at those real boundaries. When a change involves failure isolation, retries, blocked work, recovery, or persistence,
+exercise a stable live failure path instead of limiting the integration suite to the successful path. Low-level
+transport or persistence failures that the live environment cannot inject reliably remain mandatory deterministic
+unit-test cases; do not replace them with flaky Docker fault injection.
 
 For example, multi-Broker and multi-queue tests must cover route expansion, exactly-once queue assignment, more
 Consumers than queues, and per-queue scheduling and offset isolation in unit tests. Docker integration tests then

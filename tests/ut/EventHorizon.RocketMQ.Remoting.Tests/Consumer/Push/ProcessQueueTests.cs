@@ -23,6 +23,21 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
 public sealed class ProcessQueueTests
 {
     [Fact]
+    public async Task ForcedInitialOffsetImmediatelySignalsCommit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var processQueue = CreateProcessQueue();
+
+        processQueue.Initialize(7, forcePersist: true);
+
+        await processQueue.WaitForCommitAsync(cancellationToken).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.True(processQueue.TryGetOffsetCommit(out var commit));
+        Assert.Equal(7, commit.Offset);
+        Assert.True(commit.IsForced);
+    }
+
+    [Fact]
     public void CompletionAdvancesOnlyAcrossContiguousRequestsAndReleasesCompletedPayloads()
     {
         var processQueue = CreateProcessQueue();

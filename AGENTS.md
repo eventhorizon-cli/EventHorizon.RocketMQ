@@ -96,9 +96,10 @@ topology, or manual environment.
   integration test covers the full workflow, add or retain focused unit tests for the underlying state transitions,
   allocation, scheduling, offset, retry, and failure invariants; use integration tests to complement them at real
   Broker, NameServer, Proxy, transport, persistence, and cross-process boundaries.
-- Integration suites must cover both the normal workflow and relevant abnormal behavior at those real boundaries,
-  including failure isolation, retries, blocked work, recovery, and persistence when the changed behavior involves
-  them.
+- Integration suites must cover both the normal workflow and relevant abnormal behavior that can be exercised
+  deterministically at those real boundaries, including failure isolation, retries, blocked work, recovery, and
+  persistence when the live environment provides a stable trigger. Low-level transport or persistence failures that
+  cannot be injected reliably remain mandatory unit-test cases; do not replace them with flaky Docker fault injection.
 - Matching foundational-model changes require both protocol unit-test projects and the compatibility project. Run the
   matching integration project when behavior crosses a live Broker, NameServer, Proxy, or transport boundary and
   Docker is available.

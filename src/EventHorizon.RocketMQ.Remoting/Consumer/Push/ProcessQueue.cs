@@ -84,6 +84,11 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
             _persistedOffset = offset;
             _forcedPersistOffset = forcePersist ? offset : null;
         }
+
+        if (forcePersist)
+        {
+            Signal(_commitAvailable);
+        }
     }
 
     public IReadOnlyList<MessageEntry> PutMessages(

@@ -3306,6 +3306,102 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
+    public async Task SettlementFailureInHotQueueDoesNotBlockHealthyQueueAdmission()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var hotFollowerCached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settlementFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var healthyHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hotPulls = 0;
+        var healthyPulls = 0;
+        var hotFollowerCalls = 0;
+        var sendBackAttempts = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@settlement-isolation")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) != "orders")
+                {
+                    return await WaitForCanceledPullAsync(token);
+                }
+
+                var queueId = Convert.ToInt32(request.ExtFields["queueId"]);
+                if (queueId == 0)
+                {
+                    return Interlocked.Increment(ref hotPulls) switch
+                    {
+                        1 => PullSuccess(
+                            CreateMessageRecord("orders", "hot-head", null, 0, 1_000, queueId: 0),
+                            1),
+                        2 => PullSuccess(
+                            CreateMessageRecord("orders", "hot-follower", null, 1, 1_001, queueId: 0),
+                            2),
+                        3 => await SignalThenWaitForCanceledPullAsync(hotFollowerCached, token),
+                        _ => await WaitForCanceledPullAsync(token)
+                    };
+                }
+
+                await settlementFailed.Task.WaitAsync(token);
+                if (Interlocked.Exchange(ref healthyPulls, 1) == 0)
+                {
+                    return PullSuccess(
+                        CreateMessageRecord("orders", "healthy", null, 0, 2_000, queueId: 1),
+                        1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            },
+            SendBackHandler = (_, _) =>
+            {
+                Interlocked.Increment(ref sendBackAttempts);
+                settlementFailed.TrySetResult();
+                return Task.FromException<RemotingCommand>(
+                    new IOException("The Broker did not accept the retry acknowledgement."));
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 1,
+            ConsumeMessageBatchSize = 1,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            RetryDelay = TimeSpan.FromHours(1),
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (messages, _, token) =>
+            {
+                switch (Assert.Single(messages).MessageId)
+                {
+                    case "hot-head":
+                        await hotFollowerCached.Task.WaitAsync(token);
+                        return ConsumeResult.Retry;
+                    case "hot-follower":
+                        Interlocked.Increment(ref hotFollowerCalls);
+                        return ConsumeResult.Success;
+                    case "healthy":
+                        healthyHandled.TrySetResult();
+                        return ConsumeResult.Success;
+                    default:
+                        throw new InvalidOperationException("The test received an unexpected message.");
+                }
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock(queueCount: 2).Object,
+            remoting,
+            "settlement-isolation");
+
+        await consumer.StartAsync(cancellationToken);
+        await healthyHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(1, sendBackAttempts);
+        Assert.Equal(0, hotFollowerCalls);
+    }
+
+    [Fact]
     public async Task ConcurrentPushConsumer_PreservesFirstRetryBoundaryWhenItsPersistenceFails()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -4086,6 +4182,14 @@ public sealed class RemotingPushConsumerTests
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         throw new InvalidOperationException("An infinite pull completed unexpectedly.");
+    }
+
+    private static async Task<RemotingCommand> SignalThenWaitForCanceledPullAsync(
+        TaskCompletionSource signal,
+        CancellationToken cancellationToken)
+    {
+        signal.TrySetResult();
+        return await WaitForCanceledPullAsync(cancellationToken);
     }
 
     private static void UpdateMaximum(ref int target, int candidate)

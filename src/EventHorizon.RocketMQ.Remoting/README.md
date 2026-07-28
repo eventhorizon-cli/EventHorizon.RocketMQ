@@ -564,8 +564,10 @@ semantics. Eligible concurrent batches can run in parallel up to `MaxConcurrency
 Concurrent dispatch maintains one client-side `ProcessQueue` for each assigned Broker physical queue. It buffers
 locally pulled messages and their consumption state; it is not another Broker queue and creates no server-side
 resource. Pulling can advance independently of handler completion. `MaxCachedMessages` bounds admission of newly
-pulled messages waiting for their first dispatch. In-flight batches and messages retained for settlement retry do not
-reacquire that capacity, so it is not a strict limit on every resident message.
+pulled messages waiting for their first dispatch. In-flight batches do not retain that capacity. When settlement is
+unresolved, later messages already cached by that `ProcessQueue` release their admission and new admission for the
+queue pauses until settlement succeeds, so a failed queue cannot monopolize capacity needed by healthy queues. This
+also means the setting is not a strict limit on every resident message.
 
 Ready notifications are coalesced to one per `ProcessQueue`. Shared logical consume loops take one batch per ready
 queue and put a queue with remaining work at the back, providing fair round-robin dispatch across active queues.

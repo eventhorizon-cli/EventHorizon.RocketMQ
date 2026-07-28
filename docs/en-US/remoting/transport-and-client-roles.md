@@ -106,8 +106,10 @@ path to preserve ordering guarantees.
 In concurrent mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue` holds
 locally pulled messages and their consumption state; it is not another Broker queue and does not create any
 server-side resource. Pulling can advance independently of handler completion. `MaxCachedMessages` bounds admission
-of newly pulled messages waiting for their first dispatch. Batches already handed to handlers and messages retained
-for settlement retry do not reacquire that admission capacity, so it is not a strict limit on every resident message.
+of newly pulled messages waiting for their first dispatch. Batches already handed to handlers do not retain that
+capacity. When settlement is unresolved, later messages already cached by that `ProcessQueue` release their admission
+and new admission for the queue pauses until settlement succeeds. A failed queue therefore cannot monopolize capacity
+needed by healthy queues, and the setting is not a strict limit on every resident message.
 
 Ready `ProcessQueue` instances enter a coalesced ready queue at most once. The shared logical consume loops take one
 handler batch from a ready queue, put it at the back again when more work remains, and thereby round-robin across

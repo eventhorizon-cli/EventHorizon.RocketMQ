@@ -964,6 +964,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         var slotsReserved = false;
                         try
                         {
+                            await processQueue.WaitUntilAdmissionAllowedAsync(cancellationToken)
+                                .ConfigureAwait(false);
                             await run.ReserveDeliverySlotsAsync(messages.Length, cancellationToken)
                                 .ConfigureAwait(false);
                             slotsReserved = true;
@@ -977,6 +979,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                             }
 
                             slotsReserved = false;
+                            run.ReleaseDeliverySlots(processQueue.ReleaseSettlementBlockedDeliverySlots());
                             run.ConcurrentConsumeDispatcher!.NotifyReady(processQueue);
                         }
                         finally
@@ -1532,8 +1535,10 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 var deadLetter = outcome.Result == ConsumeResult.DeadLetter ||
                                  outcome.DelayLevelWhenNextConsume < 0 ||
                                  message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
-                entry.PendingSettlementResult = deadLetter ? ConsumeResult.DeadLetter : ConsumeResult.Retry;
-                entry.PendingSettlementDelayLevel = deadLetter ? -1 : outcome.DelayLevelWhenNextConsume;
+                run.ReleaseDeliverySlots(request.ProcessQueue.BeginSettlement(
+                    entry,
+                    deadLetter ? ConsumeResult.DeadLetter : ConsumeResult.Retry,
+                    deadLetter ? -1 : outcome.DelayLevelWhenNextConsume));
                 RetryOffsetInitialization? retryOffset;
                 try
                 {
@@ -1547,7 +1552,6 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
                         _options.MaxDeliveryAttempts,
                         cancellationToken).ConfigureAwait(false);
-                    entry.PendingSettlementResult = null;
                     completed[index] = true;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1557,7 +1561,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                 catch (Exception exception)
                 {
                     retryLocally = true;
-                    entry.DelaySettlementRetry = true;
+                    request.ProcessQueue.DelaySettlementRetry(entry);
                     _logger.LogWarning(
                         exception,
                         "Unable to settle message {MessageId} from {Topic}/{BrokerName}/{QueueId}; retrying locally",

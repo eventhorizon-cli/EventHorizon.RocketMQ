@@ -101,9 +101,8 @@ public sealed class ProcessQueueTests
         processQueue.AdvanceNextPullOffset(1);
         Assert.True(processQueue.TryCreateConsumeRequest(1, out var first));
         Assert.True(processQueue.TryStartConsumeRequest(first));
-        first.Entries[0].PendingSettlementResult = ConsumeResult.Retry;
-        first.Entries[0].PendingSettlementDelayLevel = 3;
-        first.Entries[0].DelaySettlementRetry = true;
+        Assert.Equal(0, processQueue.BeginSettlement(first.Entries[0], ConsumeResult.Retry, 3));
+        processQueue.DelaySettlementRetry(first.Entries[0]);
 
         Assert.False(processQueue.CompleteConsumeRequest(first, [false]));
         Assert.False(processQueue.TryQueueForDispatch());
@@ -115,6 +114,36 @@ public sealed class ProcessQueueTests
         processQueue.CompleteConsumeRequest(retry, [true]);
         Assert.True(processQueue.TryGetOffsetCommit(out var commit));
         Assert.Equal(1, commit.Offset);
+    }
+
+    [Fact]
+    public async Task SettlementBarrierReturnsQueuedSlotsAndPausesAdmissionUntilResolved()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var processQueue = CreateProcessQueue();
+        processQueue.Initialize(0, forcePersist: false);
+        processQueue.PutMessages([CreateMessage(0), CreateMessage(1)]);
+        processQueue.AdvanceNextPullOffset(2);
+        Assert.True(processQueue.TryCreateConsumeRequest(1, out var first));
+        Assert.True(processQueue.TryStartConsumeRequest(first));
+
+        Assert.Equal(1, processQueue.BeginSettlement(first.Entries[0], ConsumeResult.Retry, 3));
+        var admission = processQueue.WaitUntilAdmissionAllowedAsync(cancellationToken).AsTask();
+        Assert.False(admission.IsCompleted);
+
+        Assert.Single(processQueue.PutMessages([CreateMessage(2)]));
+        processQueue.AdvanceNextPullOffset(3);
+        Assert.Equal(1, processQueue.ReleaseSettlementBlockedDeliverySlots());
+
+        processQueue.DelaySettlementRetry(first.Entries[0]);
+        Assert.False(processQueue.CompleteConsumeRequest(first, [false]));
+        Assert.True(processQueue.ActivateSettlementRetries(first.Entries));
+        Assert.True(processQueue.TryCreateConsumeRequest(1, out var retry));
+        Assert.True(processQueue.TryStartConsumeRequest(retry));
+        Assert.True(processQueue.CompleteConsumeRequest(retry, [true]));
+
+        await admission.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.True(processQueue.TryQueueForDispatch());
     }
 
     [Fact]

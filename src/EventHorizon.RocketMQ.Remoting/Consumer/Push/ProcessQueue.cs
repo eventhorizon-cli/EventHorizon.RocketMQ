@@ -26,6 +26,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
     private readonly object _gate = new();
     private readonly SortedDictionary<long, MessageEntry> _messages = [];
     private readonly Channel<bool> _commitAvailable = CreateSignalChannel();
+    private readonly Channel<bool> _admissionAvailable = CreateSignalChannel();
     private readonly Channel<bool> _stateChanged = CreateSignalChannel();
     private long _nextPullOffset;
     private long _committableOffset;
@@ -34,6 +35,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
     private long _commitGeneration;
     private bool _initialized;
     private bool _readyQueued;
+    private bool _settlementBlocked;
     private bool _dropped;
 
     public RemotingPullMessageQueue MessageQueue { get; } = messageQueue;
@@ -227,7 +229,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
             var settlementRetry = false;
             foreach (var entry in _messages.Values)
             {
-                if (entry.State == MessageState.SettlementDelayed)
+                if (entry.PendingSettlementResult.HasValue && !entry.IsDispatchable)
                 {
                     break;
                 }
@@ -327,6 +329,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
 
         bool hasPending;
         bool commitAvailable;
+        bool admissionAvailable;
         lock (_gate)
         {
             if (_dropped)
@@ -353,6 +356,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
             }
 
             AdvanceCommittableOffsetCore();
+            admissionAvailable = UpdateSettlementBlockedCore();
             hasPending = HasDispatchableMessageCore();
             commitAvailable = HasCommitAvailableCore();
         }
@@ -360,6 +364,11 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         if (commitAvailable)
         {
             Signal(_commitAvailable);
+        }
+
+        if (admissionAvailable)
+        {
+            Signal(_admissionAvailable);
         }
 
         Signal(_stateChanged);
@@ -374,6 +383,8 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
             throw new ArgumentException("The consume request belongs to another process queue.", nameof(request));
         }
 
+        bool hasPending;
+        bool admissionAvailable;
         lock (_gate)
         {
             if (_dropped)
@@ -391,7 +402,48 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
                 }
             }
 
-            return _messages.Values.Any(static entry => entry.IsReady);
+            admissionAvailable = UpdateSettlementBlockedCore();
+            hasPending = _messages.Values.Any(static entry => entry.IsReady);
+        }
+
+        if (admissionAvailable)
+        {
+            Signal(_admissionAvailable);
+        }
+
+        return hasPending;
+    }
+
+    public int BeginSettlement(MessageEntry entry, ConsumeResult result, int delayLevel)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        lock (_gate)
+        {
+            if (_dropped ||
+                !_messages.TryGetValue(entry.Message.QueueOffset, out var current) ||
+                !ReferenceEquals(current, entry))
+            {
+                return 0;
+            }
+
+            entry.PendingSettlementResult = result;
+            entry.PendingSettlementDelayLevel = delayLevel;
+            _settlementBlocked = true;
+            return ReleaseSettlementBlockedDeliverySlotsCore();
+        }
+    }
+
+    public void DelaySettlementRetry(MessageEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        lock (_gate)
+        {
+            if (!_dropped &&
+                _messages.TryGetValue(entry.Message.QueueOffset, out var current) &&
+                ReferenceEquals(current, entry))
+            {
+                entry.DelaySettlementRetry = true;
+            }
         }
     }
 
@@ -419,6 +471,30 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
 
     public async ValueTask WaitForCommitAsync(CancellationToken cancellationToken) =>
         await _commitAvailable.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask WaitUntilAdmissionAllowedAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            lock (_gate)
+            {
+                if (_dropped || !_settlementBlocked)
+                {
+                    return;
+                }
+            }
+
+            await _admissionAvailable.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public int ReleaseSettlementBlockedDeliverySlots()
+    {
+        lock (_gate)
+        {
+            return ReleaseSettlementBlockedDeliverySlotsCore();
+        }
+    }
 
     public bool TryGetOffsetCommit(out OffsetCommit commit)
     {
@@ -527,6 +603,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
 
             _dropped = true;
             _readyQueued = false;
+            _settlementBlocked = false;
             foreach (var entry in _messages.Values)
             {
                 if (entry.HasReservedDeliverySlot)
@@ -557,6 +634,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         }
 
         Signal(_commitAvailable);
+        Signal(_admissionAvailable);
         Signal(_stateChanged);
         return reservedDeliverySlots;
     }
@@ -586,9 +664,9 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
     {
         foreach (var entry in _messages.Values)
         {
-            if (entry.State == MessageState.SettlementDelayed)
+            if (entry.PendingSettlementResult.HasValue)
             {
-                return false;
+                return entry.IsDispatchable;
             }
 
             if (entry.IsDispatchable)
@@ -598,6 +676,35 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         }
 
         return false;
+    }
+
+    private bool UpdateSettlementBlockedCore()
+    {
+        var wasBlocked = _settlementBlocked;
+        _settlementBlocked = _messages.Values.Any(static entry => entry.PendingSettlementResult.HasValue);
+        return wasBlocked && !_settlementBlocked;
+    }
+
+    private int ReleaseSettlementBlockedDeliverySlotsCore()
+    {
+        if (!_settlementBlocked)
+        {
+            return 0;
+        }
+
+        var released = 0;
+        foreach (var entry in _messages.Values)
+        {
+            if (!entry.HasReservedDeliverySlot)
+            {
+                continue;
+            }
+
+            entry.HasReservedDeliverySlot = false;
+            released++;
+        }
+
+        return released;
     }
 
     private bool HasCommitAvailableCore() =>

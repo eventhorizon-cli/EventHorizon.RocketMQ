@@ -979,7 +979,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                             }
 
                             slotsReserved = false;
-                            run.ReleaseDeliverySlots(processQueue.ReleaseSettlementBlockedDeliverySlots());
+                            run.ReleaseDeliverySlots(processQueue.ReleaseAdmissionBlockedDeliverySlots());
                             run.ConcurrentConsumeDispatcher!.NotifyReady(processQueue);
                         }
                         finally
@@ -2266,6 +2266,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         private async Task NotifyFifoSuccessorAsync(ProcessQueue processQueue, Task predecessor)
         {
             await predecessor.ConfigureAwait(false);
+            processQueue.NotifyFifoPredecessorCompleted();
             ConcurrentConsumeDispatcher?.NotifyReady(processQueue);
         }
 

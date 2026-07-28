@@ -3402,6 +3402,115 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
+    public async Task BlockedCrossQueueFifoSuccessorDoesNotConsumeHealthyQueueAdmission()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var predecessorStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var successorCached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settlementFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var healthyHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queueZeroPulls = 0;
+        var queueOnePulls = 0;
+        var queueTwoPulls = 0;
+        var successorCalls = 0;
+        var sendBackAttempts = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@cross-queue-fifo-admission")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) != "orders")
+                {
+                    return await WaitForCanceledPullAsync(token);
+                }
+
+                var queueId = Convert.ToInt32(request.ExtFields["queueId"]);
+                if (queueId == 0)
+                {
+                    if (Interlocked.Increment(ref queueZeroPulls) == 1)
+                    {
+                        return PullSuccess(
+                            CreateMessageRecord("orders", "fifo-head", "account-7", 0, 1_000, queueId: 0),
+                            1);
+                    }
+
+                    return await WaitForCanceledPullAsync(token);
+                }
+
+                if (queueId == 1)
+                {
+                    if (Interlocked.Increment(ref queueOnePulls) == 1)
+                    {
+                        await predecessorStarted.Task.WaitAsync(token);
+                        return PullSuccess(
+                            CreateMessageRecord("orders", "fifo-successor", "account-7", 0, 1_001, queueId: 1),
+                            1);
+                    }
+
+                    return await SignalThenWaitForCanceledPullAsync(successorCached, token);
+                }
+
+                await settlementFailed.Task.WaitAsync(token);
+                if (Interlocked.Increment(ref queueTwoPulls) == 1)
+                {
+                    return PullSuccess(
+                        CreateMessageRecord("orders", "healthy", null, 0, 2_000, queueId: 2),
+                        1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            },
+            SendBackHandler = (_, _) =>
+            {
+                Interlocked.Increment(ref sendBackAttempts);
+                settlementFailed.TrySetResult();
+                return Task.FromException<RemotingCommand>(
+                    new IOException("The Broker did not accept the dead-letter settlement."));
+            }
+        };
+        var options = new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            InitialPosition = ConsumeFromPosition.Beginning,
+            BatchSize = 1,
+            ConsumeMessageBatchSize = 1,
+            MaxConcurrency = 1,
+            MaxCachedMessages = 1,
+            RetryDelay = TimeSpan.FromHours(1),
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+            MessageHandler = async (messages, _, token) =>
+            {
+                switch (Assert.Single(messages).MessageId)
+                {
+                    case "fifo-head":
+                        predecessorStarted.TrySetResult();
+                        await successorCached.Task.WaitAsync(token);
+                        return ConsumeResult.DeadLetter;
+                    case "fifo-successor":
+                        Interlocked.Increment(ref successorCalls);
+                        return ConsumeResult.Success;
+                    case "healthy":
+                        healthyHandled.TrySetResult();
+                        return ConsumeResult.Success;
+                    default:
+                        throw new InvalidOperationException("The test received an unexpected message.");
+                }
+            }
+        };
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock(queueCount: 3).Object,
+            remoting,
+            "cross-queue-fifo-admission");
+
+        await consumer.StartAsync(cancellationToken);
+        await healthyHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(1, sendBackAttempts);
+        Assert.Equal(0, successorCalls);
+    }
+
+    [Fact]
     public async Task ConcurrentPushConsumer_PreservesFirstRetryBoundaryWhenItsPersistenceFails()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

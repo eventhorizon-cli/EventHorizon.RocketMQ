@@ -50,9 +50,9 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// Gets or sets the maximum number of newly pulled messages that may wait for their first local dispatch.
     /// </summary>
     /// <remarks>
-    /// Messages already handed to a handler or retained behind unresolved settlement do not hold admission
-    /// capacity. A settlement-blocked queue also pauses new admission until settlement succeeds, so this is not a
-    /// strict limit on every message resident in the Consumer process.
+    /// Messages already handed to a handler or retained behind unresolved settlement or an incomplete FIFO
+    /// predecessor do not hold admission capacity. A blocked queue also pauses new admission until it can make
+    /// progress, so this is not a strict limit on every message resident in the Consumer process.
     /// </remarks>
     public int MaxCachedMessages { get; set; } = 1024;
 

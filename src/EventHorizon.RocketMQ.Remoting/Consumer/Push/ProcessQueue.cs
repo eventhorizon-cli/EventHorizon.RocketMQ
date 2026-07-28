@@ -35,7 +35,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
     private long _commitGeneration;
     private bool _initialized;
     private bool _readyQueued;
-    private bool _settlementBlocked;
+    private bool _admissionBlocked;
     private bool _dropped;
 
     public RemotingPullMessageQueue MessageQueue { get; } = messageQueue;
@@ -122,6 +122,8 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
                     }
                 }
             }
+
+            UpdateAdmissionBlockedCore();
         }
 
         return added;
@@ -356,7 +358,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
             }
 
             AdvanceCommittableOffsetCore();
-            admissionAvailable = UpdateSettlementBlockedCore();
+            admissionAvailable = UpdateAdmissionBlockedCore();
             hasPending = HasDispatchableMessageCore();
             commitAvailable = HasCommitAvailableCore();
         }
@@ -402,7 +404,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
                 }
             }
 
-            admissionAvailable = UpdateSettlementBlockedCore();
+            admissionAvailable = UpdateAdmissionBlockedCore();
             hasPending = _messages.Values.Any(static entry => entry.IsReady);
         }
 
@@ -428,8 +430,8 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
 
             entry.PendingSettlementResult = result;
             entry.PendingSettlementDelayLevel = delayLevel;
-            _settlementBlocked = true;
-            return ReleaseSettlementBlockedDeliverySlotsCore();
+            _admissionBlocked = true;
+            return ReleaseAdmissionBlockedDeliverySlotsCore();
         }
     }
 
@@ -478,7 +480,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         {
             lock (_gate)
             {
-                if (_dropped || !_settlementBlocked)
+                if (_dropped || !_admissionBlocked)
                 {
                     return;
                 }
@@ -488,11 +490,25 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         }
     }
 
-    public int ReleaseSettlementBlockedDeliverySlots()
+    public int ReleaseAdmissionBlockedDeliverySlots()
     {
         lock (_gate)
         {
-            return ReleaseSettlementBlockedDeliverySlotsCore();
+            return ReleaseAdmissionBlockedDeliverySlotsCore();
+        }
+    }
+
+    public void NotifyFifoPredecessorCompleted()
+    {
+        bool admissionAvailable;
+        lock (_gate)
+        {
+            admissionAvailable = UpdateAdmissionBlockedCore();
+        }
+
+        if (admissionAvailable)
+        {
+            Signal(_admissionAvailable);
         }
     }
 
@@ -603,7 +619,7 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
 
             _dropped = true;
             _readyQueued = false;
-            _settlementBlocked = false;
+            _admissionBlocked = false;
             foreach (var entry in _messages.Values)
             {
                 if (entry.HasReservedDeliverySlot)
@@ -678,16 +694,18 @@ internal sealed class ProcessQueue(RemotingPullMessageQueue messageQueue, Cancel
         return false;
     }
 
-    private bool UpdateSettlementBlockedCore()
+    private bool UpdateAdmissionBlockedCore()
     {
-        var wasBlocked = _settlementBlocked;
-        _settlementBlocked = _messages.Values.Any(static entry => entry.PendingSettlementResult.HasValue);
-        return wasBlocked && !_settlementBlocked;
+        var wasBlocked = _admissionBlocked;
+        _admissionBlocked = _messages.Values.Any(static entry =>
+            entry.PendingSettlementResult.HasValue ||
+            entry.FifoOrder is { } fifoOrder && !fifoOrder.Predecessor.IsCompleted);
+        return wasBlocked && !_admissionBlocked;
     }
 
-    private int ReleaseSettlementBlockedDeliverySlotsCore()
+    private int ReleaseAdmissionBlockedDeliverySlotsCore()
     {
-        if (!_settlementBlocked)
+        if (!_admissionBlocked)
         {
             return 0;
         }

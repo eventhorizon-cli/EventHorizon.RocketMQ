@@ -133,7 +133,7 @@ public sealed class ProcessQueueTests
 
         Assert.Single(processQueue.PutMessages([CreateMessage(2)]));
         processQueue.AdvanceNextPullOffset(3);
-        Assert.Equal(1, processQueue.ReleaseSettlementBlockedDeliverySlots());
+        Assert.Equal(1, processQueue.ReleaseAdmissionBlockedDeliverySlots());
 
         processQueue.DelaySettlementRetry(first.Entries[0]);
         Assert.False(processQueue.CompleteConsumeRequest(first, [false]));
@@ -142,6 +142,58 @@ public sealed class ProcessQueueTests
         Assert.True(processQueue.TryStartConsumeRequest(retry));
         Assert.True(processQueue.CompleteConsumeRequest(retry, [true]));
 
+        await admission.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.True(processQueue.TryQueueForDispatch());
+    }
+
+    [Fact]
+    public async Task FifoPredecessorBarrierReturnsSlotAndPausesAdmissionUntilPredecessorCompletes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var predecessor = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processQueue = CreateProcessQueue();
+        processQueue.Initialize(0, forcePersist: false);
+        processQueue.PutMessages(
+            [CreateMessage(0, "account-7")],
+            entry => entry.FifoOrder = new ProcessQueue.FifoOrder("orders\0account-7", predecessor.Task));
+
+        Assert.Equal(1, processQueue.ReleaseAdmissionBlockedDeliverySlots());
+        Assert.Equal(0, processQueue.ReleaseAdmissionBlockedDeliverySlots());
+        Assert.False(processQueue.TryQueueForDispatch());
+        var admission = processQueue.WaitUntilAdmissionAllowedAsync(cancellationToken).AsTask();
+        Assert.False(admission.IsCompleted);
+
+        predecessor.TrySetResult();
+        processQueue.NotifyFifoPredecessorCompleted();
+
+        await admission.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.True(processQueue.TryQueueForDispatch());
+    }
+
+    [Fact]
+    public async Task AdmissionRemainsBlockedUntilSettlementAndFifoPredecessorAreResolved()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var predecessor = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processQueue = CreateProcessQueue();
+        processQueue.Initialize(0, forcePersist: false);
+        processQueue.PutMessages(
+            [CreateMessage(0), CreateMessage(1, "account-7")],
+            entry => entry.FifoOrder = entry.Message.MessageGroup is null
+                ? null
+                : new ProcessQueue.FifoOrder("orders\0account-7", predecessor.Task));
+        processQueue.AdvanceNextPullOffset(2);
+        Assert.True(processQueue.TryCreateConsumeRequest(1, out var first));
+        Assert.True(processQueue.TryStartConsumeRequest(first));
+        Assert.Equal(1, processQueue.BeginSettlement(first.Entries[0], ConsumeResult.Retry, 3));
+        var admission = processQueue.WaitUntilAdmissionAllowedAsync(cancellationToken).AsTask();
+        Assert.False(admission.IsCompleted);
+
+        predecessor.TrySetResult();
+        processQueue.NotifyFifoPredecessorCompleted();
+
+        Assert.False(admission.IsCompleted);
+        Assert.True(processQueue.CompleteConsumeRequest(first, [true]));
         await admission.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         Assert.True(processQueue.TryQueueForDispatch());
     }

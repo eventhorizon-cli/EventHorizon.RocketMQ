@@ -46,6 +46,10 @@ is assigned to one consumer in that group, so adding consumers increases useful 
 count reaches the total readable queue count across all Brokers. Additional consumers can remain idle. Consumers in
 different groups receive independent consumption of the topic.
 
+All clustering instances in the same group must use the same topic and filter subscriptions. Allocation uses the
+group's complete consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is
+not consuming that topic, while inconsistent filters can make accepted messages depend on the current queue owner.
+
 The client maintains one local `ProcessQueue` for every assigned Broker `MessageQueue`. A `ProcessQueue` holds pulled
 messages and their consumption state; it is not a new Broker queue and creates no server resource. The name and
 ownership concept follow the official RocketMQ Java client.

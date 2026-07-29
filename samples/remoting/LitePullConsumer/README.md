@@ -30,6 +30,10 @@ startup, the SDK resolves the subscriptions, sends active-consumer heartbeats, a
 `Assignment` exposes a snapshot of the queues currently owned by this consumer. When a group has more consumers than
 readable queues, some consumers can legitimately have no assignment.
 
+All instances in the same group must use the same topic and filter subscriptions. Allocation uses the group's complete
+consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is not consuming that
+topic, while inconsistent filters can make accepted messages depend on the current queue owner.
+
 The subscription-mode processing loop is:
 
 1. Call `PollAsync` to long-poll the next active assigned queue.

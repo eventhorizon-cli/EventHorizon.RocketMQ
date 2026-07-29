@@ -26,6 +26,9 @@
 SDK 会解析订阅、发送主动消费心跳，并持续维护集群分配。`Assignment` 提供当前 Consumer 所属队列的快照。当一个 group
 中的 Consumer 数量多于可读队列数量时，部分 Consumer 没有分配是正常情况。
 
+同一 group 的所有实例必须使用相同的 topic 和 filter 订阅。分配会针对每个 topic 使用完整的 group consumer-id
+列表；订阅不一致可能把队列分给没有消费该 topic 的成员，filter 不一致则会让实际接收结果取决于当前队列所有者。
+
 订阅模式的处理循环为：
 
 1. 调用 `PollAsync`，长轮询下一个处于活跃状态的已分配队列。

@@ -42,6 +42,10 @@ classic 心跳并协调活跃 receiver。
 中的一个队列只会分配给一个 Consumer，因此增加 Consumer 只有在数量不超过所有 Broker 上可读队列总数时才能增加有效
 并行度；多出的 Consumer 可能保持空闲。不同 group 的 Consumer 会各自独立消费此 topic。
 
+同一 group 的所有集群实例必须使用相同的 topic 和 filter 订阅。分配会针对每个 topic 使用完整的 group
+consumer-id 列表；订阅不一致可能把队列分给没有消费该 topic 的成员，filter 不一致则会让实际接收结果取决于当前
+队列所有者。
+
 客户端会为每个已分配的 Broker `MessageQueue` 维护一个本地 `ProcessQueue`。`ProcessQueue` 保存已拉取消息及其
 消费状态；它不是新建的 Broker 队列，也不会创建服务端资源。这个名称和职责概念沿用了 RocketMQ 官方 Java 客户端。
 

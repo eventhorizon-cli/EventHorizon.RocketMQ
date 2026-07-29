@@ -66,7 +66,17 @@ Histogram view、基数限制、采样、保留和 exporter 应由应用的可�
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
+```
+
+在一个终端中启动 Consumer host：
+
+```shell
 dotnet run --project samples/opentelemetry/ConsumerWebApi
+```
+
+再在另一个终端中启动 Producer host：
+
+```shell
 dotnet run --project samples/opentelemetry/ProducerWebApi
 ```
 

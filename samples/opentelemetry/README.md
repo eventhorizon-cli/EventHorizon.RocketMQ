@@ -73,7 +73,17 @@ Grafana OTEL LGTM environment by default.
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
+```
+
+Start the Consumer host in one terminal:
+
+```shell
 dotnet run --project samples/opentelemetry/ConsumerWebApi
+```
+
+Then start the Producer host in another terminal:
+
+```shell
 dotnet run --project samples/opentelemetry/ProducerWebApi
 ```
 

@@ -1,102 +1,102 @@
-# OpenTelemetry Producer Web API 示例
+# OpenTelemetry Producer 集成
 
 [OpenTelemetry 示例](../README.zh-CN.md) | [English](README.md)
 
-这个 ASP.NET Core Minimal API 是本仓库 RocketMQ OpenTelemetry instrumentation 的 Producer 侧示例。它在同一个 host 中注册一个
-gRPC Producer 和一个 classic Remoting Producer，但通过明确的协议专用路由分别调用。它不会在后台循环发送消息。运行独立的
-[Consumer Web API](../ConsumerWebApi/README.zh-CN.md)，即可查看 trace 的 Consumer 侧。
+当消息发送需要与入口 HTTP 请求、数据库调用及其他应用工作进入同一套分布式追踪和运行指标时，应把 RocketMQ
+Producer instrumentation 加入应用现有的 OpenTelemetry pipeline。该集成按协议区分：gRPC 与 classic Remoting
+具有不同的客户端和传输边界，因此发布不同的 activity source 与 meter。
 
-共享的 SDK、OTLP、Compose 与 Grafana 配置请参阅 [OpenTelemetry 示例总览](../README.zh-CN.md)。
-发送量、速率、时延和 trace 请在
-[Producer dashboard](http://127.0.0.1:3000/d/rocketmq-client-observability/rocketmq-producer-opentelemetry) 中查看。
+不要只为 RocketMQ 创建第二套 provider。进程只注册实际使用的协议扩展；resource identity、采样、processor、
+metric view 和 exporter 仍由应用负责。RocketMQ package 只产生 `Activity` 与 `Meter` 信号，不替应用选择可观测性
+后端。
 
-## 运行
+## OpenTelemetry 注册
 
-先按总览中的说明启动环境，再从仓库根目录运行本项目：
+`AddRocketMQGrpcInstrumentation` 和 `AddRocketMQRemotingInstrumentation` 分别为 `TracerProviderBuilder` 与
+`MeterProviderBuilder` 提供扩展。为 tracing 注册不会自动注册 metrics，反之亦然：
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(serviceName))
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint))
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint));
+```
+
+公共 activity source 与 meter 名称分别为 `EventHorizon.RocketMQ.Grpc` 和
+`EventHorizon.RocketMQ.Remoting`。应用通常使用这些扩展方法，无需手动订阅名称。
+
+instrumentation 注册不会创建 RocketMQ 客户端。每种协议及其 Producer 角色仍通过对应的公共 SDK API 注册：
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc(grpcClientSection.Bind)
+    .AddGrpcProducer(grpcProducerSection.Bind);
+
+builder.Services
+    .AddRocketMQRemoting(remotingClientSection.Bind)
+    .AddRemotingProducer(remotingProducerSection.Bind);
+```
+
+直接注入 `IGrpcProducer` 或 `IRemotingProducer`。即使两种协议向同一个 OpenTelemetry provider 导出信号，也不存在
+传输无关的 Producer 抽象。
+
+## 发送信号与上下文传播
+
+Producer 发送会在当前应用 Activity 下创建 `ActivityKind.Producer` Activity。对应协议的 activity source 存在
+listener 时，客户端会把当前分布式上下文注入出站消息属性，并保留消息中已有的传播字段。配套的自动 Consumer
+随后可以跨服务边界把 process Activity 与该 Producer 上下文关联起来。
+
+gRPC instrumentation 覆盖 `IGrpcProducer` 的所有发送路径，包括事务发送。Remoting instrumentation 覆盖普通、
+响应、批量和单向发送路径。两种协议的 meter 都会产生：
+
+| Instrument | 含义 |
+| --- | --- |
+| `rocketmq.client.operations` | 按操作和结果标记的已完成客户端操作数。 |
+| `rocketmq.client.messages` | 该操作处理的消息数。 |
+| `rocketmq.client.operation.duration` | 以秒计的操作耗时。 |
+
+发送 Activity 和指标描述的是客户端操作；拿到发送回执不代表 Consumer 已经处理消息。采样、直方图 bucket、基数
+限制、保留和导出行为仍由应用决定。
+
+## 失败语义
+
+SDK 发送抛出异常时，Activity 会标记为 error，Activity 和失败操作指标都会记录 `error.type`。应用应将取消信号传给
+`SendAsync`；instrumentation 不会把取消或超时的发送放入持久化本地 outbox。重试策略、不确定结果和幂等性仍由
+应用负责。
+
+classic Remoting 还会通过 `RemotingSendResult.Status` 返回部分持久性结果，例如 `FlushDiskTimeout`、
+`FlushSlaveTimeout` 或 `SlaveNotAvailable`。这些是协议返回值，不是异常，因此调用方必须检查 `Status`；存在一条已
+完成的发送 Activity 不能替代该检查。单向发送完成同样不代表 Broker 已经存储消息。
+
+Trace 上下文注入需要 activity listener。关闭 tracing 后仍可独立采集 metrics。客户端不会覆盖消息中已有的传播字段。
+
+完整的 span 属性、link 和 metric tag 请参阅
+[OpenTelemetry 设计说明](../../../docs/zh-CN/architecture/opentelemetry-instrumentation.md)。Producer 消息和回执语义
+仍分别由 [gRPC 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)与
+[Remoting 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)说明。
+
+## 配置与运行
+
+应用自有配置为 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`。Endpoint 必须是绝对 HTTP 或 HTTPS
+URI；本项目使用 OTLP/gRPC 导出。可通过 `OpenTelemetry__ServiceName` 和 `OpenTelemetry__OtlpEndpoint` 覆盖。
+RocketMQ 连接与 Producer options 仍放在协议专用的 `RocketMQ:Grpc` 和 `RocketMQ:Remoting` 配置节。
+
+启动共享 RocketMQ 与 Grafana OTEL LGTM 环境，再运行 Producer 集成：
 
 ```shell
+docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 dotnet run --project samples/opentelemetry/ProducerWebApi
 ```
 
-使用 HTTP launch profile 时，Swagger 位于 [http://localhost:5241/swagger](http://localhost:5241/swagger)。若需要可预测的
-命令行地址，请禁用该 profile：
-
-```shell
-ASPNETCORE_URLS=http://127.0.0.1:5241 \
-  dotnet run --no-launch-profile --project samples/opentelemetry/ProducerWebApi
-```
-
-## 路由
-
-| 方法 | 路由 | 客户端 | 成功响应 |
-| --- | --- | --- | --- |
-| `GET` | `/health` | 无 | host 正常运行时返回 `200 OK`。 |
-| `POST` | `/messages/grpc` | `IGrpcProducer` | gRPC message ID、topic 和 offset。 |
-| `POST` | `/messages/remoting` | `IRemotingProducer` | Remoting message ID、topic、Broker、队列、offset 和发送状态。 |
-
-两个发送路由接受相同的可选 JSON 请求体。示例始终发送到共享 Topic `eventhorizon-test-topic`，并使用
-`observability` tag；这两个值会固定，以确保配套的 Consumer 示例可以收到每一条请求。请求只接收消息文本：
-
-```json
-{
-  "message": "Hello from curl."
-}
-```
-
-仓库提供的 [`rocketmq` 环境](../../../test-environments/rocketmq/README.zh-CN.md)会在启动时创建共享的普通示例 Topic，
-因此下面的请求可以直接运行。每次请求都会生成独立的 RocketMQ message key。`message` 为必填字段；缺失、空字符串或仅含空白字符时会返回
-`400` validation problem。
-
-通过两个客户端分别发送：
-
-```shell
-curl --request POST http://127.0.0.1:5241/messages/grpc \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello through gRPC."}'
-
-curl --request POST http://127.0.0.1:5241/messages/remoting \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello through Remoting."}'
-```
-
-gRPC 响应示例：
-
-```json
-{
-  "messageId": "01...",
-  "topic": "eventhorizon-test-topic",
-  "offset": 0
-}
-```
-
-Remoting 响应示例：
-
-```json
-{
-  "messageId": "C0A801...",
-  "topic": "eventhorizon-test-topic",
-  "brokerName": "broker-a",
-  "queueId": 0,
-  "queueOffset": 0,
-  "status": "SendOk"
-}
-```
-
-无法连接 RocketMQ 时会记录错误并返回 `503 Service Unavailable`；如果 HTTP 请求被取消，对应的 Producer 操作也会被取消。
-
-## RocketMQ 配置
-
-项目在 `appsettings.json` 中提供以下本地默认值：
-
-| Key | 默认值 | 用途 |
-| --- | --- | --- |
-| `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | `/messages/grpc` 使用的 RocketMQ 5 Proxy 端点。 |
-| `RocketMQ:Grpc:Producer:SendMsgTimeout` | `00:00:03` | gRPC Producer 发送超时。 |
-| `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | `/messages/remoting` 使用的 NameServer。 |
-| `RocketMQ:Remoting:Producer:GroupName` | `eventhorizon-otel-remoting-producer` | classic Remoting Producer Group。 |
-| `RocketMQ:Remoting:Producer:SendMsgTimeout` | `00:00:03` | Remoting Producer 发送超时。 |
-| `Sample:ServiceName` | `eventhorizon-rocketmq-otel-producer` | traces 和 metrics 导出的 resource service name。 |
-| `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector 端点。 |
-
-可通过标准 .NET 配置覆盖任意设置。例如，使用
-`RocketMQ__Grpc__Client__Endpoint=proxy.example:8081` 连接其他 Proxy。两个客户端注册仍保持协议专用，并可分别配置。
+可运行 host 通过 Swagger 分别暴露 gRPC 与 Remoting 发送操作。使用
+[Consumer 集成](../ConsumerWebApi/README.zh-CN.md)观察接收、处理和结算信号；仓库提供的 dashboard 与完整本地拓扑
+请参阅 [OpenTelemetry 总览](../README.zh-CN.md)。

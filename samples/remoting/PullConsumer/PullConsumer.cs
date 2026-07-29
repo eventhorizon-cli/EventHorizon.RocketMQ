@@ -14,21 +14,18 @@
 // limitations under the License.
 
 using System.Text;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Samples.Remoting.PullConsumer;
 
 internal sealed class PullConsumer(
     IRemotingPullConsumer consumer,
-    IOptions<PullConsumerSampleOptions> options,
     IHostApplicationLifetime applicationLifetime,
     ILogger<PullConsumer> logger) : BackgroundService
 {
-    private readonly PullConsumerSampleOptions _options = options.Value;
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -93,14 +90,13 @@ internal sealed class PullConsumer(
         RemotingPullMessageQueue queue,
         CancellationToken cancellationToken)
     {
-        // Existing group offsets take precedence over the configured initial-position policy.
+        // Existing group offsets take precedence over the sample's initial-position choice.
         var committed = await consumer.GetOffsetAsync(queue, cancellationToken).ConfigureAwait(false);
         return committed >= 0
             ? committed
             : await consumer.QueryOffsetAsync(
                 queue,
-                _options.InitialOffset,
-                _options.InitialTimestamp,
-                cancellationToken).ConfigureAwait(false);
+                QueryOffsetPolicy.End,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

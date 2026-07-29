@@ -23,15 +23,6 @@ using Microsoft.Extensions.Hosting;
 var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-var sampleOptions = new PushConsumerSampleOptions();
-sampleSection.Bind(sampleOptions);
-
-builder.Services
-    .AddOptions<PushConsumerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "Subscription filter is required.")
-    .ValidateOnStart();
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
 // Push delivery uses client-initiated long polling.
@@ -42,7 +33,7 @@ builder.Services
     .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         consumerSection.Bind(options);
-        options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
+        options.Subscribe("eventhorizon-test-topic", new FilterExpression("sample"));
     });
 
 await builder.Build().RunAsync();

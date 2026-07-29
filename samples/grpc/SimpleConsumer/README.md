@@ -1,79 +1,89 @@
-# gRPC SimpleConsumer sample
+# gRPC SimpleConsumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This Generic Host sample registers `IGrpcSimpleConsumer` through `AddRocketMQGrpc` and
-`AddGrpcSimpleConsumer`. The hosted worker explicitly calls `ReceiveAsync`, processes each message,
-and then calls `AckAsync`; the application, rather than the client, controls those steps.
+`IGrpcSimpleConsumer` is the application-driven gRPC consumption model. The application asks a RocketMQ Proxy for a
+batch of messages, decides when processing is complete, and settles every message explicitly. It is not classic
+queue-and-offset Pull, and the Broker does not push messages over a connection to the application.
 
-## Configuration
+## When to use it
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
-| `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
-| `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Consumer:GroupName` | `rocketmq-dotnet-grpc-simple-sample` | Consumer group that owns acknowledgements and retry state. |
-| `RocketMQ:Consumer:AwaitDuration` | `00:00:05` | Server-side receive long-poll duration. |
-| `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration for a received message. |
-| `Sample:Filter` | `sample` | Tag filter expression for the fixed standard topic. |
-| `Sample:BatchSize` | `16` | Maximum messages requested by each receive call. |
-| `Sample:MaxDeliveryAttempts` | `16` | Threshold passed when forwarding a corrupted message to the dead-letter queue. |
+Use SimpleConsumer when the acknowledgement boundary belongs in application code. Typical cases include coupling an
+acknowledgement to a durable write, choosing the batch size for each receive, extending invisibility around long work,
+or applying a custom concurrency and backpressure policy.
 
-This sample always subscribes to `eventhorizon-test-topic`; the Topic is fixed in code. The Producer sample's fixed
-`sample` tag matches the default filter.
+Use `IGrpcPushConsumer` instead when a handler-oriented API with automatic receive, dispatch, and settlement is a
+better fit. Use classic Remoting Pull when the application must select Broker queues and manage numeric offsets
+directly.
 
-## Prerequisites
+## SDK workflow
 
-- A RocketMQ 5 Proxy must be reachable at `RocketMQ:Client:Endpoint`; the client does not connect
-  directly to a NameServer.
-- The standard topic and consumer group must exist, or the Broker must permit their automatic
-  creation. The supplied environment creates the fixed Topic at startup. Create both resources explicitly when using
-  another Broker with automatic resource creation disabled:
+Register the gRPC transport with `AddRocketMQGrpc`, then add one SimpleConsumer role to that registration:
 
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
+```csharp
+rocketMQ.AddGrpcSimpleConsumer(options =>
+{
+    options.GroupName = "orders-simple-consumer";
+    options.AwaitDuration = TimeSpan.FromSeconds(5);
+    options.InvisibleDuration = TimeSpan.FromSeconds(30);
+    options.Subscribe("orders", new FilterExpression("created"));
+});
+```
 
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-    -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-simple-sample
-  ```
+The Generic Host integration starts and stops the registered role. Without a host, resolve `IGrpcSimpleConsumer` and
+call `StartAsync` and `StopAsync` explicitly.
 
-- The supplied RocketMQ 5.5.0 Compose environment supports SimpleConsumer at `localhost:8081`.
-  Its one-shot resource initializer creates the fixed Topic before the startup command returns, but production
-  deployments commonly require administrators to provision both resources first.
+The public API keeps reception and settlement separate:
 
-Start the supplied environment from the repository root:
+| API | Responsibility |
+| --- | --- |
+| `SubscribeAsync` / `UnsubscribeAsync` | Change the live topic and filter set after startup. `Subscribe` on the options object defines an initial subscription. |
+| `ReceiveAsync` | Long-poll the Proxy and return up to the requested number of `GrpcMessageView` values. An empty result is valid. |
+| `AckAsync` | Confirm one message after its business effect is durable. |
+| `ChangeInvisibleDurationAsync` | Replace the current invisibility duration when processing needs more time. |
+| `ForwardToDeadLetterQueueAsync` | Explicitly move a message to the consumer group's dead-letter queue using the supplied delivery-attempt threshold. |
+
+Check `GrpcMessageView.IsCorrupted` before reading the body. A corrupted payload still requires an explicit settlement
+decision; it is not acknowledged automatically by SimpleConsumer.
+
+## Completion and failure semantics
+
+`ReceiveAsync` makes a message temporarily invisible but does not acknowledge it. If processing fails, the process
+stops, or `AckAsync` does not complete successfully, the message can become visible again after its invisibility
+duration. Applications must therefore make handlers idempotent and acknowledge only after durable processing.
+
+If work can outlive the current invisibility window, call `ChangeInvisibleDurationAsync` before the window expires.
+Forwarding to the dead-letter queue is also an explicit application decision; an ordinary processing exception does
+not invoke `ForwardToDeadLetterQueueAsync` on the application's behalf.
+
+Consumer groups own acknowledgement and retry state. Multiple instances using the same group share the work; a
+different group observes the topic independently.
+
+## Key SDK options
+
+| Option | What it controls |
+| --- | --- |
+| `GrpcClientOptions.Endpoint` | The RocketMQ Proxy endpoint. A NameServer address is not valid here. |
+| `GrpcClientOptions.RequestTimeout` / `UseTLS` | Deadlines for ordinary gRPC requests and transport security. |
+| `GrpcSimpleConsumerOptions.GroupName` | The consumer group that owns delivery and acknowledgement state. |
+| `GrpcSimpleConsumerOptions.AwaitDuration` | How long the Proxy may wait in a receive long poll. The supplied RocketMQ 5.5.0 Proxy requires at least five seconds. |
+| `GrpcSimpleConsumerOptions.InvisibleDuration` | The default invisibility requested for received messages; `ReceiveAsync` can override it per call. |
+| `ConsumerOptions.Subscribe` | Initial topic subscription and `FilterExpression`; omitting the expression matches every message. |
+
+## Run the sample
+
+The supplied [RocketMQ environment](../../../test-environments/rocketmq/README.md) exposes a Proxy at
+`localhost:8081` and creates the sample Topic. External deployments must provide a compatible RocketMQ 5 Proxy and
+provision the Topic and consumer group when automatic creation is disabled.
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-## Run
-
-From the repository root:
-
-```shell
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-The sample continues until Ctrl+C. Send a message with the Producer sample, or publish a standard
-message tagged `sample` to `eventhorizon-test-topic` through another client.
+The runnable code subscribes to `eventhorizon-test-topic` with the `sample` tag. Use the
+[Producer sample](../Producer/README.md) or another compatible producer to publish matching messages.
 
-## Semantics and common pitfalls
-
-- `ReceiveAsync` leases messages but does not acknowledge them. This sample acknowledges only after
-  successful logging; an unacknowledged message becomes visible again when its 30-second invisible
-  duration expires.
-- The worker explicitly forwards corrupted messages to the group's dead-letter queue using
-  `MaxDeliveryAttempts`. It does not treat ordinary processing failures as successful; a failed
-  acknowledgement leaves the message eligible for redelivery.
-- The bundled RocketMQ 5.5.0 Proxy has a five-second minimum long-poll interval. Keep
-  `AwaitDuration` at five seconds or longer when using that server.
-- A consumer group is shared state. Running several instances with the same group distributes work;
-  use a different group to independently replay or inspect the same topic.
-- This is application-driven receive/acknowledgement, not Broker push. Use the PushConsumer sample
-  when the client should manage long polling and dispatch automatically.
-
-For runtime subscription changes and the complete API, see the
-[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md).
+For the complete consumer API and Proxy constraints, see the
+[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) and
+[gRPC consumer model](../../../docs/en-US/grpc/consumer-model.md).

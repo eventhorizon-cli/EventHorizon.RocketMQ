@@ -25,16 +25,6 @@ internal sealed class LitePushConsumerMessageHandler(
 {
     public ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
-        if (message.IsCorrupted)
-        {
-            logger.LogWarning(
-                "Forwarding corrupted message {MessageId} to the dead-letter queue: {Reason}",
-                message.MessageId,
-                message.CorruptionReason);
-            // The consumer performs the dead-letter operation after this result is returned.
-            return ValueTask.FromResult(ConsumeResult.DeadLetter);
-        }
-
         logger.LogInformation(
             "Received message {MessageId} from {Topic}: {Body}",
             message.MessageId,

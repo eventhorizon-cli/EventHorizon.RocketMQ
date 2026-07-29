@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
-using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,21 +23,13 @@ var builder = Host.CreateApplicationBuilder(args);
 // NamesrvAddr discovers routes; this client then long-polls the assigned Brokers directly.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:PushConsumer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-var sampleOptions = new PushConsumerSampleOptions();
-sampleSection.Bind(sampleOptions);
-
-builder.Services.AddOptions<PushConsumerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "A subscription filter is required.")
-    .ValidateOnStart();
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 // A scoped handler is resolved in a new async DI scope for each message delivery.
 rocketMQ.AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
 {
     consumerSection.Bind(options);
-    options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
+    options.Subscribe("eventhorizon-test-topic");
 });
 
 await builder.Build().RunAsync();

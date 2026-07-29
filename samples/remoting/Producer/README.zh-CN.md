@@ -1,85 +1,92 @@
-# Remoting Producer 示例
+# Remoting Producer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-这是一个 ASP.NET Core Minimal API。它通过依赖注入解析 `IRemotingProducer`，再通过 classic Remoting 协议发送普通
-Apache RocketMQ 消息。它同时注册默认客户端注册和一个 `registrationName` 为 `audit` 的独立 keyed 客户端注册。该
-`registrationName` 同时作为 keyed service 的 key。
+`IRemotingProducer` 通过 RocketMQ classic Remoting 协议发布消息。它先从 NameServer 发现路由，再直连路由中的
+Broker 端点。使用 classic RocketMQ 部署，或需要选择物理队列、批量发送、单向发送、事务、延迟消息撤回以及
+请求-响应等 Producer 操作时，适合选择该角色。
 
-## 公共角色和端点
+它不适用于只暴露 Proxy 的部署：仅能访问 `NamesrvAddr` 并不够，应用还必须访问每个 Broker 公布地址。如果部署
+暴露的是 RocketMQ 5 Proxy，且不需要 classic 专属操作，应改用 [gRPC Producer](../../grpc/Producer/README.zh-CN.md)。
 
-| 路由 | Producer 客户端注册 | 用途 |
-| --- | --- | --- |
-| `POST /messages` | 默认客户端注册中的 `IRemotingProducer` | 发送一条普通消息。 |
-| `POST /clients/audit/messages` | `registrationName` 为 `"audit"` 的 keyed 客户端注册中的 `IRemotingProducer` keyed service | 通过该 keyed service 发送一条普通消息。 |
+## 注册与生命周期
 
-Swagger UI 位于 `/swagger`；项目内置的 HTTP launch profile 会在启动器支持时打开
-`http://localhost:5184/swagger`。两个路由均接受仅包含 `message` 的必填 JSON 正文。它们始终发送到共享普通 topic
-`eventhorizon-test-topic`，并使用固定的 `sample` tag。
+先注册 Remoting 客户端，再添加 Producer 角色：
 
-```json
-{
-  "message": "Hello from the Remoting producer."
-}
+```csharp
+builder.Services
+    .AddRocketMQRemoting(remotingSection.Bind)
+    .AddRemotingProducer(producerSection.Bind);
 ```
 
-缺少 `message` 或其值为空白时，接口会返回标准的 HTTP 400 validation problem 响应。
+该角色通过 `IRemotingProducer` 对外提供。使用依赖注入注册后，.NET Host 负责 Producer 的生命周期；应用服务通常
+只需注入它，由 Host 调用 `StartAsync` 和 `StopAsync`。
 
-## 默认配置
+`RemotingProducerOptions.GroupName` 配置的 Producer group 是 classic Producer 的客户端身份，不是 consumer group。
+同一进程需要独立的集群、凭据或 Producer 身份时，可以创建带名称的客户端注册，并以 keyed service 方式解析
+`IRemotingProducer`：
 
-示例从 `appsettings.json` 读取下列配置节。
+```csharp
+builder.Services
+    .AddRocketMQRemoting("audit", auditRemotingSection.Bind)
+    .AddRemotingProducer(auditProducerSection.Bind);
 
-| 键 | 默认值 | 用途 |
+static Task<RemotingSendResult> PublishAsync(
+    Message message,
+    [FromKeyedServices("audit")] IRemotingProducer producer,
+    CancellationToken cancellationToken) =>
+    producer.SendAsync(message, cancellationToken);
+```
+
+注册名只是应用组合信息，不是 Broker 侧的审计功能。带名称的注册和默认注册使用独立配置，彼此不会回退。
+
+## 发送与结果
+
+创建 Remoting `Message`，再通过 `IRemotingProducer` 发送：
+
+```csharp
+var message = new Message("orders", Encoding.UTF8.GetBytes(orderId))
+{
+    Tag = "created"
+};
+message.Keys.Add(orderId);
+
+RemotingSendResult result = await producer.SendAsync(message, cancellationToken);
+```
+
+`RemotingSendResult` 标识实际选择的 Broker 队列和位点，并包含 Broker 返回的发送 `Status`。必须检查该状态：
+`FlushDiskTimeout`、`FlushSlaveTimeout` 和 `SlaveNotAvailable` 可能作为结果值返回，而不是抛出异常。发送完成也不代表
+Consumer 已经处理消息。
+
+配置发送重试后可能产生重复消息，包括上一次发送已经到达 Broker、但响应丢失的情况，因此 Consumer 应实现幂等
+处理。`SendOnewayAsync` 不等待 Broker 响应，方法完成不代表消息已经存储。
+
+## Producer 操作
+
+| 需求 | SDK API | 重要边界 |
 | --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | 默认客户端注册用于发现 Broker 路由的 NameServer。 |
-| `RocketMQ:Producer:GroupName` | `remoting-sample-producer` | 默认 Producer 身份。 |
-| `RocketMQ:Audit:Remoting:NamesrvAddr` | `localhost:9876` | `registrationName` 为 `audit` 的 keyed 客户端注册使用的 NameServer。 |
-| `RocketMQ:Audit:Producer:GroupName` | `remoting-sample-audit-producer` | audit Producer 身份。 |
+| 普通发送 | `SendAsync(Message, ...)` | 检查 `RemotingSendResult.Status`。 |
+| 显式选择队列 | `GetPublishMessageQueuesAsync`，以及接收队列或 selector 的 `SendAsync` 重载 | 目标队列必须是消息 Topic 的可写队列。 |
+| 批量发送 | 接收集合的 `SendAsync` 重载 | 每个批次只能使用一个 Topic，且不能包含延迟、重试或事务消息。 |
+| FIFO、延迟、优先级或 Lite 消息 | `MessageGroup`、`DeliveryTimestamp`、`Priority` 或 `LiteTopic` | 这些专用属性互斥，并且需要 Broker 支持对应能力。 |
+| 事务发送 | `SendTransactionAsync` | 同时配置 `LocalTransactionExecutor` 和 `TransactionChecker`；Broker 以后可能回查未决结果。 |
+| 撤回延迟消息 | `RecallAsync` | 原样保留不透明的 `RecallHandle`，并在投递前与同一逻辑 Topic 一起使用。 |
+| 请求-响应 | `RequestAsync` 和 `SendReplyAsync` | 需要配套的响应端；超时时间覆盖发送请求和接收响应。 |
+| 单向发送 | `SendOnewayAsync` | 不返回 Broker 确认或存储确认。 |
 
-可使用标准 .NET 配置覆盖，例如
-`RocketMQ__Remoting__NamesrvAddr=broker-nameserver:9876`。
+专用消息模式能否使用取决于服务端版本和 Broker 配置。队列 selector、事务、撤回、请求-响应以及兼容性细节请参阅
+[Remoting 协议指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。
 
-## Broker 和网络前置条件
+## 前置条件与运行
 
-- 使用接受 classic Remoting 客户端的 RocketMQ NameServer 和 Broker。配置的地址是 **NameServer**，不是 Proxy
-  端点。
-- 客户端会先向 NameServer 查询路由，然后直接连接其返回的 Broker 地址。因此运行此 API 的机器必须同时能访问
-  `NamesrvAddr` 和每个返回的 Broker 主机及端口。
-- 使用外部 Broker 时创建可写的普通 topic `eventhorizon-test-topic`。不要依赖生产环境 Broker 允许自动创建 topic。
-- Producer group 是客户端身份；此示例不需要 consumer group，也不需要调用 `updateSubGroup`。如果启用了 ACL
-  或 topic 权限，请授予配置的 Producer group 查询路由和向该 topic 发送消息的权限。
-
-本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机上运行此示例。在仓库根目录
-启动它时会自动创建共享 topic：
+默认配置要求 `localhost:9876` 上存在 NameServer、宿主机能够访问 Broker 公布端点，并准备好可写的普通 Topic
+`eventhorizon-test-topic`。仓库提供的环境会创建该 Topic：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-该环境会公布宿主机可访问的 Broker 地址。在另一个容器中运行此示例时，需要不同的 Broker 公布地址和
-`NamesrvAddr`；`localhost:9876` 不是容器到宿主机的地址。
-
-## 运行
-
-```shell
 dotnet run --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj
 ```
 
-若需要固定的命令行监听地址，请禁用 launch profile 并设置 `ASPNETCORE_URLS`：
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 \
-  dotnet run --no-launch-profile --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj
-
-curl --request POST http://localhost:5000/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello from curl."}'
-```
-
-## 重要行为
-
-- audit 路由不是 `/messages` 的镜像，也不会自动为默认发送创建审计记录。它只解析 `registrationName` 为 `audit` 的
-  keyed 客户端注册中的 `IRemotingProducer` keyed service；消息需要使用该 keyed 客户端注册时，必须显式调用该路由。
-- 两个客户端注册共用固定的 topic 和 tag。只有 `registrationName` 为 `audit` 的 keyed 客户端注册必须使用不同集群或
-  Producer 身份时，才需要单独配置 audit 的 `Remoting` 和 `Producer` 配置节。
-- 这是普通消息示例，不演示事务消息、延迟消息、请求-响应或单向发送。
+连接外部集群时，配置 `RocketMQ:Remoting:NamesrvAddr`，确保每个 Broker 公布端点都可访问，并在禁用自动创建资源时
+预先创建 Topic。可运行项目通过 Swagger 和 HTTP 暴露普通发送工作流；传输语义来自 `IRemotingProducer`，而不是
+HTTP。

@@ -1,88 +1,119 @@
-# gRPC LitePushConsumer sample
+# gRPC LitePushConsumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This Generic Host sample registers `IGrpcLitePushConsumer` through `AddRocketMQGrpc` and
-`AddGrpcLitePushConsumer<LitePushConsumerMessageHandler>`. It automatically dispatches LiteTopic
-messages that belong to one LITE parent/bind topic and synchronizes its complete LiteTopic set with
-the service through `SyncLiteSubscription`.
+`IGrpcLitePushConsumer` automatically dispatches messages from service-managed LiteTopics beneath one configured LITE
+parent, or bind, topic. It reuses the gRPC Push handler and long-poll dispatcher, but adds a Lite subscription control
+plane through `SyncLiteSubscription`. LiteTopics are not ordinary RocketMQ topics and are not tag filters.
 
-## Configuration
+## When to use it
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
-| `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
-| `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Consumer:GroupName` | `eventhorizon-test-lite-push-consumer` | Consumer group, which must be bound to the LITE parent topic. |
-| `RocketMQ:Consumer:BatchSize` | `16` | Maximum messages requested by each receive operation. |
-| `RocketMQ:Consumer:MaxConcurrency` | `4` | Maximum concurrent handler executions. |
-| `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | Fallback delivery-attempt limit before dead-lettering. |
-| `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration for a received message. |
-| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO handler time before the client cancels its token and requests retry. |
-| `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Maximum server wait for a receive operation. |
-| `RocketMQ:Consumer:SubscriptionSyncInterval` | `00:00:30` | Interval for reconciling the complete LiteTopic set with the service. |
+Use LitePushConsumer only when the RocketMQ deployment and resource model are intentionally configured for LITE
+messages, and the application wants automatic handler dispatch from one or more logical LiteTopics under the same
+parent topic.
 
-The sample fixes its LITE parent topic to `eventhorizon-test-lite-parent-topic` and synchronizes
-`eventhorizon-test-lite-topic` on startup. These names are deliberately set in code. The parent topic is not a
-regular subscription; production applications can manage their LiteTopic set through `SubscribeLiteAsync` and
-`UnsubscribeLiteAsync` instead.
+Use `IGrpcPushConsumer` for ordinary topics with tag or SQL filters. Use `IGrpcSimpleConsumer` when the application
+must drive receive and settlement itself. A Proxy that does not implement `SyncLiteSubscription` cannot support this
+role through a client-side setting.
 
-## Prerequisites
+## SDK workflow
 
-- A cluster-mode RocketMQ 5 Proxy that implements `SyncLiteSubscription` must be reachable at
-  `RocketMQ:Client:Endpoint`. A Broker-integrated Proxy started with `mqbroker --enable-proxy` in
-  RocketMQ 5.5.0 does not implement this service.
-- Every Broker that stores the parent topic must enable `enableLmq=true` and
-  `enableMultiDispatch=true`.
-- Use the dedicated LitePush environment. It enables the two Broker flags above, starts
-  `mqproxy -pm cluster` at `localhost:8081`, and creates the fixed LITE parent Topic and Consumer Group during
-  startup.
-- Stop any environment that already publishes host port `8081` before starting this one.
+Register the gRPC transport and a LitePush role. `BindTopic` identifies the LITE parent topic; `LiteTopics` is the
+initial complete logical subscription set:
 
-Start the dedicated environment from the repository root:
+```csharp
+rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-lite-push-consumer";
+    options.BindTopic = "orders-lite";
+    options.LiteTopics.Add("orders-us");
+    options.LiteTopics.Add("orders-eu");
+    options.MaxConcurrency = 8;
+});
+```
+
+Do not call the inherited `ConsumerOptions.Subscribe` for this role. LitePush receives through `BindTopic` and manages
+logical subscriptions with `LiteTopics`, `SubscribeLiteAsync`, and `UnsubscribeLiteAsync`; it does not accept ordinary
+topic filters.
+
+The Generic Host integration starts the role, synchronizes the configured set, and stops it with the host. Outside a
+host, manage `StartAsync` and `StopAsync` through `IGrpcLitePushConsumer`. `LiteTopics` returns a snapshot of the current
+local set.
+
+At runtime, a new LiteTopic can include an initial offset selection:
+
+```csharp
+await consumer.SubscribeLiteAsync(
+    "orders-apac",
+    GrpcLiteOffsetOption.Last,
+    cancellationToken);
+```
+
+`GrpcLiteOffsetOption` supports the service-defined recent position (`Last`), earliest or latest available position
+(`Min` / `Max`), an exact non-negative queue offset (`AtOffset`), a recent message count (`Tail`), or the first stored
+message at or after a timestamp (`AtTimestamp`). The option applies when that LiteTopic subscription is created.
+
+The client sends the complete configured LiteTopic set at startup and reconciles it every
+`SubscriptionSyncInterval`. The service remains authoritative for name and quota rules. A rejected runtime change
+throws `GrpcServiceException` and does not update the local set. `SyncLiteSubscription` controls subscriptions; message
+delivery still uses client-initiated long polling.
+
+## Delivery and failure semantics
+
+LitePush uses the same `IGrpcPushMessageHandler` contract and dependency-injection lifetime rules as standard Push.
+`ConsumeResult.Success` acknowledges the message, `Retry` requests another attempt, and `DeadLetter` forwards it to the
+consumer group's dead-letter queue. Handler exceptions are treated as retry requests, and failed completion calls can
+produce duplicate delivery, so processing must be idempotent.
+
+Corrupted messages bypass the application handler. The client retries non-FIFO corrupted messages and dead-letters
+corrupted FIFO messages before releasing the next member of that message group.
+
+The client renews invisibility while handling a message. For non-FIFO work, `ConsumeTimeout` cancels the handler token,
+stops renewal, and requests retry; it cannot forcibly terminate code that ignores cancellation. FIFO message groups
+remain attached to preserve order. The same local concurrency, bounded-cache, and server-policy fallback behavior as
+`IGrpcPushConsumer` applies.
+
+## Required RocketMQ capabilities
+
+LitePush requires matching client, Proxy, Broker, Topic, and consumer-group configuration:
+
+- Every Broker storing the parent topic must enable `enableLmq=true` and `enableMultiDispatch=true`.
+- The parent topic must be created with `message.type=LITE`.
+- The consumer group must set `lite.bind.topic=<parent-topic>`, matching `GrpcLitePushConsumerOptions.BindTopic`.
+- The client must connect to a cluster-mode Proxy that implements `SyncLiteSubscription`.
+
+In RocketMQ 5.5.0, the Broker-integrated Proxy started by `mqbroker --enable-proxy` does not implement this RPC; use
+`mqproxy -pm cluster` or a compatible newer Proxy. A separate cluster-mode Proxy may share a container or Compose
+service with a Broker.
+
+## Key SDK options
+
+| Option | What it controls |
+| --- | --- |
+| `GrpcClientOptions.Endpoint` | The RocketMQ Proxy endpoint; capability must include `SyncLiteSubscription`. |
+| `GrpcLitePushConsumerOptions.GroupName` | The consumer group bound to the LITE parent topic. |
+| `BindTopic` | The single parent topic used for assignment and message reception. |
+| `LiteTopics` | The complete initial logical LiteTopic set synchronized at startup. |
+| `SubscriptionSyncInterval` | Periodic reconciliation interval for the complete LiteTopic set. |
+| `MaxConcurrency`, `BatchSize`, and cache limits | Local handler parallelism, receive batch size, and bounded buffering inherited from Push. |
+| `InvisibleDuration` / `ConsumeTimeout` | Initial invisibility and the non-FIFO handler timeout behavior inherited from Push. |
+| `MaxDeliveryAttempts` / `RetryDelay` | Fallback delivery policy when the Proxy does not supply one. |
+| `LongPollingTimeout` | Maximum server wait for each receive long poll. |
+
+## Run the sample
+
+Use the dedicated [LitePush environment](../../../test-environments/rocketmq-litepush/README.md). It enables the Broker
+features, starts a cluster-mode Proxy at `localhost:8081`, and provisions the required parent topic and consumer group.
 
 ```shell
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
-```
-
-The completed `resource-init` service creates `eventhorizon-test-lite-parent-topic` with `message.type=LITE` and binds
-`eventhorizon-test-lite-push-consumer` to that parent Topic. `eventhorizon-test-lite-topic` is a logical LiteTopic,
-which this Consumer synchronizes when it starts rather than an independent ordinary Topic to create.
-
-See the [LitePush environment guide](../../../test-environments/rocketmq-litepush/README.md) for the topology,
-persistence behavior, and local port limits.
-
-## Run
-
-After the environment is ready, run from the repository root:
-
-```shell
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-The host continues until Ctrl+C. It logs its fixed LiteTopic on startup. To observe messages,
-publish Lite messages for `eventhorizon-test-lite-topic` under the
-`eventhorizon-test-lite-parent-topic` parent topic with a compatible producer; the standard Producer sample
-only sends ordinary messages and does not populate a LiteTopic.
+The runnable code binds to `eventhorizon-test-lite-parent-topic` and subscribes to
+`eventhorizon-test-lite-topic`. Observing delivery requires a producer that can publish a Lite message under that
+parent; the ordinary Producer sample does not populate LiteTopics.
 
-## Semantics and common pitfalls
-
-- LiteTopics are service-managed logical subscriptions under the LITE parent topic. They are not
-  independent ordinary topics and cannot be replaced by a normal tag filter.
-- The client sends its complete LiteTopic set on startup and every
-  `SubscriptionSyncInterval`; the service can reject a subscription because of name or quota rules.
-  A rejected change raises `GrpcServiceException` and does not update the local set.
-- Like standard PushConsumer, LitePush is client-initiated long polling, not Broker network push.
-  The handler returns `Success` to acknowledge, `Retry` to request redelivery, or `DeadLetter` to
-  forward to the group dead-letter queue. This sample dead-letters corrupted messages.
-- `BindTopic`, the Broker `message.type=LITE` attribute, and the group `lite.bind.topic` attribute
-  must name the same parent topic. A spelling mismatch is a configuration error, not a way to
-  subscribe to a second parent topic.
-- The handler is registered as `Scoped`, so each handling attempt gets its own async DI scope.
-- `ConsumeTimeout` has the same non-FIFO timeout behavior as standard Push: the handler token is canceled,
-  client-side invisibility renewal stops, and retry is requested. It cannot terminate code that ignores cancellation;
-  FIFO handlers stay attached to preserve ordering.
-
-For Lite message production and the complete API, see the
-[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md).
+For the complete API and deployment constraints, see the
+[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) and
+[gRPC consumer model](../../../docs/en-US/grpc/consumer-model.md).

@@ -49,8 +49,8 @@ OpenTelemetry instrumentation 扩展。
 | [Consumer Web API](../../../samples/opentelemetry/ConsumerWebApi/README.zh-CN.md) | `http://localhost:5242` | `eventhorizon-rocketmq-otel-consumer` | 使用独立的 Consumer Group 运行 gRPC 和 classic Remoting Push Consumer。 |
 
 仓库提供的 `rocketmq` 环境会在启动完成前创建共享的 `eventhorizon-test-topic`。Producer 请求模型只接受 `message`，其 Topic 和
-tag 会为该示例固定。两个 Web host 默认都会导出到本地 Grafana OTEL LGTM collector，同时 `Sample__ServiceName` 和
-`Sample__OtlpEndpoint` 仍由应用自行配置。
+tag 会为该示例固定。两个 Web host 默认都会导出到本地 Grafana OTEL LGTM collector，同时
+`OpenTelemetry__ServiceName` 和 `OpenTelemetry__OtlpEndpoint` 仍由应用自行配置。
 
 ## Trace 模型
 

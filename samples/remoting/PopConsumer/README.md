@@ -1,63 +1,78 @@
-# Remoting POP Consumer sample
+# Remoting POP Consumer
 
 [简体中文](README.zh-CN.md)
 
-This Generic Host uses `IRemotingPopConsumer` for explicit physical-queue selection and receipt-based POP
-delivery. It rotates through discovered queues, processes each returned message, and acknowledges its Broker
-receipt.
+`IRemotingPopConsumer` exposes classic Broker POP as a caller-driven, receipt-based consumption model. The
+application selects a physical queue and issues `PopAsync`; the Broker makes returned messages invisible for a
+limited time and issues a receipt for each one. Processing is completed by acknowledging that receipt, not by
+committing a queue offset.
 
-## Public role and default configuration
+The SDK does not run background queue assignment, receive dispatch, or automatic acknowledgement for this role.
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes. |
-| `RocketMQ:PopConsumer:GroupName` | `remoting-sample-pop-consumer` | Consumer group sent with POP and receipt operations. |
-| `RocketMQ:PopConsumer:BatchSize` | `32` | Maximum messages per POP request; a classic Broker accepts at most 32. |
-| `RocketMQ:PopConsumer:InvisibleDuration` | `00:00:30` | Default time a returned message remains hidden from other POP consumers. |
-| `RocketMQ:PopConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty POP request. |
-| Fixed topic | `eventhorizon-test-topic` | Shared normal topic whose queues the sample rotates through. |
-| `Sample:Filter` | `*` | Default filter passed to POP operations. |
-| `Sample:RetryDelay` | `00:00:01` | Delay before route or POP retry after a failure. |
+## When to use POP Consumer
 
-The public API exposes `GetMessageQueuesAsync`, `PopAsync`, `AcknowledgeAsync`, and
-`ChangeInvisibleTimeAsync`. The subscription filter is a default for `PopAsync`; it does not create background
-assignment or a receive loop.
+Choose POP when work should be claimed temporarily and settled per message, especially when processing duration can
+vary and an application benefits from extending a message's invisibility. It is useful for caller-controlled workers
+that want Broker-managed redelivery without managing the next queue offset themselves.
 
-## Broker and network prerequisites
+Prefer Push Consumer when the SDK should manage consumer-group assignment, background long polling, handler
+concurrency, and retry outcomes. Prefer Pull or Lite Pull when queue positions, replay, and explicit offset commits are
+the required model.
 
-- Use a RocketMQ 5-era classic Broker with `POP_MESSAGE`, acknowledgement, and visibility-change command support.
-  A NameServer alone is not enough, and the configured `NamesrvAddr` is not a Proxy endpoint.
-- The process must reach the NameServer and the Broker addresses returned by route discovery.
-- Create the normal topic `eventhorizon-test-topic` and allow the group `remoting-sample-pop-consumer` when using
-  an external Broker. With ACL enabled, give the group route-query, POP, acknowledgement, and visibility-change
-  permissions.
-- The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) runs RocketMQ 5.5.0 and
-  is suitable for this normal-topic POP example when it runs on the host. It initializes the shared topic
-  automatically:
+POP requires Broker support for POP, acknowledgement, and invisibility-change commands. This client currently supports
+direct checkpoints for normal physical topics only; it does not provide automatic assignment, broadcast POP, orderly
+POP, batch acknowledgement, or retry/logical-topic checkpoint handling.
+
+## SDK workflow
+
+Register the role with `AddRemotingPopConsumer`. Calling `ConsumerOptions.Subscribe` on its options records a default
+filter for that topic; it does **not** start a subscription, create an assignment, or start a receive loop.
+
+The public API keeps the receipt lifecycle visible:
+
+1. `GetMessageQueuesAsync` discovers the readable physical queues for a topic.
+2. `PopAsync` targets one queue and returns `RemotingPopResult` with a `Status`, `RestNum`, and
+   `RemotingPopMessage` values.
+3. Each returned item contains a `RemotingMessageView` and its Broker-issued `RemotingPopReceipt`.
+4. After processing succeeds, `AcknowledgeAsync` settles that individual receipt.
+5. If processing needs longer, call `ChangeInvisibleTimeAsync` before expiry. It returns a **replacement receipt**;
+   every later extension or acknowledgement must use the replacement.
+
+`PopAsync` can override the configured batch size, invisible duration, and filter per call. Classic Brokers accept at
+most 32 messages in one POP request.
+
+## Receipts, failures, and concurrency
+
+An unacknowledged message becomes eligible for delivery again after its invisible interval. A crash after business
+effects but before acknowledgement, an acknowledgement failure, or work that outlives the interval can therefore
+produce duplicate processing. Keep handlers idempotent and renew long-running work with enough time left to handle a
+failed renewal attempt.
+
+There is no application-visible offset commit in this model. Do not treat receipt acquisition as completion: only a
+successful acknowledgement settles the delivery. If `ChangeInvisibleTimeAsync` succeeds, the old receipt is obsolete.
+
+The caller chooses queue selection, the number of outstanding `PopAsync` calls, and processing concurrency. Broker
+invisibility prevents a normally claimed message from remaining immediately available to other POP requests, but it
+does not remove at-least-once redelivery or the need to bound local concurrency.
+
+The registered default JSON command serializer is required for POP command codes. Do not replace it with RocketMQ's
+optional binary command-header serializer for this role.
+
+## Run the sample
+
+The runnable sample rotates through the physical queues of `eventhorizon-test-topic` and acknowledges messages as
+group `remoting-sample-pop-consumer`.
+
+Start the [local RocketMQ environment](../../../test-environments/rocketmq/README.md), which provides a compatible
+RocketMQ 5.5.0 Broker, then run:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-The bundled Broker advertises a host-reachable address. Replace `localhost:9876` and the Broker advertisement for
-an application running in another container or network.
-
-## Run
-
-```shell
 dotnet run --project samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj
 ```
 
-The host runs until Ctrl+C. Use the Remoting Producer sample or another producer to add messages to the topic.
+The default NameServer is `localhost:9876`. An external setup must expose both the NameServer and every advertised
+Broker address, create the normal topic, and grant the group route-query, POP, acknowledgement, and visibility-change
+permissions.
 
-## Important behavior
-
-- POP is client-initiated. This sample manually selects one physical queue at a time and has no background queue
-  assignment, message dispatch, or automatic acknowledgement.
-- Every returned message carries a receipt. Acknowledge it before its invisibility expires; otherwise it becomes
-  eligible for redelivery. Long-running work must call `ChangeInvisibleTimeAsync` before expiry and acknowledge
-  the **replacement** receipt it returns.
-- The example acknowledges immediately after logging because logging is its whole processing step. Replace that
-  point with successful business processing, and design it to tolerate duplicate delivery.
-- POP is not a PushConsumer variant. It exposes receipt lifecycle and physical queues directly, so scaling and
-  queue ownership remain application responsibilities.
+See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

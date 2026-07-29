@@ -1,61 +1,74 @@
-# Remoting Pull Consumer sample
+# Remoting Pull Consumer
 
 [简体中文](README.zh-CN.md)
 
-This Generic Host uses `IRemotingPullConsumer` for explicit queue discovery, offsets, long-poll requests, and
-Broker offset updates. It is the appropriate starting point when the application, rather than a background
-dispatcher, must choose queues and offsets.
+`IRemotingPullConsumer` is the lowest-level classic Remoting consumption model. It exposes Broker physical queues
+and queue offsets directly: the application chooses which queue to read, which offset to request, when processing is
+complete, and which offset to commit. The SDK performs route discovery, protocol requests, decoding, and Broker offset
+operations, but it does not allocate queues among application instances or dispatch messages to a handler.
 
-## Public role and default configuration
+## When to use Pull Consumer
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes. |
-| `RocketMQ:PullConsumer:GroupName` | `remoting-sample-pull-consumer` | Consumer group whose offsets the sample reads and writes. |
-| `RocketMQ:PullConsumer:BatchSize` | `32` | Maximum messages requested per pull. |
-| `RocketMQ:PullConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty pull. |
-| Fixed topic | `eventhorizon-test-topic` | The shared normal topic the sample reads. |
-| `Sample:Filter` | `*` | Subscription filter for that topic. |
-| `Sample:InitialOffset` | `End` | Position used only when the group has no committed offset. |
-| `Sample:InitialTimestamp` | unset | Required when `InitialOffset` is `Timestamp`. |
+Choose Pull Consumer when the application needs exact queue and position control, for example:
 
-The sample always subscribes to the fixed shared topic. It validates the filter, discovers all readable physical
-queues, calls `PullAsync` with an explicit offset for each one, and calls `UpdateOffsetAsync` with each returned
-next offset.
+- a replay, backfill, inspection, or migration job that starts at the beginning, end, or a timestamp;
+- an external scheduler already owns queue allocation;
+- processing must coordinate a RocketMQ offset with another checkpoint or transaction;
+- polling order, pacing, and per-queue concurrency are application decisions.
 
-## Broker and network prerequisites
+Prefer Lite Pull when you want caller-driven polling but want the SDK to participate in clustered queue allocation.
+Prefer Push Consumer when automatic assignment, background long polling, handler dispatch, and Broker retry are the
+desired model. Prefer POP when work is settled through per-message receipts and invisibility instead of queue offsets.
 
-- Use a classic Remoting NameServer and Broker. `NamesrvAddr` is not a Proxy endpoint: routes come from the
-  NameServer and every advertised Broker address must also be reachable from this process.
-- Create the normal topic `eventhorizon-test-topic` and allow the group `remoting-sample-pull-consumer` when using
-  an external Broker. ACL-enabled Brokers also need route-query and consume permissions for this group.
-- The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-  normal-topic sample when it runs on the host. It initializes the shared topic automatically:
+Pull Consumer is not suitable for scaling several identical instances in one group without an external queue-ownership
+protocol. Those instances can discover the same physical queues and overwrite the same group offsets.
+
+## SDK workflow
+
+Register the role with `AddRemotingPullConsumer`. `ConsumerOptions.Subscribe` associates a topic with its tag or SQL92
+filter; SQL92 filtering also requires the target Broker to allow property filtering.
+
+The normal read path is explicit:
+
+1. `GetMessageQueuesAsync` returns the readable `RemotingPullMessageQueue` values for a subscribed topic.
+2. `GetOffsetAsync` reads the group's committed offset for one queue and returns `-1` when none exists.
+3. `QueryOffsetAsync` resolves a starting offset with `Beginning`, `End`, or `Timestamp`.
+4. `PullAsync` requests one queue from one offset and returns `RemotingPullResult`, including `Status`, `Messages`,
+   `NextOffset`, and the Broker's current offset bounds.
+5. After processing succeeds, `UpdateOffsetAsync` persists that queue's next offset for the group.
+
+`PullAsync` may use Broker long polling, but it never commits automatically. `NextOffset` is the position for the next
+request, not proof that the returned messages have been processed.
+
+## Offsets, failures, and concurrency
+
+Offsets belong to Broker physical queues. Keep a separate position and completion state for every queue; a global
+offset has no meaning. If one queue is processed concurrently, commit only the highest contiguous completed offset.
+A later batch completing first must not move the committed position past an earlier unfinished batch.
+
+Process first and commit second. A process failure before `UpdateOffsetAsync` can cause the same messages to be read
+again, while committing before durable processing can skip work after a crash. Processing code therefore needs to
+tolerate duplicates, and applications that require stronger atomicity must coordinate the RocketMQ checkpoint with
+their own durable state.
+
+The application also owns pull-error backoff, processing retry, dead-letter policy, and queue reassignment. A failed
+`PullAsync` or business operation does not create an automatic handler retry pipeline. Parallel queue loops are valid
+only when ownership and offset updates remain isolated per queue.
+
+## Run the sample
+
+The runnable sample consumes all messages from `eventhorizon-test-topic` as group
+`remoting-sample-pull-consumer`. When that group has no committed offset, it starts at `End`.
+
+Start the [local RocketMQ environment](../../../test-environments/rocketmq/README.md), then run:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-The local stack advertises a host-reachable Broker. For a containerized application, configure a NameServer and
-Broker advertisement reachable from that container instead of keeping `localhost:9876`.
-
-## Run
-
-```shell
 dotnet run --project samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj
 ```
 
-The host continues until interrupted with Ctrl+C. Send messages with the Remoting Producer sample or another
-producer after it is running.
+The default NameServer is `localhost:9876`. An external setup must expose both the NameServer and every Broker address
+advertised in its route data, create the normal topic, and grant the group route-query and consume permissions.
+Use the Remoting Producer sample to publish messages after the consumer starts.
 
-## Important behavior
-
-- `InitialOffset` is not a reset switch. The sample always uses an existing committed group offset first; `End`,
-  `Beginning`, or `Timestamp` applies only to a queue with no committed offset for this group. Use a new group or
-  reset offsets deliberately when replaying messages.
-- `End` is the default for a new group, so messages already in the queue are skipped on first startup. Choose
-  `Beginning` or `Timestamp` explicitly when that is not desired.
-- This is manual queue and offset control, not automatic consumer-group assignment. Do not scale several copies
-  with the same group unless the application coordinates queue ownership and offset writes.
-- The offset is committed after the sample logs the returned batch. Replace logging with business processing and
-  commit only after that processing is safe to repeat or complete.
+See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

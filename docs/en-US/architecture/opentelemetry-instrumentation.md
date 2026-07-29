@@ -53,8 +53,8 @@ messaging path can be inspected across service boundaries:
 
 The supplied `rocketmq` environment creates the shared `eventhorizon-test-topic` before startup completes. The
 Producer request model accepts only a `message`; its topic and tag are fixed for the sample. Each web host exports to
-the local Grafana OTEL LGTM collector by default, while its `Sample__ServiceName` and `Sample__OtlpEndpoint` settings
-remain application-owned configuration.
+the local Grafana OTEL LGTM collector by default, while its `OpenTelemetry__ServiceName` and
+`OpenTelemetry__OtlpEndpoint` settings remain application-owned configuration.
 
 ## Trace Model
 

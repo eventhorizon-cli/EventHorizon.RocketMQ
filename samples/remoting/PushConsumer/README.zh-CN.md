@@ -1,72 +1,116 @@
-# Remoting Push Consumer 示例
+# Remoting Push Consumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-此 Generic Host 通过 `AddRemotingPushConsumer<PushConsumerMessageHandler>` 注册具有 scoped 生命周期、支持批量回调的
-`PushConsumerMessageHandler`，并通过 `IRemotingPushConsumer` 处理消息。这是 classic Remoting 的高级 Consumer，提供
-自动分配、长轮询、批量分发、重试和位点处理。
+`IRemotingPushConsumer` 是 classic Remoting 的高级消费模式。SDK 维护 consumer group 分配、发起 Broker 长轮询、
+缓存收到的消息、分发 handler、结算重试或死信结果，并持久化位点。应用代码提供消息 handler，而不是自行驱动 poll
+循环。
 
-## 公共角色和默认配置
+虽然名称中带有 Push，但消息并不是由 Broker 直接推送到应用代码。客户端执行长轮询，同时处理重平衡和位点重置等 classic
+Broker 回调。
 
-| 键 | 默认值 | 用途 |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | 用于发现 Broker 路由的 NameServer。 |
-| `RocketMQ:PushConsumer:GroupName` | `remoting-sample-push-consumer` | 集群 consumer group。 |
-| `RocketMQ:PushConsumer:MaxConcurrency` | `4` | 可并发运行的最大 handler 批量调用数。 |
-| `RocketMQ:PushConsumer:BatchSize` | `32` | 每个长轮询从 Broker 请求的最大消息数。 |
-| `RocketMQ:PushConsumer:ConsumeMessageBatchSize` | `1` | 单次 handler 调用收到的最大消息数；与 `BatchSize` 相互独立。 |
-| `RocketMQ:PushConsumer:LongPollingTimeout` | `00:00:05` | 空长轮询在 Broker 上的最大等待时间。 |
-| `RocketMQ:PushConsumer:RetryDelay` | `00:00:01` | 接收失败或 handler 返回失败结果后的重试等待时间。 |
-| `RocketMQ:PushConsumer:ConsumeTimeout` | `00:15:00` | 并发集群、非 FIFO handler 批次在请求取消并要求 Broker 重投前允许占用的最长时间。 |
-| 固定 topic | `eventhorizon-test-topic` | 共享订阅的普通 topic。 |
-| `Sample:Filter` | `*` | 订阅过滤条件。 |
+## 什么时候使用 Push Consumer
 
-handler 接收 `IReadOnlyList<RemotingMessageView>` 和 `RemotingPushConsumeContext`，记录列表中的每条消息，并为
-整个列表返回一个 `ConsumeResult`。本示例保持 `AckIndex` 的默认值，因此返回 `Success` 会确认整个批次。示例保留
-`ConsumeMessageBatchSize` 的默认值 `1`；可通过配置增大它，以合并来自同一个 Broker 物理队列、且不带
-`MessageGroup` 的并发消息。泛型注册会在每次批量处理尝试中创建 scoped DI scope，因此 handler 可以注入
-`ILogger<PushConsumerMessageHandler>`。
+如果持续运行的服务希望由 SDK 负责队列分配、接收调度、handler 并发、重试和位点推进，适合选择 Push Consumer。只要
+业务逻辑可以表达为异步回调，并能容忍至少一次投递，它通常就是默认选择。
 
-## Broker 和网络前置条件
+如果希望 SDK 分配队列，但由应用控制何时 poll 和提交，应选择 Lite Pull。如果需要精确控制物理队列和每次请求的位点，
+应选择 Pull Consumer。如果需要逐消息 receipt 和不可见时间语义，应选择 POP。
 
-- 使用 classic Remoting NameServer 和 Broker。客户端通过 `NamesrvAddr` 发现路由，随后向公布的 Broker 建立长轮询
-  连接，因此两个连接环节都必须可达。
-- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许 group
-  `remoting-sample-push-consumer` 消费。启用 ACL 的 Broker 需要路由查询和消费权限；使用重试和死信路径时，也需要
-  对应 topic 的权限。
-- 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机运行此普通 topic Remoting
-  Consumer。它会在启动时自动创建共享 topic：
+Push Consumer 不是“每队列固定一个线程”的执行模型。如果应用要求线程亲和性，或者必须由外部调度器拥有每个队列，应使用
+由调用方驱动的 Consumer。
+
+## 注册与 handler 合约
+
+通过 `AddRemotingPushConsumer<TMessageHandler>(ServiceLifetime, Action<RemotingPushConsumerOptions>)`
+注册类型化 handler。handler 实现 `IRemotingPushMessageHandler.HandleAsync`，并接收：
+
+- 来自同一个 Broker 物理队列、保持投递顺序的 `IReadOnlyList<RemotingMessageView>`；
+- 控制部分确认和重试延迟的 `RemotingPushConsumeContext`；
+- 用于停止，以及符合条件的消费超时的 cancellation token。
+
+`Singleton` handler 可能被并发调用，因此必须线程安全。`Scoped` 和 `Transient` handler 会在每次 batch 尝试时
+从新的异步 DI scope 中解析。简单的无状态回调可以改为设置 `RemotingPushConsumerOptions.MessageHandler`；
+委托和类型化 handler 不能同时配置。
+
+启动前可通过 `ConsumerOptions.Subscribe` 配置订阅。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新
+classic 心跳并协调活跃 receiver。
+
+## 队列分配与并发分发
+
+在默认 `Clustering` 模式下，同一 group 的存活 Consumer 会共同分配 topic 在各 Broker 上的物理队列。该 group
+中的一个队列只会分配给一个 Consumer，因此增加 Consumer 只有在数量不超过所有 Broker 上可读队列总数时才能增加有效
+并行度；多出的 Consumer 可能保持空闲。不同 group 的 Consumer 会各自独立消费此 topic。
+
+客户端会为每个已分配的 Broker `MessageQueue` 维护一个本地 `ProcessQueue`。`ProcessQueue` 保存已拉取消息及其
+消费状态；它不是新建的 Broker 队列，也不会创建服务端资源。这个名称和职责概念沿用了 RocketMQ 官方 Java 客户端。
+
+`BatchSize` 限制一次 Broker pull 请求的消息数。`ConsumeMessageBatchSize` 则独立限制一次 handler 调用收到的
+消息数。并发 batch 只包含来自同一个物理队列的消息。带 `MessageGroup` 的消息和所有 `ConsumeOrderly` 投递仍然是
+单消息 batch。
+
+就绪的 `ProcessQueue` 共享异步消费循环。每轮从一个就绪队列取一个 batch，仍有工作的队列会放回队尾，从而让不同
+Broker 上的活跃队列公平推进。`MaxConcurrency` 限制整个 Consumer 的 handler 分发数，而不是每个队列的分发数。
+这些循环是 .NET ThreadPool 任务，不是独占线程，也不会永久绑定某个队列。这个公平调度器是 .NET 的设计，并非逐项复制
+Java 的并发分发路径。
+
+`MaxCachedMessages` 限制等待首次分发的新拉取消息准入。在途或被结算阻塞的消息不会继续占用这部分准入容量；被阻塞的
+队列也会暂停新准入，直到能够继续推进。因此，该值不是进程内所有驻留消息数量的严格上限。
+
+## 确认、重试与位点
+
+handler 为一个 batch 返回一个 `ConsumeResult`：
+
+- 默认返回 `Success` 会确认整个 batch。
+- 对于并发、非 FIFO batch，可把 `context.AckIndex` 设为最后一条成功消息的从零开始索引，再返回 `Success`。
+  客户端会接受连续前缀，只把尾部交给 Broker 重试。默认值 `int.MaxValue` 接受全部消息；`-1` 表示一条也不接受。
+- `Retry` 和 `DeadLetter` 会忽略 `AckIndex`，并应用到整个 batch。
+
+对于集群并发、非 FIFO batch，`context.DelayLevelWhenNextConsume` 初始为由 `RetryDelay` 映射得到的 Broker
+延迟级别。设为 `0` 时由 Broker 选择；设为正的 RocketMQ 延迟级别时请求该级别；设为负值时请求直接进入死信队列。
+`MessageGroup` FIFO、`ConsumeOrderly` 和广播路径会忽略此 context 设置。在集群模式下，
+`MaxDeliveryAttempts` 限制重试投递次数；重试消息达到上限后会进入死信队列。
+
+每个 `ProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
+完成，也不能跳过前面尚未解决的队列位点。拉取可以先于 handler 完成继续前进。在集群模式下，Broker 已提交位点不能
+越过成功结算；广播模式则会把不可用的重试和死信结果视为本地已解决并丢弃，具体见后文。
+
+在集群并发 `ProcessQueue` 路径中，如果重试或死信结算失败，客户端会在 `RetryDelay` 后仅在本地重试结算，
+不会再次调用应用 handler；完成水位仍保持阻塞。位点持久化失败也会重试。如果分配被撤销，旧分配上延迟返回的
+handler 结果会被忽略，不能推进替代它的新分配。
+
+`ConsumeTimeout` 适用于并发集群、非 FIFO batch。超时后，客户端会取消 handler token，并为整个 batch 请求 Broker
+重新投递。忽略取消的代码无法被强制停止；其延迟结果会被忽略，但其外部工作可能与重新投递的调用重叠。handler 必须响应
+取消并保持幂等。带 `MessageGroup` 的 FIFO 投递和 `ConsumeOrderly` 投递不会应用此机制，避免超时恢复破坏顺序。
+
+## 顺序与广播
+
+`MessageGroup` 提供生产端队列亲和性和单消息 FIFO 分发。`ConsumeOrderly` 则串行处理每个已分配的物理队列。
+在集群模式下，顺序消费会获取并续约 classic Broker 队列锁；`MaxConcurrency` 仍可并发处理不同的已锁队列。重试会
+阻塞当前队列，使后面的消息不能超越它。队列锁保持顺序，但不会改变至少一次投递，因此顺序 handler 也必须幂等。
+
+`Broadcasting` 会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点。它没有 group 所属的 Broker 重试或
+死信流程：`Retry`、`DeadLetter` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。当客户端标识不稳定时，应配置
+稳定且每实例独立的 `LocalOffsetStorePath`。
+
+对于普通订阅队列，`InitialPosition` 只在当前模式使用的位点存储没有值时提供起点：集群模式读取 Broker group
+位点，广播模式读取当前实例的本地位点文件。它不会重置已有位置。重试队列会保留自己的恢复边界，不使用这一普通队列
+起始策略。
+
+## 运行示例
+
+可运行示例使用 scoped 类型化 handler，以 group `remoting-sample-push-consumer` 消费
+`eventhorizon-test-topic` 中的全部消息。它使用集群模式，全局 `MaxConcurrency` 为 4。
+
+启动[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)，然后运行：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-此环境会公布宿主机可访问的 Broker 地址。位于其他容器中的进程必须使用网络可访问的 NameServer 和 Broker 地址，
-不能继续使用 `localhost:9876`。
-
-## 运行
-
-```shell
 dotnet run --project samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj
 ```
 
-应用会随 Host 启动客户端角色，并持续运行直到 Ctrl+C。启动后可使用 Remoting Producer 示例或其他 Producer 发送消息。
+默认 NameServer 为 `localhost:9876`。使用外部环境时，必须保证进程能访问 NameServer 和每个公布的 Broker 地址，
+创建普通 topic，并授予路由查询和消费权限，包括其消费结果会使用的重试和死信 topic。
 
-## 重要行为
-
-- 虽然名称中带有 Push，但它不是 Broker 向应用进行协议级推送。客户端负责队列分配，并反复发起长轮询拉取请求，
-  然后将收到的消息分发给 handler。
-- 对于并发、非 FIFO 批次，可返回 `Success` 并将 `context.AckIndex` 设为最后一条已接受消息的从零开始索引，以确认
-  连续前缀并只重试其后的尾部消息。默认值 `int.MaxValue` 确认每条消息；未接受任何消息时使用 `-1`。`Retry` 和
-  `DeadLetter` 会忽略 `AckIndex` 并应用到整个批次，因此 handler 必须幂等并能容忍重复投递。
-- `context.DelayLevelWhenNextConsume` 初始为由 `RetryDelay` 映射的延迟级别。将其设为 `0` 可让 Broker 选择重试延迟，
-  设为正的 RocketMQ 延迟级别可请求该级别，设为负值会将需要重试的消息直接发送到死信队列。广播模式没有 Broker 重试或
-  死信流程，因此未确认的尾部消息会被跳过。
-- 带 `MessageGroup` 的 FIFO 消息和 `ConsumeOrderly` 分发始终收到只包含一条消息的列表，即使
-  `ConsumeMessageBatchSize` 大于 `1` 也是如此；这些路径不使用部分批量确认。
-- 对于并发集群、非 FIFO 投递，`ConsumeTimeout` 到期后会取消 handler token 并请求 Broker 重新投递。它不能强制
-  停止忽略取消信号的应用代码；其延迟返回的结果会被忽略，并可能与重新投递的调用重叠，因此 handler 必须响应该 token，
-  并保持幂等。FIFO 和顺序投递为保持顺序保证而不会应用此机制。
-- 默认是集群模式。同一 group 中的实例共享队列分配。广播模式会让每个实例获得每个可读队列，并改为本地存储位点。
-- 只有 `ConsumeOrderly` 为 `true` **且** `ConsumerMode` 为 `Clustering` 时才使用 Broker 队列锁。普通并发消费不会
-  获取这些锁；广播模式下的顺序处理也仅限本地。
+完整配置和 API 示例请参阅
+[Remoting 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

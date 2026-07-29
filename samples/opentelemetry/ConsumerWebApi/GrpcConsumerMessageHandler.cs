@@ -24,15 +24,6 @@ internal sealed class GrpcConsumerMessageHandler(
 {
     public async ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
-        if (message.IsCorrupted)
-        {
-            logger.LogWarning(
-                "Forwarding corrupted gRPC message {MessageId} to the dead-letter queue: {Reason}",
-                message.MessageId,
-                message.CorruptionReason);
-            return ConsumeResult.DeadLetter;
-        }
-
         await Task.Delay(Random.Shared.Next(250, 1001), cancellationToken);
         logger.LogInformation(
             "gRPC consumer received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",

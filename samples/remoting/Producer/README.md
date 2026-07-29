@@ -1,90 +1,97 @@
-# Remoting Producer sample
+# Remoting Producer
 
-[简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-This ASP.NET Core minimal API resolves `IRemotingProducer` from dependency injection and sends normal Apache
-RocketMQ messages through the classic Remoting protocol. It registers both the default client registration and an
-independent keyed client registration with registration name `audit`. That registration name is also used as the
-.NET keyed-service key.
+`IRemotingProducer` publishes messages through RocketMQ's classic Remoting protocol. It discovers routes from a
+NameServer and then connects directly to the Broker endpoints in those routes. Choose this role for classic
+RocketMQ deployments and for Producer operations that require physical queue selection, batches, one-way sends,
+transactions, delayed-message recall, or request-reply.
 
-## Public role and endpoints
+Do not choose it for a Proxy-only deployment: reaching `NamesrvAddr` is not sufficient unless the application can
+also reach every advertised Broker address. Use the [gRPC Producer](../../grpc/Producer/README.md) when the deployment
+exposes a RocketMQ 5 Proxy and classic-only operations are not required.
 
-| Route | Client registration | Purpose |
-| --- | --- | --- |
-| `POST /messages` | Default `IRemotingProducer` | Sends one normal message. |
-| `POST /clients/audit/messages` | Keyed service: `IRemotingProducer` (registration name `audit`) | Sends one normal message through the audit keyed service. |
+## Registration and lifecycle
 
-Swagger UI is available at `/swagger`; the checked-in HTTP launch profile opens
-`http://localhost:5184/swagger` when the launcher honors it. Both routes accept an optional JSON body with only a
-`message`. They always send to the shared normal topic `eventhorizon-test-topic` with the fixed `sample` tag.
+Register the Remoting client, then add the Producer role:
 
-```json
-{
-  "message": "Hello from the Remoting producer."
-}
+```csharp
+builder.Services
+    .AddRocketMQRemoting(remotingSection.Bind)
+    .AddRemotingProducer(producerSection.Bind);
 ```
 
-The `message` property is required. An omitted or blank value returns a standard validation problem response with
-HTTP 400.
+The role is exposed as `IRemotingProducer`. The .NET host owns the lifecycle of a DI-registered Producer, so
+application services normally inject it and let the host call `StartAsync` and `StopAsync`.
 
-## Default configuration
+The Producer group configured by `RemotingProducerOptions.GroupName` is the Producer's classic client identity. It
+is not a consumer group. When one process needs independent clusters, credentials, or Producer identities, create a
+named client registration and resolve its `IRemotingProducer` as a keyed service:
 
-The sample reads these sections from `appsettings.json`.
+```csharp
+builder.Services
+    .AddRocketMQRemoting("audit", auditRemotingSection.Bind)
+    .AddRemotingProducer(auditProducerSection.Bind);
 
-| Key | Default | Purpose |
+static Task<RemotingSendResult> PublishAsync(
+    Message message,
+    [FromKeyedServices("audit")] IRemotingProducer producer,
+    CancellationToken cancellationToken) =>
+    producer.SendAsync(message, cancellationToken);
+```
+
+The registration name is application composition metadata, not a Broker-side audit feature. Named and default
+registrations have independent configuration and neither falls back to the other.
+
+## Sending and outcomes
+
+Create a Remoting `Message`, then send it through `IRemotingProducer`:
+
+```csharp
+var message = new Message("orders", Encoding.UTF8.GetBytes(orderId))
+{
+    Tag = "created"
+};
+message.Keys.Add(orderId);
+
+RemotingSendResult result = await producer.SendAsync(message, cancellationToken);
+```
+
+`RemotingSendResult` identifies the selected Broker queue and offset and includes the Broker send `Status`. Always
+inspect that status: `FlushDiskTimeout`, `FlushSlaveTimeout`, and `SlaveNotAvailable` can be returned as result values
+rather than exceptions. A completed send does not mean a consumer processed the message.
+
+Configured send retries can produce duplicates, including when a previous attempt reached a Broker but its response
+was lost. Consumers should therefore process messages idempotently. `SendOnewayAsync` does not wait for a Broker
+response, so its completion does not confirm storage.
+
+## Producer operations
+
+| Requirement | SDK API | Important boundary |
 | --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes for the default client registration. |
-| `RocketMQ:Producer:GroupName` | `remoting-sample-producer` | Default producer identity. |
-| `RocketMQ:Audit:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used by the keyed client registration with registration name `audit`. |
-| `RocketMQ:Audit:Producer:GroupName` | `remoting-sample-audit-producer` | Audit producer identity. |
+| Normal send | `SendAsync(Message, ...)` | Inspect `RemotingSendResult.Status`. |
+| Explicit queue selection | `GetPublishMessageQueuesAsync` and queue or selector overloads of `SendAsync` | The selected queue must be writable for the message topic. |
+| Batch send | Collection overloads of `SendAsync` | One topic per batch; delayed, retry, and transactional messages are not eligible. |
+| FIFO, delayed, priority, or Lite messages | `MessageGroup`, `DeliveryTimestamp`, `Priority`, or `LiteTopic` | These specialized properties are mutually exclusive and require matching Broker support. |
+| Transactional send | `SendTransactionAsync` | Configure both `LocalTransactionExecutor` and `TransactionChecker`; unresolved outcomes can be checked later by the Broker. |
+| Delayed-message recall | `RecallAsync` | Preserve the opaque `RecallHandle` and use it with the same logical topic before delivery. |
+| Request-reply | `RequestAsync` and `SendReplyAsync` | Requires a cooperating responder; timeout covers sending the request and receiving its reply. |
+| One-way send | `SendOnewayAsync` | No Broker acknowledgement or storage confirmation is returned. |
 
-Set values with normal .NET configuration overrides, for example
-`RocketMQ__Remoting__NamesrvAddr=broker-nameserver:9876`.
+Server version and Broker configuration determine whether specialized message modes are available. See the
+[Remoting protocol guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for queue selector, transaction,
+recall, request-reply, and compatibility details.
 
-## Broker and network prerequisites
+## Prerequisites and run
 
-- Use a classic RocketMQ NameServer and Broker that accept Remoting clients. The configured address is a
-  **NameServer**, not a Proxy endpoint.
-- The client asks the NameServer for routes and then connects directly to the advertised Broker address. The
-  machine running this API must therefore reach both `NamesrvAddr` and every returned Broker host and port.
-- Create a writable normal topic named `eventhorizon-test-topic` when using an external Broker. Do not depend on
-  production Brokers allowing automatic topic creation.
-- A producer group is a client identity; this sample does not require a consumer group or `updateSubGroup` call.
-  If ACL or topic permissions are enabled, grant the configured producer groups permission to query routes and
-  send to the topic.
-
-The bundled [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-sample when it runs on the host. It initializes the shared topic automatically when it starts:
+The default configuration expects a NameServer at `localhost:9876`, Broker endpoints reachable from the host, and a
+writable normal topic named `eventhorizon-test-topic`. The repository environment prepares that topic:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-That environment advertises a host-reachable Broker address. A sample running inside another container needs a
-different Broker advertisement and `NamesrvAddr`; `localhost:9876` is not a container-to-host address.
-
-## Run
-
-```shell
 dotnet run --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj
 ```
 
-For a predictable command-line address, disable the launch profile and set `ASPNETCORE_URLS`:
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 \
-  dotnet run --no-launch-profile --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj
-
-curl --request POST http://localhost:5000/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello from curl."}'
-```
-
-## Important behavior
-
-- The audit route is not a mirror or an automatic audit of `/messages`. It resolves only the keyed service for
-  registration name `audit`, so call that route explicitly when a message should use the audit keyed service.
-- Both client registrations use the same fixed topic and tag. Configure the audit `Remoting` and `Producer` sections
-  separately only when it must use a different cluster or producer identity.
-- This is a normal-message example. It does not demonstrate transactions, delayed delivery, request-reply, or
-  one-way sends.
+For an external cluster, configure `RocketMQ:Remoting:NamesrvAddr`, ensure every advertised Broker endpoint is
+reachable, and create the topic when automatic resource creation is disabled. The runnable project exposes the
+normal-send workflow through Swagger and HTTP; its transport semantics come from `IRemotingProducer`, not from HTTP.

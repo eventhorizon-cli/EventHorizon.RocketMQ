@@ -1,79 +1,136 @@
-# Remoting Push Consumer sample
+# Remoting Push Consumer
 
 [简体中文](README.zh-CN.md)
 
-This Generic Host registers a scoped batch-oriented `PushConsumerMessageHandler` through
-`AddRemotingPushConsumer<PushConsumerMessageHandler>` and processes messages through `IRemotingPushConsumer`.
-It is the high-level classic Remoting consumer with automatic assignment, long polling, batch dispatch, retry, and
-offset handling.
+`IRemotingPushConsumer` is the high-level classic Remoting consumption model. The SDK maintains consumer-group
+assignment, initiates Broker long polls, buffers received messages, dispatches handlers, settles retry or dead-letter
+outcomes, and persists offsets. Application code supplies a message handler instead of driving a poll loop.
 
-## Public role and default configuration
+Despite the name, messages are not pushed from the Broker directly into application code. The client performs long
+polling and also handles classic Broker callbacks such as rebalance and offset reset.
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes. |
-| `RocketMQ:PushConsumer:GroupName` | `remoting-sample-push-consumer` | Clustered consumer group. |
-| `RocketMQ:PushConsumer:MaxConcurrency` | `4` | Maximum concurrent message-handler batch invocations. |
-| `RocketMQ:PushConsumer:BatchSize` | `32` | Maximum messages requested from the Broker by each long poll. |
-| `RocketMQ:PushConsumer:ConsumeMessageBatchSize` | `1` | Maximum messages passed to one handler invocation; it is independent of `BatchSize`. |
-| `RocketMQ:PushConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty long poll. |
-| `RocketMQ:PushConsumer:RetryDelay` | `00:00:01` | Delay before retrying a failed receive or handler result. |
-| `RocketMQ:PushConsumer:ConsumeTimeout` | `00:15:00` | Time limit for a concurrent clustered non-FIFO handler batch before cancellation and Broker retry are requested. |
-| Fixed topic | `eventhorizon-test-topic` | Shared subscribed normal topic. |
-| `Sample:Filter` | `*` | Subscription filter. |
+## When to use Push Consumer
 
-The handler receives an `IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`, logs every message in
-the list, and returns one `ConsumeResult` for the complete list. This sample leaves `AckIndex` at its default, so a
-`Success` confirms the complete batch. It keeps `ConsumeMessageBatchSize` at its default of `1`; set it in
-configuration to batch concurrent non-`MessageGroup` messages from the same Broker physical queue. The typed
-registration lets the handler receive its `ILogger<PushConsumerMessageHandler>` from the application service provider
-with a scoped lifetime per batch handling attempt.
+Choose Push Consumer for continuously running services that want the SDK to own queue allocation, receive scheduling,
+handler concurrency, retries, and offset progression. It is the normal choice when business code can be expressed as
+an asynchronous callback and can tolerate at-least-once delivery.
 
-## Broker and network prerequisites
+Prefer Lite Pull when the SDK should allocate queues but the application must control when polling and commits occur.
+Prefer Pull Consumer for exact physical-queue and request-offset control. Prefer POP for per-message receipt and
+invisibility semantics.
 
-- Use a classic Remoting NameServer and Broker. The client discovers routes through `NamesrvAddr` and then opens
-  long-poll connections to the advertised Brokers, so both hops must be reachable.
-- Create the normal topic `eventhorizon-test-topic` and allow the group `remoting-sample-push-consumer` when using
-  an external Broker. ACL-enabled Brokers require route-query and consume permissions, including retry and
-  dead-letter-topic permissions when those paths are used.
-- The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-  normal-topic Remoting consumer when it runs on the host. It initializes the shared topic automatically:
+Push Consumer is not a fixed thread-per-queue execution model. Applications that require thread affinity or an
+external scheduler to own every queue should use a caller-driven consumer instead.
+
+## Registration and handler contract
+
+Register a typed handler with
+`AddRemotingPushConsumer<TMessageHandler>(ServiceLifetime, Action<RemotingPushConsumerOptions>)`. The handler
+implements `IRemotingPushMessageHandler.HandleAsync` and receives:
+
+- an ordered `IReadOnlyList<RemotingMessageView>` from one Broker physical queue;
+- a `RemotingPushConsumeContext` that controls partial acknowledgement and retry delay;
+- a cancellation token for shutdown and eligible consume timeouts.
+
+A `Singleton` handler can receive concurrent calls and must be thread-safe. `Scoped` and `Transient` handlers are
+resolved in a new asynchronous DI scope for each batch attempt. For a small stateless callback, set
+`RemotingPushConsumerOptions.MessageHandler` instead; a delegate and typed handler cannot be configured together.
+
+Subscriptions can be configured with `ConsumerOptions.Subscribe` before startup. Runtime `SubscribeAsync` and
+`UnsubscribeAsync` update classic heartbeats and reconcile active receivers.
+
+## Queue allocation and concurrent dispatch
+
+In the default `Clustering` mode, live consumers with the same group share the topic's Broker physical queues. A queue
+is assigned to one consumer in that group, so adding consumers increases useful parallelism only until the consumer
+count reaches the total readable queue count across all Brokers. Additional consumers can remain idle. Consumers in
+different groups receive independent consumption of the topic.
+
+All clustering instances in the same group must use the same topic and filter subscriptions. Allocation uses the
+group's complete consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is
+not consuming that topic, while inconsistent filters can make accepted messages depend on the current queue owner.
+
+The client maintains one local `ProcessQueue` for every assigned Broker `MessageQueue`. A `ProcessQueue` holds pulled
+messages and their consumption state; it is not a new Broker queue and creates no server resource. The name and
+ownership concept follow the official RocketMQ Java client.
+
+`BatchSize` limits messages requested by one Broker pull. `ConsumeMessageBatchSize` independently limits messages
+passed to one handler invocation. Concurrent batches contain only messages from the same physical queue. Messages with
+a `MessageGroup` and all `ConsumeOrderly` deliveries remain singleton batches.
+
+Ready `ProcessQueue` instances share asynchronous consume loops. Each turn takes one batch from one ready queue and
+places a queue with more work at the back, providing fair progress across active queues and Brokers. `MaxConcurrency`
+limits handler dispatches across the entire Consumer, not per queue. These loops are .NET ThreadPool tasks; they are
+not dedicated threads and are not permanently bound to a queue. This fair scheduler is a .NET design rather than an
+exact copy of the Java concurrent dispatch path.
+
+`MaxCachedMessages` limits admission of newly pulled messages waiting for first dispatch. In-flight or settlement-
+blocked messages do not continue to hold that admission capacity, and a blocked queue pauses new admission until it
+can progress. The value is therefore not a strict count of every message resident in the process.
+
+## Acknowledgement, retry, and offsets
+
+The handler returns one `ConsumeResult` for its batch:
+
+- `Success` acknowledges the complete batch by default.
+- For a concurrent non-FIFO batch, set `context.AckIndex` to the zero-based last successful index and return
+  `Success`. The contiguous prefix is accepted and only the tail is sent for Broker retry. The default
+  `int.MaxValue` accepts all messages; `-1` accepts none.
+- `Retry` and `DeadLetter` ignore `AckIndex` and apply to the complete batch.
+
+For a clustered concurrent non-FIFO batch, `context.DelayLevelWhenNextConsume` starts from the Broker delay level
+mapped from `RetryDelay`. Set it to `0` to let the Broker choose, to a positive RocketMQ delay level to request that
+level, or to a negative value to request direct dead-letter delivery. `MessageGroup` FIFO, `ConsumeOrderly`, and
+broadcasting paths ignore this context setting. In clustering mode, `MaxDeliveryAttempts` bounds retry delivery; a
+retried message that reaches the limit is sent to the dead-letter queue.
+
+Every `ProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
+queue or Broker, cannot skip an earlier unresolved queue offset. Pulling may run ahead of handler completion. In
+clustering mode, the Broker-committed offset cannot run ahead of successful settlement; broadcasting instead treats
+unavailable retry and dead-letter outcomes as locally resolved drops, as described below.
+
+In the clustered concurrent `ProcessQueue` path, failed retry/dead-letter settlement is retried locally after
+`RetryDelay` without invoking the application handler again; the watermark remains blocked. Offset persistence
+failures are also retried. If an assignment is revoked, a late handler result from that old assignment is ignored and
+cannot advance its replacement.
+
+`ConsumeTimeout` applies to concurrent clustered non-FIFO batches. On expiry, the client cancels the handler token and
+requests Broker redelivery for the whole batch. Code that ignores cancellation cannot be forcibly stopped; its late
+result is ignored but its external work can overlap the redelivered invocation. Handlers must honor cancellation and
+remain idempotent. FIFO `MessageGroup` and `ConsumeOrderly` deliveries are excluded so timeout recovery cannot break
+their ordering.
+
+## Ordering and broadcasting
+
+`MessageGroup` gives producer-side queue affinity and singleton FIFO dispatch. `ConsumeOrderly` instead serializes
+every assigned physical queue. In clustering mode, orderly consumption acquires and renews classic Broker queue locks;
+`MaxConcurrency` can still process different locked queues concurrently. A retry blocks that queue so later messages
+cannot overtake it. Queue locks preserve order but do not change at-least-once delivery, so orderly handlers must also
+be idempotent.
+
+`Broadcasting` assigns every readable queue to every Consumer instance and stores offsets locally. It has no
+group-owned Broker retry or dead-letter flow: `Retry`, `DeadLetter`, and an unacknowledged batch tail are dropped while
+the local offset advances. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
+
+For a normal subscribed queue, `InitialPosition` supplies a starting offset only when the active offset store has no
+value: the Broker group offset in clustering mode, or the instance's local offset file in broadcasting mode. It does
+not reset an existing position. Retry queues retain their recovery boundaries and do not use this normal-queue
+starting policy.
+
+## Run the sample
+
+The runnable sample uses a scoped typed handler to consume all messages from `eventhorizon-test-topic` as group
+`remoting-sample-push-consumer`. It uses clustering with a global `MaxConcurrency` of 4.
+
+Start the [local RocketMQ environment](../../../test-environments/rocketmq/README.md), then run:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-The supplied stack advertises a host-reachable Broker address. A process in another container must use network
-reachable NameServer and Broker addresses rather than `localhost:9876`.
-
-## Run
-
-```shell
 dotnet run --project samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj
 ```
 
-The application starts the client role with the host and remains active until Ctrl+C. Send messages with the
-Remoting Producer sample or another producer after startup.
+The default NameServer is `localhost:9876`. An external setup must make both the NameServer and every advertised Broker
+address reachable, create the normal topic, and grant route-query and consume access, including access to any retry or
+dead-letter topics used by its outcomes.
 
-## Important behavior
-
-- Despite its name, this is not a protocol-level Broker push to the application. The client owns queue assignment
-  and repeatedly issues long-poll pull requests, then dispatches received messages to the handler.
-- For a concurrent non-FIFO batch, return `Success` and set `context.AckIndex` to the zero-based index of the last
-  accepted message to confirm its contiguous prefix and retry only the remaining tail. The default `int.MaxValue`
-  confirms every message; use `-1` when no message was accepted. `Retry` and `DeadLetter` ignore `AckIndex` and
-  apply to the whole batch, so handlers must be idempotent and tolerate redelivery.
-- `context.DelayLevelWhenNextConsume` starts with the delay level mapped from `RetryDelay`. Set it to `0` to let the
-  Broker choose the retry delay, a positive RocketMQ delay level to request that level, or a negative value to send
-  messages that will be retried directly to the dead-letter queue. In broadcasting mode, an unacknowledged tail is
-  skipped because there is no Broker retry or dead-letter flow.
-- `MessageGroup` FIFO messages and `ConsumeOrderly` dispatch always receive singleton lists, even when
-  `ConsumeMessageBatchSize` is greater than `1`; these paths do not use partial batch confirmation.
-- For concurrent clustered non-FIFO delivery, `ConsumeTimeout` cancels the handler token and requests Broker
-  redelivery when a batch runs too long. It cannot forcibly stop application code that ignores cancellation; its
-  late result is ignored and can overlap a redelivered invocation, so handlers must honor the token and remain
-  idempotent. FIFO and orderly delivery are intentionally excluded to preserve their ordering guarantees.
-- The default is clustering mode. Instances in the same group share queue assignments. Broadcasting mode gives
-  every instance every readable queue and stores offsets locally instead.
-- Broker queue locks are used only when `ConsumeOrderly` is `true` **and** `ConsumerMode` is `Clustering`.
-  Ordinary concurrent consumption does not acquire those locks, and broadcasting orderly processing is only local.
+See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

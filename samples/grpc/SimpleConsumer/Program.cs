@@ -23,17 +23,6 @@ using Microsoft.Extensions.Hosting;
 var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-var sampleOptions = new SimpleConsumerSampleOptions();
-sampleSection.Bind(sampleOptions);
-
-builder.Services
-    .AddOptions<SimpleConsumerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "Subscription filter is required.")
-    .Validate(static options => options.BatchSize > 0, "Batch size must be positive.")
-    .Validate(static options => options.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
-    .ValidateOnStart();
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
 // Unlike Push consumers, SimpleConsumer leaves receiving, acknowledgement, and DLQ forwarding to the hosted worker.
@@ -42,7 +31,7 @@ builder.Services
     .AddGrpcSimpleConsumer(options =>
     {
         consumerSection.Bind(options);
-        options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
+        options.Subscribe("eventhorizon-test-topic", new FilterExpression("sample"));
     });
 builder.Services.AddHostedService<SimpleConsumer>();
 

@@ -2,179 +2,97 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Each runnable child project below is an independent .NET 8 project. Consumer samples use the Generic Host; Producer
-samples and the two OpenTelemetry Web API projects are standard ASP.NET Core Web applications built with Minimal APIs. They use
-protocol-specific dependency-injection registration, so client roles start and stop with the application.
+Each project demonstrates one protocol-specific SDK role or integration. The main code path keeps registration,
+public API calls, completion, and failure handling visible; the linked guide explains what the mode means and when to
+choose it.
 
-Each sample directory has its own README. Read that guide before running the sample: it identifies the required
-Broker or Proxy capabilities, resources and permissions, supported server versions, and behavior that can otherwise
-be mistaken for a protocol guarantee. The setup below prepares the bundled local environment only; a reachable
-endpoint alone does not make every RocketMQ feature available.
+## Choose a transport
 
-## Before running
+The two clients are independent and have different connection and feature models:
 
-Start the local test environment from the repository root:
+- **gRPC** connects to a RocketMQ 5 Proxy through `GrpcClientOptions.Endpoint`. Choose it for Proxy-based deployments
+  and the RocketMQ 5 gRPC message model.
+- **Classic Remoting** discovers Brokers through `RemotingClientOptions.NamesrvAddr`, then connects directly to their
+  advertised endpoints. Choose it for classic deployments and APIs that expose physical queues, offsets, POP, or
+  classic Producer operations.
 
-```shell
-docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
+Samples do not hide these differences behind a transport-neutral wrapper. Start with the protocol actually exposed
+by the deployment.
 
-The general environment's one-shot initializer creates the shared `eventhorizon-test-topic` topic before
-`docker compose up -d --wait` returns. All ordinary Producer and Consumer samples can use it directly.
+## gRPC roles
 
-When targeting a different Broker that disables automatic resource creation, create the topic and the consumer groups
-used by the standard samples before running them:
+| Mode | Public API | Choose it when |
+| --- | --- | --- |
+| [Producer](grpc/Producer/README.md) | `IGrpcProducer` | The application publishes through a RocketMQ 5 Proxy. |
+| [SimpleConsumer](grpc/SimpleConsumer/README.md) | `IGrpcSimpleConsumer` | Application code must drive receive, invisibility changes, acknowledgement, and dead-letter forwarding. |
+| [PushConsumer](grpc/PushConsumer/README.md) | `IGrpcPushConsumer` | The SDK should own assignment polling, receive loops, handler concurrency, invisibility renewal, and settlement. |
+| [LitePushConsumer](grpc/LitePushConsumer/README.md) | `IGrpcLitePushConsumer` | A LITE-enabled deployment uses service-managed LiteTopics beneath one bind topic. |
 
-```shell
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
+gRPC Push is client-initiated long polling; it is not a Broker-opened network push connection.
 
-for group in rocketmq-dotnet-grpc-simple-sample rocketmq-dotnet-grpc-push-sample remoting-sample-pull-consumer remoting-sample-lite-pull-consumer remoting-sample-pop-consumer remoting-sample-push-consumer
-do
-    docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup -n nameserver:9876 -c DefaultCluster -g "$group"
-done
-```
+## Classic Remoting roles
 
-See the [general local environment guide](../test-environments/rocketmq/README.md) for the endpoints and additional
-Broker commands.
+| Mode | Public API | Choose it when |
+| --- | --- | --- |
+| [Producer](remoting/Producer/README.md) | `IRemotingProducer` | The application publishes through NameServer/Broker Remoting or needs classic queue, batch, one-way, transaction, recall, or request-reply operations. |
+| [Admin](remoting/Admin/README.md) | `IRemotingAdmin` | A read-only tool must inspect physical queues, offset bounds, committed positions, or stored messages. |
+| [Pull Consumer](remoting/PullConsumer/README.md) | `IRemotingPullConsumer` | The application owns physical queue selection, request offsets, processing, and commits. |
+| [Lite Pull Consumer](remoting/LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | The SDK should allocate queues while application code owns polling and commits. |
+| [POP Consumer](remoting/PopConsumer/README.md) | `IRemotingPopConsumer` | Work uses per-message receipts and invisibility instead of queue-offset commits. |
+| [Push Consumer](remoting/PushConsumer/README.md) | `IRemotingPushConsumer` | The SDK should own queue allocation, long polling, fair concurrent dispatch, retry settlement, and offset persistence. |
 
-LitePush uses its own environment because it needs a LITE parent Topic, a matching Consumer Group binding, and a
-cluster-mode Proxy that implements `SyncLiteSubscription`. Stop any environment that publishes `localhost:8081`, then
-start the dedicated environment:
+Remoting Push also uses client-initiated long polling. Consumers in one clustered group divide the Broker physical
+queues; consumers in different groups consume independently.
 
-```shell
-docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
-```
+## OpenTelemetry integration
 
-It automatically prepares `eventhorizon-test-lite-parent-topic` and `eventhorizon-test-lite-push-consumer`; the sample
-synchronizes its `eventhorizon-test-lite-topic` LiteTopic subscription when it starts. See the
-[LitePush environment guide](../test-environments/rocketmq-litepush/README.md) for the exact setup and limits.
+The [OpenTelemetry samples](opentelemetry/README.md) show how an application subscribes to the protocol-specific
+ActivitySource and Meter emitted by both clients. The application owns the OpenTelemetry provider, resource,
+sampling, views, processors, and exporters.
 
-The gRPC projects use `RocketMQ:Client` for `GrpcClientOptions` and `RocketMQ:Producer` or
-`RocketMQ:Consumer` for the role options. The ordinary sample topic and consumer subscriptions are fixed in code so
-they match the local resource initializer. For example:
+## Run locally
 
-```shell
-RocketMQ__Client__Endpoint=localhost:8081 dotnet run --project samples/grpc/Producer
-```
-
-The classic Remoting projects use `RocketMQ:Remoting` for the NameServer connection and a concrete role section
-such as `RocketMQ:Producer`, `RocketMQ:PullConsumer`, or `RocketMQ:PushConsumer`. Their ordinary sample topic and
-consumer subscriptions are likewise fixed in code. For example:
-
-```shell
-RocketMQ__Remoting__NamesrvAddr=localhost:9876 dotnet run --project samples/remoting/Producer
-```
-
-Every project also contains an `appsettings.json` file with its default values. Consumer samples continue until
-they receive Ctrl+C. Both Producer samples, the Remoting Admin sample, and the two OpenTelemetry Web API projects
-host Web APIs and continue serving until they receive Ctrl+C. Each has a single HTTP launch profile that sets
-`launchBrowser` and `launchUrl` to open `/swagger`; supported IDE and debug launchers honor that request. If a browser
-is not opened, use the listening address printed by the application and append `/swagger`.
-
-## OpenTelemetry
-
-The [`opentelemetry`](opentelemetry/README.md) samples show how an application configures the OpenTelemetry SDK for
-the separately published gRPC and classic Remoting clients. They subscribe to the clients' public activity-source and
-meter names, and export application-owned telemetry to a collector.
-
-For the local Grafana workflow, start the normal RocketMQ stack together with the independent Grafana OTEL LGTM
-environment. Their published ports do not overlap:
+The normal environment supports ordinary gRPC Producer, SimpleConsumer, and PushConsumer roles through its Proxy and
+the classic Remoting roles through its NameServer and Broker. It creates `eventhorizon-test-topic` before startup
+completes:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
-```
-
-The LGTM environment exposes Grafana on `http://127.0.0.1:3000` and OTLP/gRPC on `http://127.0.0.1:4317`; it
-preconfigures separate Producer and Consumer OpenTelemetry dashboards. Start
-[`opentelemetry/ConsumerWebApi`](opentelemetry/ConsumerWebApi/README.md) first, then use
-[`opentelemetry/ProducerWebApi`](opentelemetry/ProducerWebApi/README.md) to send messages through separate gRPC and
-Remoting routes. Both use the auto-created `eventhorizon-test-topic`; the Producer request accepts only the JSON
-`message` field. The category guide covers the shared SDK and collector configuration.
-
-## Producer Web API and Swagger
-
-Both Producer samples expose Swagger UI at `/swagger` and their OpenAPI document at
-`/swagger/v1/swagger.json`. Swagger UI can invoke both the default and keyed audit send endpoints directly.
-
-Both Producer samples expose `POST /messages`. Its JSON request body has one required `message` field. The samples
-always send to `eventhorizon-test-topic` with the `sample` tag.
-
-Use the HTTP launch profile in a supported IDE or debug launcher to open Swagger automatically. For a predictable
-command-line fallback, disable the launch profile, bind a known local address, and then open
-`http://localhost:5000/swagger` manually:
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 dotnet run --no-launch-profile --project samples/grpc/Producer
-
-curl --request POST http://localhost:5000/messages \
-    --header 'Content-Type: application/json' \
-    --data '{"message":"Hello from curl."}'
-```
-
-Replace `samples/grpc/Producer` with `samples/remoting/Producer` to use the classic Remoting Producer sample.
-
-Both Producer samples also register an `audit` keyed client registration with registration name `audit`. `POST /clients/audit/messages`
-sends through its .NET keyed service, independently of the default `POST /messages` route. The audit handler receives its protocol-specific
-producer from that service. The registration name is also used as the keyed-service key for `FromKeyedServices`:
-
-```csharp
-[FromKeyedServices("audit")] IGrpcProducer producer
-```
-
-The Remoting sample uses the same attribute with `IRemotingProducer`. The audit keyed client registration defaults to
-the same local RocketMQ environment as the default client registration, but can be configured independently: gRPC reads
-`RocketMQ:Audit:Client` and `RocketMQ:Audit:Producer`; Remoting reads `RocketMQ:Audit:Remoting` and
-`RocketMQ:Audit:Producer`.
-
-Send through the audit keyed service with the same required `message` JSON body:
-
-```shell
-curl --request POST http://localhost:5000/clients/audit/messages \
-    --header 'Content-Type: application/json' \
-    --data '{"message":"Audit event from curl."}'
-```
-
-## gRPC
-
-These projects use `EventHorizon.RocketMQ.Grpc` and connect to a RocketMQ 5 Proxy.
-
-| Role | Public API | Project | What it demonstrates |
-| --- | --- | --- | --- |
-| Producer | `IGrpcProducer` | [`grpc/Producer`](grpc/Producer/README.md) | Send a standard message when `POST /messages` is called. |
-| Simple consumer | `IGrpcSimpleConsumer` | [`grpc/SimpleConsumer`](grpc/SimpleConsumer/README.md) | Application-controlled receive, acknowledgement, and dead-letter forwarding. |
-| Push consumer | `IGrpcPushConsumer` | [`grpc/PushConsumer`](grpc/PushConsumer/README.md) | Long-poll-based automatic dispatch through a message handler. |
-| Lite Push consumer | `IGrpcLitePushConsumer` | [`grpc/LitePushConsumer`](grpc/LitePushConsumer/README.md) | Automatic dispatch for a configured bind topic and LiteTopic. |
-
-Run a gRPC project with its directory as the project argument, for example:
-
-```shell
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-The general RocketMQ 5.5.0 environment supports the standard gRPC Producer, SimpleConsumer, and PushConsumer paths.
-The dedicated LitePush environment supports the LitePush sample and provisions its LITE parent Topic and Consumer
-Group automatically. See the [gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) for the complete LitePush
-compatibility requirements.
+Replace the project path with any ordinary sample. Each project README states its additional resources, permissions,
+server capabilities, and complete command.
 
-## Classic Remoting
-
-These projects use `EventHorizon.RocketMQ.Remoting` and discover Brokers through a NameServer.
-
-| Role | Public API | Project | What it demonstrates |
-| --- | --- | --- | --- |
-| Producer | `IRemotingProducer` | [`remoting/Producer`](remoting/Producer/README.md) | Send a standard message when `POST /messages` is called. |
-| Admin | `IRemotingAdmin` | [`remoting/Admin`](remoting/Admin/README.md) | HTTP/Swagger read-only queue, offset, and physical-message inspection. |
-| Pull consumer | `IRemotingPullConsumer` | [`remoting/PullConsumer`](remoting/PullConsumer/README.md) | Explicit queue discovery, offsets, pull, and offset commit. |
-| Lite Pull consumer | `IRemotingLitePullConsumer` | [`remoting/LitePullConsumer`](remoting/LitePullConsumer/README.md) | Subscription-driven assignment, polling, and client-managed offset commit. |
-| POP consumer | `IRemotingPopConsumer` | [`remoting/PopConsumer`](remoting/PopConsumer/README.md) | Explicit physical-queue selection and receipt acknowledgement. |
-| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.md) | Long-poll-based automatic batch dispatch through a message handler, with singleton FIFO delivery where required. |
-
-Run a Remoting project with its directory as the project argument, for example:
+LitePush requires a LITE parent topic, a bound consumer group, Broker LMQ support, and a cluster-mode Proxy that
+implements `SyncLiteSubscription`. Use its dedicated environment instead of the normal stack:
 
 ```shell
-dotnet run --project samples/remoting/PopConsumer
+docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
+dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-The Remoting projects are intended for the supplied NameServer/Broker test environment. They are separate from
-the gRPC projects: use the matching sample for the protocol used by the application.
+For the observability workflow, run the normal RocketMQ environment together with
+`test-environments/otel-lgtm/compose.yaml`, then start the OpenTelemetry consumer and producer projects.
+
+## Configuration conventions
+
+SDK-owned connection and role options use protocol-specific `RocketMQ` sections and are passed directly to the
+matching registration delegate. Ordinary sample resource names, filters, message properties, and small method
+arguments stay beside the public SDK call so the demonstrated workflow is visible. OpenTelemetry application settings
+use their separate `OpenTelemetry` section.
+
+Every project includes runnable defaults in `appsettings.json`. Normal .NET configuration overrides apply, for
+example `RocketMQ__Client__Endpoint=proxy.example:8081` or
+`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`. Producer and Admin Web API projects expose Swagger; their
+HTTP endpoints are application shells around the SDK workflows documented in their guides.
+
+## Coverage boundaries
+
+Each project demonstrates one coherent end-to-end workflow, not every overload. Advanced paths that require different
+resources, a cooperating peer, or a real processing reason remain in the protocol guides until they justify a
+dedicated runnable sample. Examples include Producer transactions and request-reply, runtime subscription changes,
+manual assignment and seeking, visibility extension, and alternate Push delivery modes.
+
+See the [gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) and
+[Remoting guide](../src/EventHorizon.RocketMQ.Remoting/README.md) for the complete public APIs.

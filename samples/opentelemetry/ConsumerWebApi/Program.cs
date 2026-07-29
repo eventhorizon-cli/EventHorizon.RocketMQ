@@ -29,18 +29,13 @@ var grpcClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:
 var grpcConsumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Consumer");
 var remotingClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Client");
 var remotingConsumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Consumer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-var sampleOptions = sampleSection.Get<ConsumerSampleOptions>() ?? new ConsumerSampleOptions();
-sampleOptions.Validate();
-var otlpEndpoint = sampleOptions.GetOtlpEndpoint();
+var openTelemetrySection = builder.Configuration.GetRequiredSection("OpenTelemetry");
+var serviceName = openTelemetrySection.GetValue<string>("ServiceName");
+ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
+var otlpEndpoint = GetOtlpEndpoint(openTelemetrySection.GetValue<string>("OtlpEndpoint"));
 
-builder.Services.AddOptions<ConsumerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.ServiceName), "An OpenTelemetry service name is required.")
-    .Validate(static options => IsValidOtlpEndpoint(options.OtlpEndpoint), "An absolute HTTP or HTTPS OTLP endpoint is required.")
-    .ValidateOnStart();
 builder.Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(sampleOptions.ServiceName))
+    .ConfigureResource(resource => resource.AddService(serviceName))
     .WithTracing(tracing => tracing
         .AddAspNetCoreInstrumentation()
         .AddRocketMQGrpcInstrumentation()
@@ -105,9 +100,18 @@ static IResult GetConsumers() => Results.Ok(
         nameof(IGrpcPushConsumer),
         nameof(IRemotingPushConsumer)));
 
-static bool IsValidOtlpEndpoint(string endpoint) => Uri.TryCreate(endpoint, UriKind.Absolute, out var parsed) &&
-    (parsed.Scheme == Uri.UriSchemeHttp || parsed.Scheme == Uri.UriSchemeHttps) &&
-    !string.IsNullOrWhiteSpace(parsed.Host);
+static Uri GetOtlpEndpoint(string? value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var endpoint) ||
+        (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps) ||
+        string.IsNullOrWhiteSpace(endpoint.Host))
+    {
+        throw new InvalidOperationException(
+            "OpenTelemetry:OtlpEndpoint must be an absolute HTTP or HTTPS URI.");
+    }
+
+    return endpoint;
+}
 
 static void ConfigureOtlpExporter(OtlpExporterOptions options, Uri endpoint)
 {

@@ -1,87 +1,85 @@
-# gRPC Producer 示例
+# gRPC Producer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-这是一个 ASP.NET Core Minimal API 示例。它通过 `AddRocketMQGrpc` 和 `AddGrpcProducer` 注册
-`IGrpcProducer`，只在调用 HTTP 端点时发送标准 RocketMQ 消息，不会在后台循环发布消息。
+`IGrpcProducer` 通过 RocketMQ 5 Proxy 发布消息。应用通过 gRPC `Endpoint` 访问 RocketMQ，并希望使用
+Proxy 模式的消息模型、生命周期和遥测时，适合选择该角色。它不会直连 Broker 或 NameServer。
 
-## 配置
+如果应用必须选择物理发布队列、批量或单向发送、使用请求-响应等 classic 专属操作，或者部署只暴露了
+NameServer 和 Broker 端点而没有 Proxy，应改用 [Remoting Producer](../../remoting/Producer/README.zh-CN.md)。
 
-以下值来自 `appsettings.json`，可通过普通 .NET 配置覆盖，例如
-`RocketMQ__Client__Endpoint=proxy.example:8081`。
+## 注册与生命周期
 
-| 配置键 | 默认值 | 用途 |
+先注册协议客户端，再向该客户端注册添加 Producer 角色：
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc(clientSection.Bind)
+    .AddGrpcProducer(producerSection.Bind);
+```
+
+该角色通过 `IGrpcProducer` 对外提供。使用依赖注入注册后，.NET Host 会随应用启动和停止 Producer；应用服务通常
+只需注入并使用它，不需要自行调用 `StartAsync` 或 `StopAsync`。gRPC Producer 不使用 consumer group。
+
+带名称的注册会创建一套独立客户端，该名称同时也是 .NET keyed service 的 key。当同一进程需要使用不同的 Proxy
+端点、凭据或 Producer 设置时，可以这样注册：
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc("audit", auditClientSection.Bind)
+    .AddGrpcProducer(auditProducerSection.Bind);
+
+static Task<GrpcSendReceipt> PublishAsync(
+    Message message,
+    [FromKeyedServices("audit")] IGrpcProducer producer,
+    CancellationToken cancellationToken) =>
+    producer.SendAsync(message, cancellationToken);
+```
+
+注册名只是应用组合信息，不会创建 Broker 侧的特殊 Producer 类型或审计功能；keyed 注册也不会回退到默认注册。
+
+## 发送与回执
+
+创建协议专属的 `Message`，再调用 `SendAsync`：
+
+```csharp
+var message = new Message("orders", Encoding.UTF8.GetBytes(orderId))
+{
+    Tag = "created"
+};
+message.Keys.Add(orderId);
+
+GrpcSendReceipt receipt = await producer.SendAsync(message, cancellationToken);
+```
+
+`GrpcSendReceipt` 包含服务端分配的 `MessageId`、存储 `Offset`、Broker 端点，以及可选的事务或撤回信息。方法完成
+表示 RocketMQ 服务返回了发送回执，不代表 Consumer 已处理消息。发送失败通过异常报告，Producer 也不是持久化的
+本地 outbox。应用应传递取消信号，并在能够处理重复发送后果的业务边界决定是否重试。
+
+## 消息模式
+
+未设置专用属性时，`SendAsync` 发送普通消息：
+
+| 需求 | SDK API | 约束 |
 | --- | --- | --- |
-| `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC 端点。 |
-| `RocketMQ:Client:RequestTimeout` | `00:00:03` | 普通客户端请求的截止时间。 |
-| `RocketMQ:Client:UseTLS` | `false` | 为 Proxy 连接启用 TLS。 |
-| `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | 默认客户端注册中 Producer 的发送超时。 |
-| `RocketMQ:Audit:Client:*` | 与 `RocketMQ:Client` 相同 | `registrationName` 为 `audit` 的独立 keyed 客户端注册的连接设置。 |
-| `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | `registrationName` 为 `audit` 的 keyed 客户端注册中 Producer 的发送超时。 |
+| FIFO 投递 | `Message.MessageGroup` | 提供稳定的队列亲和性；目标资源必须支持 FIFO。 |
+| 延迟投递 | `Message.DeliveryTimestamp` | 目标资源必须支持定时投递。服务端支持撤回时，可在投递前将回执中的 `RecallHandle` 传给 `RecallAsync`。 |
+| 优先级投递 | `Message.Priority` | 优先级必须为非负值，并且需要服务端支持。 |
+| Lite 消息 | `Message.LiteTopic` | Proxy 和 Broker 都必须支持 Lite 消息。 |
+| 事务消息 | `SendTransactionAsync` | 启动前声明事务 Topic 并配置事务检查器；随后提交或回滚返回的事务。 |
 
-该角色没有 consumer group。`POST /messages` 使用默认客户端注册中的 `IGrpcProducer`；
-`POST /clients/audit/messages` 使用 `registrationName` 为 `audit` 的独立 keyed 客户端注册所提供的
-`IGrpcProducer` keyed service。该 `registrationName` 同时作为 keyed service 的 key；它是应用侧配置，
-不是 Broker 端的审计功能。
+这些专用模式取决于 Proxy 和 Broker 能力，不能仅根据客户端存在相应 API 就认定服务端支持。完整配置和事务恢复
+语义请参阅 [gRPC 协议指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)。
 
-两个路由都会固定向 `eventhorizon-test-topic` 发送带 `sample` tag 的消息。这些示例资源刻意写死在代码中，以便配套的
-Consumer 示例能够接收消息。请求只接受必填的 `message` 字段；省略或传入空白值时会返回 `400 Bad Request` 及验证问题响应。
+## 前置条件与运行
 
-## 前置条件
-
-- `RocketMQ:Client:Endpoint` 必须指向可访问的 RocketMQ 5 Proxy；gRPC 客户端连接 Proxy，不会直接连接
-  NameServer。
-- 目标 Broker 必须允许向 `eventhorizon-test-topic` 发送标准消息，或者该 topic 已经存在。本仓库提供的环境会在启动时创建它。
-  使用禁用自动资源创建的其他 Broker 时，请显式创建：
-
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
-  ```
-
-- 本仓库提供的 RocketMQ 5.5.0 Compose 环境支持该示例。它在 `localhost:8081` 提供 cluster-mode Proxy；一次性资源
-  初始化服务会在启动命令返回前准备好固定的示例 Topic。
-
-使用默认值时，在仓库根目录启动该环境：
+默认配置要求 `localhost:8081` 上存在 Proxy，并准备好可写的普通 Topic `eventhorizon-test-topic`。仓库提供的环境会
+创建该 Topic：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-## 运行
-
-支持 `launchBrowser` 的启动器会通过 HTTP launch profile 打开 `http://localhost:5231/swagger`。在仓库根目录执行：
-
-```shell
 dotnet run --project samples/grpc/Producer
 ```
 
-如需固定的命令行地址，请禁用 launch profile：
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 \
-  dotnet run --no-launch-profile --project samples/grpc/Producer
-```
-
-随后通过默认客户端注册发送消息：
-
-```shell
-curl --request POST http://localhost:5000/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello from curl."}'
-```
-
-向 `POST /clients/audit/messages` 发送结构相同的 JSON 请求，即可选择 `registrationName` 为 `audit` 的
-keyed 客户端注册所提供的 keyed service。Swagger 位于 `/swagger`，OpenAPI 文档位于 `/swagger/v1/swagger.json`。
-
-## 语义与常见误解
-
-- HTTP 成功响应表示 `IGrpcProducer.SendAsync` 返回了 `GrpcSendReceipt`。发送失败会记录日志并返回 HTTP 503，
-  不会在本地排队等待稍后重试。
-- 每个 HTTP 请求都会生成一个新的消息 key。本示例只发送标准消息；FIFO、延迟、优先级、事务、撤回和 Lite
-  消息还需要额外消息属性，部分场景还需要 Broker 支持。
-- `message` 是唯一的请求字段。Topic 和 tag 固定使用普通示例资源；空白消息会被 HTTP 400 拒绝。
-- 默认端点和 `audit` 端点可指向不同 Proxy 或集群。它们恰好使用相同的本地默认值，但分别来自默认客户端注册和
-  keyed 客户端注册；任一路由都不会回退到另一个客户端注册。
-
-生产配置和非标准消息类型请参阅 [gRPC 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)。
+连接外部集群时，将 `RocketMQ:Client:Endpoint` 指向其 Proxy；若集群禁用了自动创建资源，还需预先创建 Topic。
+可运行项目通过 Swagger 和 HTTP 暴露发送操作，这些端点只是上述 SDK 工作流的应用外壳。

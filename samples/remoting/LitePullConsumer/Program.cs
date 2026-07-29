@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
-using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,21 +22,12 @@ using Microsoft.Extensions.Hosting;
 var builder = Host.CreateApplicationBuilder(args);
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
 var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:LitePullConsumer");
-var sampleSection = builder.Configuration.GetRequiredSection("Sample");
-var sampleOptions = new LitePullConsumerSampleOptions();
-sampleSection.Bind(sampleOptions);
-
-builder.Services.AddOptions<LitePullConsumerSampleOptions>()
-    .Bind(sampleSection)
-    .Validate(static options => !string.IsNullOrWhiteSpace(options.Filter), "A subscription filter is required.")
-    .Validate(static options => options.RetryDelay > TimeSpan.Zero, "The retry delay must be positive.")
-    .ValidateOnStart();
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingLitePullConsumer(options =>
 {
     consumerSection.Bind(options);
-    options.Subscribe("eventhorizon-test-topic", new FilterExpression(sampleOptions.Filter));
+    options.Subscribe("eventhorizon-test-topic");
 });
 builder.Services.AddHostedService<LitePullConsumer>();
 

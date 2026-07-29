@@ -1,57 +1,75 @@
-# Remoting Lite Pull Consumer 示例
+# Remoting Lite Pull Consumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-此 Generic Host 使用 `IRemotingLitePullConsumer`，实现基于订阅、由客户端管理的队列分配和由调用方发起的
-`PollAsync` 操作。这是 classic Remoting Lite Pull API，不是 RocketMQ 5 gRPC LitePush 功能。
+`IRemotingLitePullConsumer` 把调用方驱动的轮询与客户端管理的队列分配结合起来。在订阅模式下，SDK 参与 classic
+集群 consumer group 分配，并长轮询分配给当前 Consumer 的队列；应用仍然决定何时调用 `PollAsync`、如何处理每次
+结果，以及何时提交。
 
-## 公共角色和默认配置
+这是 classic Remoting Lite Pull 模式，与 RocketMQ 5 gRPC LitePush 协议无关，也不是协议层面的 Broker Push。
 
-| 键 | 默认值 | 用途 |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | 用于发现 Broker 路由的 NameServer。 |
-| `RocketMQ:LitePullConsumer:GroupName` | `remoting-sample-lite-pull-consumer` | 用于分配和提交位点的集群 consumer group。 |
-| `RocketMQ:LitePullConsumer:BatchSize` | `32` | 单次 poll 请求的最大消息数。 |
-| `RocketMQ:LitePullConsumer:LongPollingTimeout` | `00:00:05` | 空 poll 请求在 Broker 上的最大等待时间。 |
-| `RocketMQ:LitePullConsumer:InitialOffset` | `End` | 仅在 group 对新分配的队列没有已提交位点时使用。 |
-| 固定 topic | `eventhorizon-test-topic` | 共享订阅的普通 topic。 |
-| `Sample:Filter` | `*` | 订阅过滤条件。 |
-| `Sample:RetryDelay` | `00:00:01` | 分配或轮询失败后的等待时间。 |
+## 什么时候使用 Lite Pull
 
-API 支持订阅模式和手动分配模式，但此示例使用订阅。它轮询当前分配给客户端的队列，记录每条返回消息，再调用
-`CommitAsync` 持久化本地位点。
+如果应用希望使用 polling API 并控制处理节奏，但不想自行实现集群队列分配，适合选择 Lite Pull。它适用于批处理
+流水线、受控的摄取循环，以及需要暂停、恢复或 seek 已分配队列的应用。
 
-## Broker 和网络前置条件
+如果外部系统负责物理队列分配或需要精确控制每次请求的位点，应选择更底层的 Pull Consumer。如果希望 SDK 进一步负责
+接收循环、并发分发和重试结算，应选择 Push Consumer。Lite Pull 当前只支持集群模式；如果每个实例都必须消费每个队列，
+应使用 Push Consumer 的广播模式。
 
-- 使用 classic Remoting NameServer 和 Broker。进程必须能访问配置的 NameServer 以及其路由数据返回的 Broker 地址；
-  `NamesrvAddr` 不是 Proxy 端点。
-- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许集群 group
-  `remoting-sample-lite-pull-consumer` 消费。如果启用了 ACL，请授予路由查询和消费权限。
-- 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)适合在宿主机运行此经典普通 topic 示例。
-  它会在启动时自动创建共享 topic：
+订阅模式和手动分配模式互斥。普通 consumer group 负载均衡应使用订阅模式。只有应用明确选择队列，并愿意承担其归属
+责任时，才使用手动模式。
+
+## SDK 工作流
+
+通过 `AddRemotingLitePullConsumer` 注册此角色，并以 `ConsumerOptions.Subscribe` 添加 topic 过滤条件。启动时，
+SDK 会解析订阅、发送主动消费心跳，并持续维护集群分配。`Assignment` 提供当前 Consumer 所属队列的快照。当一个 group
+中的 Consumer 数量多于可读队列数量时，部分 Consumer 没有分配是正常情况。
+
+同一 group 的所有实例必须使用相同的 topic 和 filter 订阅。分配会针对每个 topic 使用完整的 group consumer-id
+列表；订阅不一致可能把队列分给没有消费该 topic 的成员，filter 不一致则会让实际接收结果取决于当前队列所有者。
+
+订阅模式的处理循环为：
+
+1. 调用 `PollAsync`，长轮询下一个处于活跃状态的已分配队列。
+2. 处理 `RemotingPullResult.Messages`。
+3. 调用 `CommitAsync()` 持久化所有当前本地位置，或以 `CommitAsync(queue)` 提交一个已分配队列。
+
+运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会修改订阅并触发分配协调。使用手动模式时不要配置订阅，应通过
+`GetMessageQueuesAsync` 发现队列，再把选中的集合传给 `AssignAsync`。`Pause`、`Resume`、`Seek`、
+`SeekToBeginningAsync` 和 `SeekToEndAsync` 用于控制本地轮询位置。
+
+`InitialOffset` 仅在已分配队列没有 group 已提交位置时使用。修改它不会重置已有的已提交位点。
+
+## 位置、失败与并发
+
+`PollAsync` 会在返回前把所选队列的**本地**位置推进到 `NextOffset`，但不会更新 Broker 位点。因此业务处理失败时，
+应用必须保留并重试此次结果，或者在继续轮询前以 `Seek` 回退该队列。仅仅不调用 `CommitAsync`，不会回退当前进程内的
+位置。
+
+只应在业务处理完成后提交。进程重启或队列重新分配后，另一个 Consumer 会从 Broker 最后提交的位置继续，因此该位置
+之后已经处理的工作可能再次投递。业务处理必须幂等。
+
+并行处理需要按队列维护完成规则。同一队列中较早的结果尚未完成时，不能提交当前本地位置。`CommitAsync()` 会提交所有
+已分配队列的当前位置，因此只有这些位置之前的工作都已完成时才能调用；否则应协调按队列提交，并避免轮询越过未完成空洞。
+
+SDK 负责分配和长轮询，但业务重试以及是否提交仍由应用决定。轮询或分配失败不会自动重试已经返回的业务 batch，也不会
+自动把它路由到死信队列。
+
+## 运行示例
+
+可运行示例以 group `remoting-sample-lite-pull-consumer` 订阅 `eventhorizon-test-topic` 中的全部消息，
+新分配队列从 `End` 开始。
+
+启动[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)，然后运行：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-此环境的 Broker 会公布宿主机可访问的地址。在不同网络命名空间或容器中运行示例时，请使用可访问的 NameServer 和
-Broker 公布地址。
-
-## 运行
-
-```shell
 dotnet run --project samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj
 ```
 
-应用会持续轮询，直到按下 Ctrl+C。应在 Consumer 获得队列分配后再启动 Producer；未分配到队列时，示例会记录调试日志并
-重试。
+默认 NameServer 为 `localhost:9876`。使用外部环境时，必须保证进程可以同时访问 NameServer 及其公布的 Broker
+地址、创建普通 topic，并为该 group 授予路由查询和消费权限。可使用 Remoting Producer 示例发送消息。
 
-## 重要行为
-
-- 此实现中的 Lite Pull 由客户端驱动，且仅支持集群模式。它在客户端进行 consumer group 协调；它不是服务端 push
-  API，也不使用 gRPC LitePush 协议。
-- `PollAsync` 只推进**本地**队列位点。必须调用 `CommitAsync` 才会将其持久化到 Broker。示例在记录后提交，是因为
-  记录日志就是其全部处理步骤；生产代码只应在业务处理成功后提交。
-- `InitialOffset` 仅在 group 对已分配队列没有已提交位点时生效。复用同一个 group 会保留已提交位点；仅修改
-  `InitialOffset` 不会重读历史消息。
-- 订阅模式和显式 `AssignAsync` 模式互斥。保留固定的示例订阅时，不要再添加手动分配。
+完整配置和 API 示例请参阅
+[Remoting 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

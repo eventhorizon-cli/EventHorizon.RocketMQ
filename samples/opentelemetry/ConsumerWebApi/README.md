@@ -1,85 +1,135 @@
-# OpenTelemetry Consumer Web API sample
+# OpenTelemetry Push Consumer integration
 
 [OpenTelemetry samples](../README.md) | [Simplified Chinese](README.zh-CN.md)
 
-This ASP.NET Core Minimal API runs the gRPC and classic Remoting Push consumers in one host, using separate
-protocol-specific consumer groups. Both subscribe to the shared standard topic `eventhorizon-test-topic` and process
-every tag. The host uses scoped message handlers, so each gRPC delivery and each Remoting batch has its own
-dependency-injection scope.
+Use this integration when an application runs automatic Push Consumers and needs receive, handler processing, and
+settlement to participate in its existing OpenTelemetry traces and metrics. Push describes automatic application
+dispatch: both clients initiate long polls; neither protocol relies on a Broker opening a push connection to the
+application.
 
-The [OpenTelemetry sample overview](../README.md) covers the shared SDK, OTLP, Compose, and Grafana setup. Use the
-separate producer Web API to publish messages after this consumer host has started.
+gRPC and classic Remoting remain separate SDK modes. A gRPC Consumer connects through a RocketMQ 5 Proxy, while a
+Remoting Consumer discovers routes through a NameServer and connects to advertised Brokers. Register only the
+protocol used by a production process. Hosting both is useful for comparing their signals, but does not make their
+subscriptions, consumer groups, retries, or offsets interchangeable.
 
-## Run
+## Instrumentation and role registration
 
-After starting the environments described in the overview, run this project from the repository root:
+Add the protocol instrumentation to the application's existing tracing and metric providers. The two provider
+builders are independent:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(serviceName))
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint))
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint));
+```
+
+`AddRocketMQGrpcInstrumentation` and `AddRocketMQRemotingInstrumentation` subscribe to the public source and meter
+for their protocol. They do not register a Consumer role or choose the resource, sampler, metric views, or exporter.
+
+Register Push Consumers with their protocol-specific APIs and a typed handler:
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc(grpcClientSection.Bind)
+    .AddGrpcPushConsumer<GrpcConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        grpcConsumerSection.Bind(options);
+        options.Subscribe("orders");
+    });
+
+builder.Services
+    .AddRocketMQRemoting(remotingClientSection.Bind)
+    .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        remotingConsumerSection.Bind(options);
+        options.Subscribe("orders");
+    });
+```
+
+The .NET host starts and stops both Consumer roles. A scoped gRPC handler is resolved in a new async DI scope for
+each handling attempt; a scoped Remoting handler gets one scope per batch attempt. A singleton handler is shared by
+concurrent deliveries and must be thread-safe. Typed handlers cannot be combined with the corresponding
+`MessageHandler` delegate.
+
+## Trace and metric model
+
+The automatic Consumer path separates transport, application work, and settlement:
+
+```text
+producer send -> receive -> process(handler) -> acknowledge / retry / dead-letter / offset commit
+```
+
+- A non-empty receive creates an `ActivityKind.Client` activity for the receive RPC or long poll. Successful empty
+  polls do not create receive activities; failed receives do.
+- Each automatic handler invocation creates an `ActivityKind.Consumer` process activity. Its parent is the receive
+  activity, and propagated Producer contexts are represented as links. If no receive context exists, a propagated
+  Producer context becomes the process parent.
+- Acknowledgement, retry or dead-letter work, and offset commits create separate settlement operations. Handler
+  success therefore does not by itself prove that Broker settlement completed.
+
+Handler exceptions, timeouts, `Retry`, `DeadLetter`, and partial Remoting success mark process telemetry as
+unsuccessful and record the relevant outcome; exceptions also record `error.type`. A later settlement failure is
+reported on the settlement operation rather than rewriting the completed process activity.
+
+Both protocol meters emit `rocketmq.client.operations`, `rocketmq.client.messages`, and
+`rocketmq.client.operation.duration`. The protocol-specific meter identifies the client boundary; measurements carry
+operation, destination, consumer group, success, and error attributes as applicable. Histogram views, sampling,
+cardinality limits, and exporters remain application policy.
+
+## Handler and failure semantics
+
+`IGrpcPushMessageHandler.HandleAsync` handles one `GrpcMessageView` and returns `ConsumeResult`:
+
+- `Success` acknowledges the message.
+- `Retry` makes it available for redelivery; delivery-attempt limits can move it to the dead-letter queue.
+- `DeadLetter` requests immediate dead-letter forwarding.
+
+Corrupted gRPC messages do not reach the application handler. Ordinary corrupted messages become available for
+redelivery, while corrupted FIFO messages are dead-lettered before the next group member is released. If a non-FIFO
+handler exceeds `ConsumeTimeout`, its token is cancelled, its late result is ignored, and redelivery can overlap code
+that ignored cancellation. Handlers must honor cancellation and remain idempotent.
+
+`IRemotingPushMessageHandler.HandleAsync` receives an `IReadOnlyList<RemotingMessageView>` and a
+`RemotingPushConsumeContext`. Returning `Success` confirms the complete batch by default. For concurrent non-FIFO
+batches, set `AckIndex` to the zero-based last accepted index before returning `Success` to confirm a contiguous
+prefix and retry only the tail; `-1` confirms none. `Retry` and `DeadLetter` ignore `AckIndex` and apply to the whole
+batch. `DelayLevelWhenNextConsume` controls retry timing or direct dead-lettering.
+
+Remoting FIFO and orderly paths deliver singleton lists and do not support partial batch confirmation. Broadcasting
+has no Broker retry or dead-letter flow. A concurrent clustered non-FIFO batch that exceeds `ConsumeTimeout` is
+requested for redelivery; code that ignores cancellation can overlap that redelivery. Failed Remoting
+retry/dead-letter settlement is retried locally without invoking the handler again, and the per-queue contiguous
+offset watermark does not advance across the unresolved gap.
+
+See the [gRPC Consumer model](../../../docs/en-US/grpc/consumer-model.md) and
+[Remoting transport and roles](../../../docs/en-US/remoting/transport-and-client-roles.md) for the complete delivery,
+concurrency, and offset rules. The [OpenTelemetry design note](../../../docs/en-US/architecture/opentelemetry-instrumentation.md)
+defines span attributes, links, and metric tags.
+
+## Configuration and run
+
+The application-owned settings are `OpenTelemetry:ServiceName` and `OpenTelemetry:OtlpEndpoint`; override them with
+`OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`. The endpoint must be an absolute HTTP or HTTPS URI,
+and this project exports with OTLP/gRPC. Client, consumer-group, concurrency, timeout, and batch settings remain in
+the protocol-specific `RocketMQ:Grpc` and `RocketMQ:Remoting` sections.
+
+Start the shared environments and then the Consumer integration:
 
 ```shell
+docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 dotnet run --project samples/opentelemetry/ConsumerWebApi
 ```
 
-Swagger is available at [http://localhost:5242/swagger](http://localhost:5242/swagger) when the HTTP launch profile
-is used. For a predictable command-line address, disable that profile:
-
-```shell
-ASPNETCORE_URLS=http://127.0.0.1:5242 \
-  dotnet run --no-launch-profile --project samples/opentelemetry/ConsumerWebApi
-```
-
-The two consumers are hosted services. They start long polling during application startup and log each successful
-message handler invocation. A gRPC message whose body fails integrity validation is returned as `DeadLetter`; all
-other received messages wait for a random 250-1000 ms before being acknowledged with `Success`. The intentional delay
-makes the `process` operation duration easy to inspect in the bundled
-[Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry), which
-uses sub-second duration buckets for this sample.
-
-The Remoting handler receives its message list and a `RemotingPushConsumeContext`. This sample returns `Success`
-without changing `AckIndex`, so it confirms each complete batch. A concurrent non-FIFO handler can instead return
-`Success` with `AckIndex` set to the zero-based index of the last accepted message to confirm its prefix and retry the
-remaining tail; `-1` confirms none. `Retry` and `DeadLetter` always apply to the whole batch. For retried messages,
-`DelayLevelWhenNextConsume` starts from `RetryDelay` and can be set to `0` for Broker policy, a positive RocketMQ
-delay level, or a negative value for direct dead-lettering. Broadcasting has no Broker retry/dead-letter flow, so an
-unacknowledged tail is skipped. FIFO `MessageGroup` and `ConsumeOrderly` deliveries are singleton paths and do not
-use partial batch confirmation.
-
-## Routes
-
-| Method | Route | Success response |
-| --- | --- | --- |
-| `GET` | `/health` | `200 OK` when the consumer web host is running. |
-| `GET` | `/consumers` | `200 OK` with the subscribed topic and `IGrpcPushConsumer` / `IRemotingPushConsumer` types. |
-
-Example `GET /consumers` response:
-
-```json
-{
-  "topic": "eventhorizon-test-topic",
-  "grpcConsumer": "IGrpcPushConsumer",
-  "remotingConsumer": "IRemotingPushConsumer"
-}
-```
-
-## RocketMQ configuration
-
-The project uses the following local defaults from `appsettings.json`:
-
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | RocketMQ 5 Proxy endpoint for the gRPC Push consumer. |
-| `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | Consumer group for the gRPC Push consumer. |
-| `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | Concurrent gRPC message-handler invocations. |
-| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO gRPC handler time before retry is requested. |
-| `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | NameServer for the Remoting Push consumer. |
-| `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Consumer group for the Remoting Push consumer. |
-| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | Maximum messages processed by one Remoting handler invocation. |
-| `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | Concurrent Remoting message-handler invocations. |
-| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO Remoting batch-handler time before retry is requested. |
-| `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource value. |
-| `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector endpoint. |
-
-The shared Topic is fixed in the sample so that it matches the Producer Web API and the resource initializer. Override
-the remaining settings through standard .NET configuration. For example, set
-`RocketMQ__Grpc__Consumer__GroupName=orders-grpc-consumer` to use a different gRPC group, or
-`Sample__OtlpEndpoint=http://collector.example:4317` to send telemetry to another collector. Keep the gRPC and
-Remoting group names distinct: they are separate RocketMQ client protocols and use independently managed consumer
-state.
+The runnable host exposes only health and Consumer status through Swagger; message handling begins with hosted
+Consumer startup. Use the [Producer integration](../ProducerWebApi/README.md) to publish traced messages and the
+[OpenTelemetry overview](../README.md) for the supplied dashboards and local topology.

@@ -1,79 +1,122 @@
-# OpenTelemetry Consumer Web API 示例
+# OpenTelemetry Push Consumer 集成
 
 [OpenTelemetry 示例](../README.zh-CN.md) | [English](README.md)
 
-这个 ASP.NET Core Minimal API 在同一个 host 中运行 gRPC 和 classic Remoting Push Consumer，并为两个协议使用彼此独立的
-Consumer Group。两者都订阅共享的普通 Topic `eventhorizon-test-topic`，消费所有 tag。host 使用 scoped message handler，
-因此每条 gRPC 消息和每个 Remoting batch 都有独立的依赖注入作用域。
+当应用运行自动 Push Consumer，并需要把接收、handler 处理和结算纳入现有 OpenTelemetry trace 与 metric 时，适合
+使用这种集成方式。Push 描述的是自动向应用分派消息：两种客户端都主动发起 long poll，不依赖 Broker 向应用建立
+推送连接。
 
-共享的 SDK、OTLP、Compose 与 Grafana 配置请参阅 [OpenTelemetry 示例总览](../README.zh-CN.md)。启动本 Consumer host 后，
-可使用独立的 Producer Web API 发布消息。
+gRPC 与 classic Remoting 仍是两种独立 SDK 模式。gRPC Consumer 通过 RocketMQ 5 Proxy 连接；Remoting Consumer
+通过 NameServer 发现路由，再连接 Broker 公布地址。生产进程只应注册实际使用的协议。在同一进程运行两者有助于
+比较信号，但不代表它们的订阅、Consumer Group、重试或位点可以互换。
 
-## 运行
+## Instrumentation 与角色注册
 
-先按总览中的说明启动环境，再从仓库根目录运行本项目：
+把协议 instrumentation 加入应用现有的 tracing 和 metric provider。两种 provider builder 需要分别注册：
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(serviceName))
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint))
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddRocketMQGrpcInstrumentation()
+        .AddRocketMQRemotingInstrumentation()
+        .AddOtlpExporter(options => options.Endpoint = otlpEndpoint));
+```
+
+`AddRocketMQGrpcInstrumentation` 和 `AddRocketMQRemotingInstrumentation` 分别订阅对应协议的公共 source 与 meter。
+它们不会注册 Consumer 角色，也不会替应用选择 resource、sampler、metric view 或 exporter。
+
+Push Consumer 通过协议专用 API 和 typed handler 注册：
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc(grpcClientSection.Bind)
+    .AddGrpcPushConsumer<GrpcConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        grpcConsumerSection.Bind(options);
+        options.Subscribe("orders");
+    });
+
+builder.Services
+    .AddRocketMQRemoting(remotingClientSection.Bind)
+    .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        remotingConsumerSection.Bind(options);
+        options.Subscribe("orders");
+    });
+```
+
+.NET Host 会启动和停止两个 Consumer 角色。Scoped gRPC handler 的每次处理尝试都会创建新的异步 DI scope；Scoped
+Remoting handler 则每个批次尝试使用一个 scope。Singleton handler 会被并发投递共享，因此必须线程安全。typed
+handler 不能与对应的 `MessageHandler` delegate 同时使用。
+
+## Trace 与 metric 模型
+
+自动 Consumer 路径会区分传输、应用处理与结算：
+
+```text
+producer send -> receive -> process(handler) -> acknowledge / retry / dead-letter / offset commit
+```
+
+- 非空接收会为 receive RPC 或 long poll 创建 `ActivityKind.Client` Activity。成功的空轮询不会创建 receive
+  Activity，失败的接收会创建。
+- 每次自动 handler 调用会创建 `ActivityKind.Consumer` process Activity。receive Activity 是其 parent，传播的
+  Producer 上下文记录为 link。没有 receive 上下文时，传播的 Producer 上下文会成为 process parent。
+- 确认、重试或死信处理以及位点提交会创建独立的 settlement 操作。因此 handler 成功本身不能证明 Broker 结算完成。
+
+handler 异常、超时、`Retry`、`DeadLetter` 以及 Remoting 部分成功会把 process telemetry 标为失败并记录对应结果；
+异常还会记录 `error.type`。之后发生的结算失败记录在 settlement 操作上，不会改写已经完成的 process Activity。
+
+两种协议的 meter 都产生 `rocketmq.client.operations`、`rocketmq.client.messages` 和
+`rocketmq.client.operation.duration`。协议专用 meter 标识客户端边界；measurement 会按实际情况携带操作、目标、
+Consumer Group、成功状态和错误属性。直方图 view、采样、基数限制和 exporter 仍由应用策略决定。
+
+## Handler 与失败语义
+
+`IGrpcPushMessageHandler.HandleAsync` 每次处理一个 `GrpcMessageView`，并返回 `ConsumeResult`：
+
+- `Success`：确认消息。
+- `Retry`：使消息可以重新投递；达到投递次数上限后可进入死信队列。
+- `DeadLetter`：请求立即转发到死信队列。
+
+损坏的 gRPC 消息不会进入应用 handler。普通损坏消息会重新变为可投递状态；FIFO 损坏消息会先进入死信队列，再
+释放同组下一条消息。非 FIFO handler 超过 `ConsumeTimeout` 时，其 token 会被取消，迟到结果会被忽略；忽略取消的
+代码可能与重新投递重叠，因此 handler 必须响应取消并保持幂等。
+
+`IRemotingPushMessageHandler.HandleAsync` 接收 `IReadOnlyList<RemotingMessageView>` 和
+`RemotingPushConsumeContext`。默认返回 `Success` 会确认完整批次。并发非 FIFO 批次可先把 `AckIndex` 设为最后一条
+已接受消息的从零开始索引，再返回 `Success`，从而确认连续前缀并只重试尾部；`-1` 表示一条也不确认。`Retry` 与
+`DeadLetter` 会忽略 `AckIndex` 并作用于整个批次。`DelayLevelWhenNextConsume` 控制重试时间或直接进入死信队列。
+
+Remoting FIFO 与 orderly 路径只投递单消息列表，不支持批量部分确认。广播模式没有 Broker 重试或死信流程。并发
+集群非 FIFO 批次超过 `ConsumeTimeout` 后会请求重新投递；忽略取消的代码可能与重新投递重叠。Remoting
+重试/死信结算失败时会在本地重试，不会再次调用 handler；对应物理队列的连续位点水位不会跨过该未决缺口。
+
+完整投递、并发和位点规则请参阅 [gRPC Consumer 模型](../../../docs/zh-CN/grpc/consumer-model.md)与
+[Remoting 传输和角色](../../../docs/zh-CN/remoting/transport-and-client-roles.md)。span 属性、link 与 metric tag 由
+[OpenTelemetry 设计说明](../../../docs/zh-CN/architecture/opentelemetry-instrumentation.md)定义。
+
+## 配置与运行
+
+应用自有配置为 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`；可通过
+`OpenTelemetry__ServiceName` 和 `OpenTelemetry__OtlpEndpoint` 覆盖。Endpoint 必须是绝对 HTTP 或 HTTPS URI，
+本项目使用 OTLP/gRPC 导出。客户端、Consumer Group、并发、超时和批量设置仍放在协议专用的 `RocketMQ:Grpc`
+与 `RocketMQ:Remoting` 配置节。
+
+启动共享环境，再运行 Consumer 集成：
 
 ```shell
+docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
+docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 dotnet run --project samples/opentelemetry/ConsumerWebApi
 ```
 
-使用 HTTP launch profile 时，Swagger 位于 [http://localhost:5242/swagger](http://localhost:5242/swagger)。若需要可预测的
-命令行地址，请禁用该 profile：
-
-```shell
-ASPNETCORE_URLS=http://127.0.0.1:5242 \
-  dotnet run --no-launch-profile --project samples/opentelemetry/ConsumerWebApi
-```
-
-两个 Consumer 都是 hosted service，会在应用启动期间开始 long polling，并记录每次成功的 message handler 调用。gRPC 消息若
-无法通过 body 完整性验证，会返回 `DeadLetter`；其他收到的消息会随机等待 250-1000 ms 后以 `Success` 确认。这个刻意加入的延迟
-便于在随附的
-[Consumer dashboard](http://127.0.0.1:3000/d/rocketmq-consumer-observability/rocketmq-consumer-opentelemetry) 中观察 `process`
-operation duration；该示例为此配置了亚秒级 duration bucket。
-
-Remoting handler 会收到消息列表和 `RemotingPushConsumeContext`。本示例返回 `Success` 时不修改 `AckIndex`，因此会确认
-每个完整批次。并发、非 FIFO handler 也可以返回 `Success`，同时将 `AckIndex` 设为最后一条已接受消息的从零开始索引，以确认
-其前缀并重试其后的尾部消息；`-1` 表示一条也不确认。`Retry` 和 `DeadLetter` 始终应用到整个批次。对于要重试的消息，
-`DelayLevelWhenNextConsume` 初始为 `RetryDelay`，可设为 `0` 使用 Broker 策略、设为正的 RocketMQ 延迟级别，或设为负值
-直接进入死信队列。广播模式没有 Broker 重试/死信流程，因此未确认的尾部消息会被跳过。FIFO `MessageGroup` 和
-`ConsumeOrderly` 投递均为单消息路径，不使用部分批量确认。
-
-## 路由
-
-| 方法 | 路由 | 成功响应 |
-| --- | --- | --- |
-| `GET` | `/health` | Consumer Web host 正常运行时返回 `200 OK`。 |
-| `GET` | `/consumers` | 返回已订阅的 Topic，以及 `IGrpcPushConsumer` / `IRemotingPushConsumer` 类型。 |
-
-`GET /consumers` 响应示例：
-
-```json
-{
-  "topic": "eventhorizon-test-topic",
-  "grpcConsumer": "IGrpcPushConsumer",
-  "remotingConsumer": "IRemotingPushConsumer"
-}
-```
-
-## RocketMQ 配置
-
-项目在 `appsettings.json` 中提供以下本地默认值：
-
-| Key | 默认值 | 用途 |
-| --- | --- | --- |
-| `RocketMQ:Grpc:Client:Endpoint` | `localhost:8081` | gRPC Push Consumer 使用的 RocketMQ 5 Proxy 端点。 |
-| `RocketMQ:Grpc:Consumer:GroupName` | `eventhorizon-otel-grpc-consumer` | gRPC Push Consumer 的 Consumer Group。 |
-| `RocketMQ:Grpc:Consumer:MaxConcurrency` | `4` | 并发执行的 gRPC message handler 数量。 |
-| `RocketMQ:Grpc:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO gRPC handler 允许运行的最长时间。 |
-| `RocketMQ:Remoting:Client:NamesrvAddr` | `localhost:9876` | Remoting Push Consumer 使用的 NameServer。 |
-| `RocketMQ:Remoting:Consumer:GroupName` | `eventhorizon-otel-remoting-consumer` | Remoting Push Consumer 的 Consumer Group。 |
-| `RocketMQ:Remoting:Consumer:ConsumeMessageBatchSize` | `4` | 单次 Remoting handler 调用处理的最大消息数量。 |
-| `RocketMQ:Remoting:Consumer:MaxConcurrency` | `4` | 并发执行的 Remoting message handler 数量。 |
-| `RocketMQ:Remoting:Consumer:ConsumeTimeout` | `00:15:00` | 请求重试前，非 FIFO Remoting batch handler 允许运行的最长时间。 |
-| `Sample:ServiceName` | `eventhorizon-rocketmq-otel-consumer` | OpenTelemetry `service.name` resource 值。 |
-| `Sample:OtlpEndpoint` | `http://127.0.0.1:4317` | OTLP/gRPC collector 端点。 |
-
-共享 Topic 会在示例中固定，以确保与 Producer Web API 和资源初始化服务保持一致。其余设置可通过标准 .NET 配置覆盖。例如，设置
-`RocketMQ__Grpc__Consumer__GroupName=orders-grpc-consumer` 可以使用其他 gRPC Group，设置
-`Sample__OtlpEndpoint=http://collector.example:4317` 可以将 telemetry 发送到其他 collector。请保持 gRPC 与
-Remoting 的 Group 名称不同：它们属于独立的 RocketMQ client protocol，并分别维护 Consumer state。
+可运行 host 仅通过 Swagger 暴露健康状态与 Consumer 状态；hosted Consumer 启动后就会开始处理消息。使用
+[Producer 集成](../ProducerWebApi/README.zh-CN.md)发布带 trace 的消息；仓库提供的 dashboard 与本地拓扑请参阅
+[OpenTelemetry 总览](../README.zh-CN.md)。

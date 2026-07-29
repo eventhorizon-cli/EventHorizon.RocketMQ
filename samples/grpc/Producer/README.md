@@ -1,95 +1,93 @@
-# gRPC Producer sample
+# gRPC Producer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This ASP.NET Core Minimal API sample registers `IGrpcProducer` through `AddRocketMQGrpc` and
-`AddGrpcProducer`. It sends a standard RocketMQ message only when an HTTP endpoint is called; it
-does not publish messages in a background loop.
+`IGrpcProducer` publishes messages through a RocketMQ 5 Proxy. Choose this role when the application reaches
+RocketMQ through a gRPC `Endpoint` and wants the Proxy-based message model, lifecycle, and telemetry. It is not a
+direct Broker or NameServer client.
 
-## Configuration
+Use the [Remoting Producer](../../remoting/Producer/README.md) instead when the application must use classic-only
+operations such as selecting a physical publish queue, batch or one-way sends, or request-reply, or when the
+deployment exposes a NameServer and Broker endpoints rather than a Proxy.
 
-All values below come from `appsettings.json` and can be overridden with normal .NET configuration,
-for example `RocketMQ__Client__Endpoint=proxy.example:8081`.
+## Registration and lifecycle
 
-| Key | Default | Purpose |
+Register the protocol client first, then add the Producer role to that registration:
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc(clientSection.Bind)
+    .AddGrpcProducer(producerSection.Bind);
+```
+
+The role is exposed as `IGrpcProducer`. The .NET host starts and stops a DI-registered Producer with the application,
+so application services normally inject and use it rather than calling `StartAsync` or `StopAsync` themselves. A
+gRPC Producer does not use a consumer group.
+
+A registration name creates an independent client registration and also becomes its .NET keyed-service key. Use
+this when one process must publish through different Proxy endpoints, credentials, or Producer settings:
+
+```csharp
+builder.Services
+    .AddRocketMQGrpc("audit", auditClientSection.Bind)
+    .AddGrpcProducer(auditProducerSection.Bind);
+
+static Task<GrpcSendReceipt> PublishAsync(
+    Message message,
+    [FromKeyedServices("audit")] IGrpcProducer producer,
+    CancellationToken cancellationToken) =>
+    producer.SendAsync(message, cancellationToken);
+```
+
+The registration name is application composition metadata. It does not create a Broker-side Producer type or an
+audit feature, and a keyed registration does not fall back to the default registration.
+
+## Sending and receipts
+
+Create a protocol-specific `Message`, then call `SendAsync`:
+
+```csharp
+var message = new Message("orders", Encoding.UTF8.GetBytes(orderId))
+{
+    Tag = "created"
+};
+message.Keys.Add(orderId);
+
+GrpcSendReceipt receipt = await producer.SendAsync(message, cancellationToken);
+```
+
+`GrpcSendReceipt` contains the server-assigned `MessageId`, storage `Offset`, Broker endpoints, and optional
+transaction or recall data. Completion means the RocketMQ service returned a send receipt; it does not mean a
+consumer processed the message. Send failures are raised as exceptions, and the Producer is not a durable local
+outbox. Propagate cancellation and decide retries at the application boundary where duplicate-send consequences can
+be handled.
+
+## Message modes
+
+`SendAsync` sends a standard message unless one specialized property is set:
+
+| Requirement | SDK API | Constraint |
 | --- | --- | --- |
-| `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
-| `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
-| `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the default client registration. |
-| `RocketMQ:Audit:Client:*` | Same as `RocketMQ:Client` | Connection settings for the independent keyed client registration with registration name `audit`. |
-| `RocketMQ:Audit:Producer:SendMsgTimeout` | `00:00:03` | Send timeout for the keyed client registration with registration name `audit`. |
+| FIFO delivery | `Message.MessageGroup` | Provides stable queue affinity; the destination must support FIFO. |
+| Delayed delivery | `Message.DeliveryTimestamp` | The destination must support scheduled delivery. Use the receipt's `RecallHandle` with `RecallAsync` before delivery when recall is supported. |
+| Priority delivery | `Message.Priority` | The priority is non-negative and requires server support. |
+| Lite message | `Message.LiteTopic` | Requires a Proxy and Broker that support Lite messages. |
+| Transactional message | `SendTransactionAsync` | Declare transactional topics and configure a transaction checker before startup; commit or roll back the returned transaction. |
 
-This role has no consumer group. `POST /messages` uses the default client registration;
-`POST /clients/audit/messages` resolves a separate `IGrpcProducer` from the .NET keyed service for registration name `audit`.
-The registration name is application configuration, not a Broker-side audit feature, and is also used as the keyed-service key.
+These specialized modes depend on Proxy and Broker capabilities. Do not infer support from the client API alone.
+The [gRPC protocol guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) covers their complete configuration and
+transaction recovery semantics.
 
-Both routes always send to `eventhorizon-test-topic` with the `sample` tag. These sample resources are deliberately
-fixed in code so the paired consumer samples receive the messages. The request accepts only the required `message`
-field; a missing or blank value returns `400 Bad Request` with a validation problem response.
+## Prerequisites and run
 
-## Prerequisites
-
-- A RocketMQ 5 Proxy must be reachable at `RocketMQ:Client:Endpoint`; gRPC clients connect to a
-  Proxy, never directly to a NameServer.
-- The target Broker must accept standard messages for `eventhorizon-test-topic`, or the topic must
-  already exist. The supplied environment creates it during startup. For another Broker with automatic resource
-  creation disabled, create it explicitly:
-
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
-  ```
-
-- The supplied RocketMQ 5.5.0 Compose environment supports this sample. It exposes its
-  cluster-mode Proxy at `localhost:8081`; its one-shot resource initializer prepares the fixed sample topic before
-  the startup command returns.
-
-Start that environment from the repository root when using the defaults:
+The default configuration expects a Proxy at `localhost:8081` and a writable normal topic named
+`eventhorizon-test-topic`. The repository environment prepares that topic:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-## Run
-
-The HTTP launch profile opens Swagger at `http://localhost:5231/swagger` in launchers that honor
-`launchBrowser`. From the repository root, start the project with:
-
-```shell
 dotnet run --project samples/grpc/Producer
 ```
 
-For a predictable command-line address, disable the launch profile:
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 \
-  dotnet run --no-launch-profile --project samples/grpc/Producer
-```
-
-Then send a message through the default client registration:
-
-```shell
-curl --request POST http://localhost:5000/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"Hello from curl."}'
-```
-
-Use the same JSON shape with `POST /clients/audit/messages` to select the keyed client registration. Swagger
-is available at `/swagger`; its OpenAPI document is `/swagger/v1/swagger.json`.
-
-## Semantics and common pitfalls
-
-- A successful HTTP response means `IGrpcProducer.SendAsync` returned a `GrpcSendReceipt`. A failed
-  send is logged and returned as HTTP 503; it is not queued locally for a later retry.
-- This sample creates a new message key for every HTTP request. It sends only standard messages;
-  FIFO, delayed, priority, transactional, recall, and Lite message setup require additional
-  message properties and, in some cases, Broker support.
-- `message` is the only request field. The Topic and tag are fixed to the ordinary sample resources, and a blank
-  message is rejected with HTTP 400.
-- The default and `audit` endpoints can point at different Proxies or clusters. They happen to use
-  the same local defaults, but they are separate DI client registrations and neither route falls back to the
-  other.
-
-For production options and non-standard message types, see the
-[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md).
+For an external cluster, point `RocketMQ:Client:Endpoint` at its Proxy and create the topic when automatic resource
+creation is disabled. The runnable project exposes its send operation through Swagger and HTTP; those endpoints are
+only an application shell around the SDK workflow above.

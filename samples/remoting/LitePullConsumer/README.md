@@ -1,61 +1,85 @@
-# Remoting Lite Pull Consumer sample
+# Remoting Lite Pull Consumer
 
 [简体中文](README.zh-CN.md)
 
-This Generic Host uses `IRemotingLitePullConsumer` for subscription-driven, client-managed queue assignment and
-caller-driven `PollAsync` operations. It is the classic Remoting Lite Pull API, not the RocketMQ 5 gRPC LitePush
-feature.
+`IRemotingLitePullConsumer` combines caller-driven polling with client-managed queue assignment. In subscription
+mode, the SDK participates in classic clustered consumer-group allocation and long-polls the queues assigned to this
+consumer. The application still decides when to call `PollAsync`, how to process each result, and when to commit.
 
-## Public role and default configuration
+This is the classic Remoting Lite Pull model. It is unrelated to the RocketMQ 5 gRPC LitePush protocol and is not
+protocol-level Broker push.
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | NameServer used to discover Broker routes. |
-| `RocketMQ:LitePullConsumer:GroupName` | `remoting-sample-lite-pull-consumer` | Clustered consumer group used for assignment and offset commits. |
-| `RocketMQ:LitePullConsumer:BatchSize` | `32` | Maximum messages requested by one poll. |
-| `RocketMQ:LitePullConsumer:LongPollingTimeout` | `00:00:05` | Maximum Broker hold time for an empty poll. |
-| `RocketMQ:LitePullConsumer:InitialOffset` | `End` | Position used only for a newly assigned queue without a committed group offset. |
-| Fixed topic | `eventhorizon-test-topic` | Shared subscribed normal topic. |
-| `Sample:Filter` | `*` | Subscription filter. |
-| `Sample:RetryDelay` | `00:00:01` | Delay after assignment or polling failures. |
+## When to use Lite Pull
 
-The API supports subscription mode and manual-assignment mode, but the sample uses subscriptions. It polls the
-client's current assignment, logs every returned message, then calls `CommitAsync` to persist local positions.
+Choose Lite Pull when an application wants a polling API and control over processing cadence, but does not want to
+implement clustered queue allocation itself. It fits batch pipelines, controlled ingestion loops, and applications
+that need to pause, resume, or seek assigned queues.
 
-## Broker and network prerequisites
+Prefer the lower-level Pull Consumer when an external system owns physical queue allocation or exact request offsets.
+Prefer Push Consumer when the SDK should also own the receive loop, concurrent dispatch, and retry settlement. Lite
+Pull currently supports clustering only; use Push Consumer broadcasting when every instance must consume every queue.
 
-- Use a classic Remoting NameServer and Broker. The process must reach the configured NameServer and the Broker
-  addresses returned by its route data; `NamesrvAddr` is not a Proxy endpoint.
-- Create the normal topic `eventhorizon-test-topic` and permit the clustered group
-  `remoting-sample-lite-pull-consumer` when using an external Broker. If ACL is enabled, grant route-query and
-  consume permissions.
-- The supplied [local RocketMQ environment](../../../test-environments/rocketmq/README.md) is suitable for this
-  classic normal-topic example when it runs on the host. It initializes the shared topic automatically:
+Subscription mode and manual-assignment mode are mutually exclusive. Use subscription mode for normal consumer-group
+load balancing. Use manual mode only when the application deliberately selects queues and accepts responsibility for
+their ownership.
+
+## SDK workflow
+
+Register the role with `AddRemotingLitePullConsumer` and add topic filters through `ConsumerOptions.Subscribe`. At
+startup, the SDK resolves the subscriptions, sends active-consumer heartbeats, and maintains the clustered assignment.
+`Assignment` exposes a snapshot of the queues currently owned by this consumer. When a group has more consumers than
+readable queues, some consumers can legitimately have no assignment.
+
+All instances in the same group must use the same topic and filter subscriptions. Allocation uses the group's complete
+consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is not consuming that
+topic, while inconsistent filters can make accepted messages depend on the current queue owner.
+
+The subscription-mode processing loop is:
+
+1. Call `PollAsync` to long-poll the next active assigned queue.
+2. Process the `RemotingPullResult.Messages`.
+3. Call `CommitAsync()` to persist all current local positions, or `CommitAsync(queue)` for one assigned queue.
+
+Runtime `SubscribeAsync` and `UnsubscribeAsync` change the subscription and trigger assignment reconciliation.
+For manual mode, configure no subscriptions, discover queues with `GetMessageQueuesAsync`, and pass the selected set to
+`AssignAsync`. `Pause`, `Resume`, `Seek`, `SeekToBeginningAsync`, and `SeekToEndAsync` control local polling positions.
+
+`InitialOffset` is consulted only when an assigned queue has no committed group position. Changing it does not reset an
+existing committed offset.
+
+## Positions, failures, and concurrency
+
+`PollAsync` advances the selected queue's **local** position to `NextOffset` before returning; it does not update the
+Broker offset. A processing failure therefore requires the application to retain and retry that result, or to rewind
+the queue with `Seek` before polling past it. Merely omitting `CommitAsync` does not rewind the in-process position.
+
+Commit only after business processing is complete. On restart or reassignment, another consumer resumes from the last
+Broker-committed position, so work completed after that position can be delivered again. Processing must be
+idempotent.
+
+Parallel processing needs a per-queue completion rule. Do not commit a current local position while an earlier result
+from the same queue is unfinished. `CommitAsync()` covers every assigned queue's current position, so use it only when
+all work through those positions is complete; otherwise coordinate queue-specific commits and keep polling from
+advancing beyond gaps.
+
+The SDK manages assignment and long polling, but application code owns business retries and the decision to commit.
+Polling or assignment failures do not automatically retry a returned business batch or route it to a dead-letter
+queue.
+
+## Run the sample
+
+The runnable sample subscribes to all messages on `eventhorizon-test-topic` as group
+`remoting-sample-lite-pull-consumer` and starts new queue assignments at `End`.
+
+Start the [local RocketMQ environment](../../../test-environments/rocketmq/README.md), then run:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-The bundled Broker advertises a host-reachable address. Use a reachable NameServer and Broker advertisement when
-running the sample in a different network namespace or container.
-
-## Run
-
-```shell
 dotnet run --project samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj
 ```
 
-The host keeps polling until Ctrl+C. Start a producer after the consumer has obtained an assignment; the sample
-logs a debug message and retries while no queue is assigned.
+The default NameServer is `localhost:9876`. An external setup must make both the NameServer and its advertised Broker
+addresses reachable, create the normal topic, and grant the group route-query and consume permissions. Use the
+Remoting Producer sample to publish messages.
 
-## Important behavior
-
-- Lite Pull is client-driven and clustered-only in this implementation. It performs consumer-group coordination in
-  the client; it is not a server-side push API and it does not use the gRPC LitePush protocol.
-- `PollAsync` advances **local** queue positions only. `CommitAsync` is required to persist them to the Broker.
-  The sample commits after logging because logging is its whole processing step; production code must commit only
-  after successful business processing.
-- `InitialOffset` applies only when the group has no committed position for an assigned queue. Reusing the same
-  group preserves committed offsets; it does not re-read history merely because `InitialOffset` changes.
-- Subscription mode and explicit `AssignAsync` mode are mutually exclusive. Do not add manual assignments while
-  retaining the fixed sample subscription.
+See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

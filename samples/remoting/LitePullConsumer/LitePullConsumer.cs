@@ -17,17 +17,13 @@ using System.Text;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer;
 
 internal sealed class LitePullConsumer(
     IRemotingLitePullConsumer consumer,
-    IOptions<LitePullConsumerSampleOptions> options,
     ILogger<LitePullConsumer> logger) : BackgroundService
 {
-    private readonly LitePullConsumerSampleOptions _options = options.Value;
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -72,7 +68,7 @@ internal sealed class LitePullConsumer(
     {
         try
         {
-            await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

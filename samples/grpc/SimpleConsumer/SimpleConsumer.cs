@@ -18,19 +18,16 @@ using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Simple;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer;
 
 internal sealed class SimpleConsumer(
     IGrpcSimpleConsumer consumer,
-    IOptions<SimpleConsumerSampleOptions> options,
     IHostApplicationLifetime applicationLifetime,
     ILogger<SimpleConsumer> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var settings = options.Value;
         while (!stoppingToken.IsCancellationRequested)
         {
             IReadOnlyList<GrpcMessageView> messages;
@@ -38,7 +35,7 @@ internal sealed class SimpleConsumer(
             {
                 // ReceiveAsync long-polls the Proxy. Each result remains invisible for the configured duration
                 // unless it is acknowledged or forwarded to the DLQ.
-                messages = await consumer.ReceiveAsync(settings.BatchSize, cancellationToken: stoppingToken)
+                messages = await consumer.ReceiveAsync(16, cancellationToken: stoppingToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -66,7 +63,7 @@ internal sealed class SimpleConsumer(
                             message.CorruptionReason);
                         await consumer.ForwardToDeadLetterQueueAsync(
                                 message,
-                                settings.MaxDeliveryAttempts,
+                                16,
                                 stoppingToken)
                             .ConfigureAwait(false);
                         continue;

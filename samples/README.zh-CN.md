@@ -2,170 +2,88 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-以下每个可运行的子项目都是独立的 .NET 8 项目。Consumer 示例使用 Generic Host；Producer 示例和两个 OpenTelemetry Web API
-项目是基于 Minimal API 的标准 ASP.NET Core Web 应用。它们通过协议专用的依赖注入完成注册，因此客户端角色会随应用一起启动和停止。
+每个项目演示一个协议专用的 SDK 角色或集成方式。主代码路径会直接呈现注册、公共 API 调用、完成和失败处理；对应指南
+则说明这种模式的含义及适用场景。
 
-每个示例目录都有独立说明。运行前请先阅读对应文档：其中列出所需的 Broker 或 Proxy 能力、资源和权限、支持的
-服务端版本，以及哪些行为受服务端或协议限制。以下准备步骤只适用于本仓库提供的本地环境；端点能够连通，并不表示每项
-RocketMQ 功能都已可用。
+## 选择传输协议
 
-## 运行前准备
+两个客户端彼此独立，连接方式和能力模型也不同：
 
-在仓库根目录启动本地测试环境：
+- **gRPC** 通过 `GrpcClientOptions.Endpoint` 连接 RocketMQ 5 Proxy。适用于 Proxy 部署和 RocketMQ 5 gRPC 消息模型。
+- **classic Remoting** 通过 `RemotingClientOptions.NamesrvAddr` 发现 Broker，再直连路由中公布的端点。适用于 classic
+  部署，以及需要物理队列、位点、POP 或 classic Producer 操作的场景。
 
-```shell
-docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
+示例不会用传输无关的包装层隐藏这些差异。应先根据部署实际公开的协议进行选择。
 
-通用环境的一次性初始化服务会在 `docker compose up -d --wait` 返回前创建共享的 `eventhorizon-test-topic` Topic，所有普通
-Producer 和 Consumer 示例都可以直接使用它。
+## gRPC 角色
 
-如果接入的是禁用自动资源创建的其他 Broker，请在运行前创建该 Topic 和普通示例使用的 Consumer Group：
+| 模式 | 公共 API | 适用场景 |
+| --- | --- | --- |
+| [Producer](grpc/Producer/README.zh-CN.md) | `IGrpcProducer` | 应用通过 RocketMQ 5 Proxy 发布消息。 |
+| [SimpleConsumer](grpc/SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 应用代码需要主动接收、延长不可见期、确认或转发死信。 |
+| [PushConsumer](grpc/PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | SDK 应负责分配轮询、接收循环、handler 并发、不可见期续期和结算。 |
+| [LitePushConsumer](grpc/LitePushConsumer/README.zh-CN.md) | `IGrpcLitePushConsumer` | 启用 LITE 的部署在同一个 bind topic 下使用服务端管理的 LiteTopic。 |
 
-```shell
-docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
+gRPC Push 仍由客户端发起长轮询，不是 Broker 主动建立的网络 Push 连接。
 
-for group in rocketmq-dotnet-grpc-simple-sample rocketmq-dotnet-grpc-push-sample remoting-sample-pull-consumer remoting-sample-lite-pull-consumer remoting-sample-pop-consumer remoting-sample-push-consumer
-do
-    docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup -n nameserver:9876 -c DefaultCluster -g "$group"
-done
-```
+## classic Remoting 角色
 
-端点和其他 Broker 命令请参阅[通用本地环境说明](../test-environments/rocketmq/README.zh-CN.md)。
+| 模式 | 公共 API | 适用场景 |
+| --- | --- | --- |
+| [Producer](remoting/Producer/README.zh-CN.md) | `IRemotingProducer` | 应用通过 NameServer/Broker Remoting 发布，或需要 classic 的选队列、批量、单向、事务、撤回和请求/响应操作。 |
+| [Admin](remoting/Admin/README.zh-CN.md) | `IRemotingAdmin` | 只读工具需要检查物理队列、位点边界、已提交位置或存储消息。 |
+| [Pull Consumer](remoting/PullConsumer/README.zh-CN.md) | `IRemotingPullConsumer` | 应用负责选择物理队列、请求位点、处理和提交。 |
+| [Lite Pull Consumer](remoting/LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | SDK 负责队列分配，但应用代码负责轮询和提交。 |
+| [POP Consumer](remoting/PopConsumer/README.zh-CN.md) | `IRemotingPopConsumer` | 工作通过逐消息 receipt 和不可见期结算，而不是提交队列位点。 |
+| [Push Consumer](remoting/PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | SDK 负责队列分配、长轮询、公平并发分发、重试结算和位点持久化。 |
 
-LitePush 使用独立环境，因为它需要 LITE parent Topic、与之绑定的 Consumer Group，以及支持
-`SyncLiteSubscription` RPC 的 cluster-mode Proxy。先停止占用 `localhost:8081` 的环境，再启动专用环境：
+Remoting Push 同样使用客户端发起的长轮询。同一个集群 group 内的 Consumer 会分摊 Broker 物理队列；不同 group 会
+独立消费。
 
-```shell
-docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
-```
+## OpenTelemetry 集成
 
-该环境会自动创建 `eventhorizon-test-lite-parent-topic` 和 `eventhorizon-test-lite-push-consumer`。示例启动时，
-`IGrpcLitePushConsumer` 会同步 `eventhorizon-test-lite-topic` LiteTopic。完整的准备过程与限制请参阅
-[LitePush 环境说明](../test-environments/rocketmq-litepush/README.zh-CN.md)。
+[OpenTelemetry 示例](opentelemetry/README.zh-CN.md)说明应用如何订阅两个客户端分别产生的 ActivitySource 和 Meter。
+OpenTelemetry provider、resource、采样、view、processor 和 exporter 都由应用负责。
 
-gRPC 项目使用 `RocketMQ:Client` 配置 `GrpcClientOptions`，使用 `RocketMQ:Producer` 或
-`RocketMQ:Consumer` 配置角色 Options。普通示例的 Topic 和 Consumer 订阅会固定在代码中，以便与本地资源初始化服务保持一致。
-例如：
+## 本地运行
 
-```shell
-RocketMQ__Client__Endpoint=localhost:8081 dotnet run --project samples/grpc/Producer
-```
-
-classic Remoting 项目使用 `RocketMQ:Remoting` 配置 NameServer 连接，使用
-`RocketMQ:Producer`、`RocketMQ:PullConsumer` 或 `RocketMQ:PushConsumer` 等具体角色配置节。普通示例的 Topic 和
-Consumer 订阅同样固定在代码中。例如：
-
-```shell
-RocketMQ__Remoting__NamesrvAddr=localhost:9876 dotnet run --project samples/remoting/Producer
-```
-
-每个项目都包含带默认值的 `appsettings.json`。Consumer 示例会持续运行，直到按下 Ctrl+C。两个 Producer 示例、Remoting
-Admin 示例和两个 OpenTelemetry Web API 项目都会托管 Web API，并持续提供服务，直到按下 Ctrl+C。这些 Web 项目各有 HTTP
-launch profile，通过 `launchBrowser` 和 `launchUrl` 请求打开 `/swagger`；受支持的 IDE 和调试启动器会遵循该请求。若浏览器没有打开，
-请使用应用输出的监听地址并附加 `/swagger`。
-
-## OpenTelemetry
-
-[`opentelemetry`](opentelemetry/README.zh-CN.md) 示例展示应用如何为可独立发布的 gRPC 和 classic Remoting 客户端配置
-OpenTelemetry SDK。应用会订阅客户端公开的 activity source 与 meter 名称，并将由应用管理的遥测数据导出到 collector。
-
-若要使用本地 Grafana 工作流，请同时启动通用 RocketMQ stack 和彼此独立的 Grafana OTEL LGTM 环境。两者公开的端口不会冲突：
+通用环境通过 Proxy 支持普通 gRPC Producer、SimpleConsumer 和 PushConsumer，也通过 NameServer 与 Broker 支持 classic
+Remoting 角色。环境会在启动完成前创建 `eventhorizon-test-topic`：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
-```
-
-LGTM 环境会在 `http://127.0.0.1:3000` 提供 Grafana，并在 `http://127.0.0.1:4317` 提供 OTLP/gRPC；它会分别预置
-Producer 和 Consumer OpenTelemetry dashboard。先启动
-[`opentelemetry/ConsumerWebApi`](opentelemetry/ConsumerWebApi/README.zh-CN.md)，再使用
-[`opentelemetry/ProducerWebApi`](opentelemetry/ProducerWebApi/README.zh-CN.md) 通过独立的 gRPC 和 Remoting 路由发送消息。
-两者都使用自动创建的 `eventhorizon-test-topic`；Producer 请求只接受 JSON `message` 字段。分类说明包含共享的 SDK 和 collector 配置。
-
-## Producer Web API 和 Swagger
-
-两个 Producer 示例均在 `/swagger` 提供 Swagger UI，并在 `/swagger/v1/swagger.json` 提供 OpenAPI 文档。
-Swagger UI 可以直接调用默认客户端注册和 `registrationName` 为 `audit` 的 keyed 客户端注册对应的发送端点。
-
-两个 Producer 示例均提供 `POST /messages`。其 JSON 请求正文只包含一个必填的 `message` 字段。示例始终发送到
-`eventhorizon-test-topic`，并使用 `sample` tag。
-
-通过受支持的 IDE 或调试启动器中的 HTTP launch profile 启动任一 Producer 示例时，会自动打开 Swagger。
-若希望在命令行中使用固定的监听地址，请禁用 launch profile、绑定已知的本地地址，然后手动打开
-`http://localhost:5000/swagger`：
-
-```shell
-ASPNETCORE_URLS=http://localhost:5000 dotnet run --no-launch-profile --project samples/grpc/Producer
-
-curl --request POST http://localhost:5000/messages \
-    --header 'Content-Type: application/json' \
-    --data '{"message":"Hello from curl."}'
-```
-
-将 `samples/grpc/Producer` 替换为 `samples/remoting/Producer`，即可使用 classic Remoting Producer 示例。
-
-两个 Producer 示例还注册了 `registrationName` 为 `audit` 的 keyed 客户端注册。该 `registrationName` 同时作为
-keyed service 的 key。`POST /clients/audit/messages` 会通过对应的 keyed service 发送，与默认客户端注册的
-`POST /messages` 路由相互独立。audit handler 通过
-`FromKeyedServices` 从 DI 获取其协议专用的 keyed service：
-
-```csharp
-[FromKeyedServices("audit")] IGrpcProducer producer
-```
-
-Remoting 示例在 `IRemotingProducer` 上使用相同的特性。`registrationName` 为 `audit` 的 keyed 客户端注册默认使用
-与默认客户端注册相同的本地 RocketMQ 环境，但可独立配置：gRPC 读取 `RocketMQ:Audit:Client` 和
-`RocketMQ:Audit:Producer`；Remoting 读取 `RocketMQ:Audit:Remoting` 和 `RocketMQ:Audit:Producer`。
-
-使用包含必填 `message` 的相同 JSON 请求正文，通过 `registrationName` 为 `audit` 的 keyed 客户端注册提供的 keyed service
-发送消息：
-
-```shell
-curl --request POST http://localhost:5000/clients/audit/messages \
-    --header 'Content-Type: application/json' \
-    --data '{"message":"Audit event from curl."}'
-```
-
-## gRPC
-
-这些项目使用 `EventHorizon.RocketMQ.Grpc`，连接到 RocketMQ 5 Proxy。
-
-| 角色 | 公共 API | 项目 | 演示内容 |
-| --- | --- | --- | --- |
-| Producer | `IGrpcProducer` | [`grpc/Producer`](grpc/Producer/README.zh-CN.md) | 调用 `POST /messages` 时发送普通消息。 |
-| Simple consumer | `IGrpcSimpleConsumer` | [`grpc/SimpleConsumer`](grpc/SimpleConsumer/README.zh-CN.md) | 由应用控制接收、确认和转发死信。 |
-| Push consumer | `IGrpcPushConsumer` | [`grpc/PushConsumer`](grpc/PushConsumer/README.zh-CN.md) | 通过 handler 进行基于长轮询的自动分发。 |
-| Lite Push consumer | `IGrpcLitePushConsumer` | [`grpc/LitePushConsumer`](grpc/LitePushConsumer/README.zh-CN.md) | 针对配置的 bind topic 和 LiteTopic 自动分发。 |
-
-以项目目录作为参数运行 gRPC 项目，例如：
-
-```shell
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-通用 RocketMQ 5.5.0 环境支持标准 gRPC Producer、SimpleConsumer 和 PushConsumer。专用 LitePush 环境支持
-LitePush 示例，并自动准备它所需的 LITE parent Topic 和 Consumer Group。完整的 LitePush 兼容性要求请参阅
-[gRPC 指南](../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)。
+将项目路径替换为任一普通示例即可。每个项目 README 会说明额外资源、权限、服务端能力和完整命令。
 
-## classic Remoting
-
-这些项目使用 `EventHorizon.RocketMQ.Remoting`，并通过 NameServer 发现 Broker。
-
-| 角色 | 公共 API | 项目 | 演示内容 |
-| --- | --- | --- | --- |
-| Producer | `IRemotingProducer` | [`remoting/Producer`](remoting/Producer/README.zh-CN.md) | 调用 `POST /messages` 时发送普通消息。 |
-| Admin | `IRemotingAdmin` | [`remoting/Admin`](remoting/Admin/README.zh-CN.md) | 通过 HTTP/Swagger 只读检查队列、位点和物理消息。 |
-| Pull consumer | `IRemotingPullConsumer` | [`remoting/PullConsumer`](remoting/PullConsumer/README.zh-CN.md) | 显式队列发现、位点、拉取和位点提交。 |
-| Lite Pull consumer | `IRemotingLitePullConsumer` | [`remoting/LitePullConsumer`](remoting/LitePullConsumer/README.zh-CN.md) | 基于订阅的分配、轮询和客户端管理的位点提交。 |
-| POP consumer | `IRemotingPopConsumer` | [`remoting/PopConsumer`](remoting/PopConsumer/README.zh-CN.md) | 显式选择物理队列并确认 receipt。 |
-| Push consumer | `IRemotingPushConsumer` | [`remoting/PushConsumer`](remoting/PushConsumer/README.zh-CN.md) | 通过 handler 进行基于长轮询的自动批量分发，并在需要时保持单消息 FIFO 投递。 |
-
-以项目目录作为参数运行 Remoting 项目，例如：
+LitePush 需要 LITE parent topic、绑定的 consumer group、Broker LMQ 能力，以及实现 `SyncLiteSubscription` 的
+cluster-mode Proxy。应使用专用环境，而不是通用 stack：
 
 ```shell
-dotnet run --project samples/remoting/PopConsumer
+docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
+dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-Remoting 项目面向本仓库提供的 NameServer/Broker 测试环境。它们与 gRPC 项目相互独立：请根据应用使用的协议选择
-对应样例。
+可观测性工作流需要同时运行通用 RocketMQ 环境和 `test-environments/otel-lgtm/compose.yaml`，然后启动 OpenTelemetry
+Consumer 与 Producer 项目。
+
+## 配置约定
+
+SDK 自己的连接与角色 options 使用协议专用的 `RocketMQ` 配置节，并直接传给匹配的注册委托。普通示例的资源名、过滤
+条件、消息属性和简单方法参数会留在公共 SDK 调用附近，使工作流保持可见。OpenTelemetry 应用设置使用独立的
+`OpenTelemetry` 配置节。
+
+每个项目的 `appsettings.json` 都提供可运行默认值，也支持标准 .NET 配置覆盖，例如
+`RocketMQ__Client__Endpoint=proxy.example:8081` 或
+`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`。Producer 与 Admin Web API 项目会提供 Swagger；其 HTTP
+端点只是对应指南中 SDK 工作流的应用外壳。
+
+## 覆盖边界
+
+每个项目演示一条完整连贯的端到端工作流，而不是每个 overload。需要不同资源、协作端或真实处理时机的高级路径会先留在
+协议指南中，直到它们值得拥有独立的可运行示例，例如 Producer 事务与请求/响应、运行时订阅变更、手动分配与 seek、
+延长不可见期，以及其他 Push 投递模式。
+
+完整公共 API 请参阅 [gRPC 指南](../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)和
+[Remoting 指南](../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

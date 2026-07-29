@@ -1,85 +1,110 @@
-# gRPC PushConsumer sample
+# gRPC PushConsumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This Generic Host sample registers `IGrpcPushConsumer` through `AddRocketMQGrpc` and
-`AddGrpcPushConsumer<PushConsumerMessageHandler>`. The client polls assignments and dispatches
-messages to a DI-managed scoped handler; it is not a Broker-initiated network push subscription.
+`IGrpcPushConsumer` is the automatic-dispatch gRPC consumption model. The client queries assignments, long-polls a
+RocketMQ Proxy, buffers received messages locally, and invokes an application handler. "Push" describes the
+application API: the Broker does not open a server-initiated connection to the application.
 
-## Configuration
+## When to use it
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `RocketMQ:Client:Endpoint` | `localhost:8081` | RocketMQ Proxy gRPC endpoint. |
-| `RocketMQ:Client:RequestTimeout` | `00:00:03` | Deadline for ordinary client requests. |
-| `RocketMQ:Client:UseTLS` | `false` | Enables TLS for the Proxy connection. |
-| `RocketMQ:Consumer:GroupName` | `rocketmq-dotnet-grpc-push-sample` | Consumer group used for assignment, acknowledgement, retry, and dead-letter state. |
-| `RocketMQ:Consumer:BatchSize` | `16` | Maximum messages requested by each receive operation. |
-| `RocketMQ:Consumer:MaxConcurrency` | `4` | Maximum concurrent handler executions. |
-| `RocketMQ:Consumer:MaxDeliveryAttempts` | `16` | Fallback delivery-attempt limit before dead-lettering. |
-| `RocketMQ:Consumer:InvisibleDuration` | `00:00:30` | Initial lease duration; the client renews it while handling a message. |
-| `RocketMQ:Consumer:ConsumeTimeout` | `00:15:00` | Maximum non-FIFO handler time before the client cancels its token and requests retry. |
-| `RocketMQ:Consumer:LongPollingTimeout` | `00:00:15` | Maximum server wait for a receive operation. |
-| `Sample:Filter` | `sample` | Tag filter expression for the fixed standard topic. |
+Use PushConsumer when message processing naturally fits a handler and the SDK should own the receive loops,
+backpressure, concurrency, invisibility renewal, and settlement calls. It is usually the simpler choice for continuously
+running services whose handler can return one delivery outcome per message.
 
-This sample always subscribes to `eventhorizon-test-topic`; the Topic is fixed in code. The Producer sample's fixed
-`sample` tag matches the default filter.
+Use `IGrpcSimpleConsumer` when the application must choose when to receive, control batches directly, or coordinate
+acknowledgement with its own scheduler. Use classic Remoting Pull when the application must select Broker queues and
+manage numeric offsets.
 
-## Prerequisites
+## SDK workflow
 
-- A RocketMQ 5 Proxy must be reachable at `RocketMQ:Client:Endpoint`; gRPC consumers connect to a
-  Proxy, not directly to a NameServer.
-- The standard topic and consumer group must exist, or the Broker must permit automatic creation.
-  The supplied environment creates the fixed Topic at startup. Provision both resources explicitly when using
-  another Broker with automatic resource creation disabled:
+Register the gRPC transport and a typed handler with an explicit dependency-injection lifetime:
 
-  ```shell
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateTopic \
-    -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
+```csharp
+rocketMQ.AddGrpcPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-push-consumer";
+    options.MaxConcurrency = 8;
+    options.Subscribe("orders", new FilterExpression("created"));
+});
 
-  docker compose -f test-environments/rocketmq/compose.yaml exec broker sh mqadmin updateSubGroup \
-    -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-grpc-push-sample
-  ```
+public sealed class OrderMessageHandler : IGrpcPushMessageHandler
+{
+    public async ValueTask<ConsumeResult> HandleAsync(
+        GrpcMessageView message,
+        CancellationToken cancellationToken)
+    {
+        await ProcessAsync(message.Body, cancellationToken);
+        return ConsumeResult.Success;
+    }
 
-- The supplied RocketMQ 5.5.0 Compose environment supports this standard PushConsumer path at
-  `localhost:8081`. Its one-shot resource initializer creates the fixed Topic before the startup command returns;
-  production deployments should normally provision both resources explicitly.
+    private static Task ProcessAsync(byte[] body, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+}
+```
 
-Start the supplied environment from the repository root:
+`Scoped` and `Transient` handlers are resolved in a new async scope for each handling attempt. A `Singleton` handler is
+shared by concurrent calls and must be thread-safe. For a small stateless callback, the non-generic registration can
+set `GrpcPushConsumerOptions.MessageHandler`; a delegate and a typed handler cannot be configured together.
+
+The Generic Host integration calls `StartAsync` and `StopAsync` for the registered role. Outside a host, the application
+must manage that lifecycle through `IGrpcPushConsumer`. `SubscribeAsync` and `UnsubscribeAsync` change the live topic
+and filter set after startup; `Subscribe` on the options object defines an initial subscription.
+
+## Delivery, completion, and failure
+
+Each handler result asks the consumer to perform a specific settlement operation:
+
+| Result | SDK action |
+| --- | --- |
+| `ConsumeResult.Success` | Acknowledge the message. Return it only after the business effect is durable. |
+| `ConsumeResult.Retry` | Make the message eligible for another attempt according to the effective retry policy. |
+| `ConsumeResult.DeadLetter` | Forward the message to the consumer group's dead-letter queue. |
+
+An unhandled handler exception is treated as `Retry`. If acknowledgement, retry, or dead-letter completion fails, the
+message may be delivered again. Handlers must therefore be idempotent even when they return `Success`.
+
+Corrupted messages do not reach `IGrpcPushMessageHandler`. A non-FIFO corrupted message is made eligible for retry;
+a corrupted FIFO message is dead-lettered before the next member of its message group is released.
+
+While a handler is active, the client renews message invisibility. For non-FIFO messages, `ConsumeTimeout` bounds how
+long the dispatcher waits: expiry cancels the handler token, stops renewal, requests retry, and ignores a late success.
+The SDK cannot forcibly stop code that ignores cancellation, so the old invocation can overlap a redelivery. FIFO
+message groups do not use this timeout-detach behavior because releasing the next message could break ordering.
+
+`MaxConcurrency` is local handler concurrency, not a Broker queue count. FIFO ordering applies within a message group,
+not globally across queues, groups, or consumer instances. Instances using the same consumer group share assignments
+and retry state.
+
+## Key SDK options
+
+| Option | What it controls |
+| --- | --- |
+| `GrpcClientOptions.Endpoint` | The RocketMQ Proxy endpoint. A NameServer address is not valid here. |
+| `GrpcPushConsumerOptions.GroupName` | The consumer group used for assignment and delivery state. |
+| `ConsumerOptions.Subscribe` | Initial topic and tag or SQL filter subscriptions. |
+| `MaxConcurrency` | Maximum scheduled handler dispatches. A timed-out handler that ignores cancellation can still remain in process. |
+| `BatchSize` | Maximum messages requested by one receive operation. |
+| `MaxCachedMessages` / `MaxCachedMessageBytes` | Count and body-byte limits for the bounded local message buffer. |
+| `InvisibleDuration` | Initial message invisibility; the client renews it during active processing. |
+| `ConsumeTimeout` | Maximum non-FIFO handler time before cancellation and retry are requested. |
+| `MaxDeliveryAttempts` / `RetryDelay` | Fallback dead-letter threshold and retry delay when the Proxy does not supply a policy. |
+| `LongPollingTimeout` | Maximum server wait for each receive long poll. |
+
+## Run the sample
+
+The supplied [RocketMQ environment](../../../test-environments/rocketmq/README.md) exposes a compatible Proxy at
+`localhost:8081` and creates the sample Topic. External deployments must provision the Topic and consumer group when
+automatic creation is disabled.
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-## Run
-
-From the repository root:
-
-```shell
 dotnet run --project samples/grpc/PushConsumer
 ```
 
-The host continues until Ctrl+C. Send a standard message tagged `sample` to
-`eventhorizon-test-topic`, for example through the Producer sample.
+The runnable code subscribes to `eventhorizon-test-topic` with the `sample` tag. Use the
+[Producer sample](../Producer/README.md) or another compatible producer to publish matching messages.
 
-## Semantics and common pitfalls
-
-- Despite its name, this is client-initiated long polling: the client queries assignments and
-  repeatedly calls `ReceiveMessage`, then dispatches locally. The Broker does not open a push
-  connection to the application.
-- `PushConsumerMessageHandler` is registered as `Scoped`; each handling attempt receives a fresh
-  async DI scope. Do not inject a scoped service into a singleton handler, and make a singleton
-  handler thread-safe if changing its lifetime.
-- Returning `ConsumeResult.Success` acknowledges the message. Returning `Retry` makes it eligible
-  for redelivery, and `DeadLetter` forwards it to the consumer group's dead-letter queue. This
-  sample returns `DeadLetter` for corrupted messages and `Success` after logging normal messages.
-- `MaxConcurrency` controls local handler parallelism, not Broker queue count. Messages in a FIFO
-  message group retain their ordering constraints even when other messages run concurrently.
-- `ConsumeTimeout` applies to non-FIFO dispatch. When it expires, the handler token is canceled,
-  client-side invisibility renewal stops, and the client requests retry; a handler that ignores cancellation cannot
-  be forcibly stopped, and its late success is ignored. FIFO handlers remain attached so their ordering is preserved.
-- Running multiple instances with the same group distributes messages and shares retry state. Use a
-  new group when independently observing the topic.
-
-For handler lifetimes, retry behavior, and runtime subscriptions, see the
-[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md).
+For the complete handler, subscription, and Proxy behavior, see the
+[gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) and
+[gRPC consumer model](../../../docs/en-US/grpc/consumer-model.md).

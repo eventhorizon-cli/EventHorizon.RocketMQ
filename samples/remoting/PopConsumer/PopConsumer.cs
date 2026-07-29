@@ -18,17 +18,13 @@ using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Samples.Remoting.PopConsumer;
 
 internal sealed class PopConsumer(
     IRemotingPopConsumer consumer,
-    IOptions<PopConsumerSampleOptions> options,
     ILogger<PopConsumer> logger) : BackgroundService
 {
-    private readonly PopConsumerSampleOptions _options = options.Value;
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // NameServer route discovery identifies Broker queues; each POP request targets one selected queue.
@@ -100,7 +96,7 @@ internal sealed class PopConsumer(
     {
         try
         {
-            await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

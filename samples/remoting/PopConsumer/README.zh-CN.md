@@ -1,56 +1,70 @@
-# Remoting POP Consumer 示例
+# Remoting POP Consumer
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-此 Generic Host 使用 `IRemotingPopConsumer` 显式选择物理队列，并以 receipt 为凭据接收 POP 消息。它会轮流处理
-已发现队列中的返回消息，并确认 Broker 返回的 receipt。
+`IRemotingPopConsumer` 将 classic Broker POP 暴露为由调用方驱动、基于 receipt 的消费模式。应用选择一个物理队列并
+调用 `PopAsync`；Broker 会让返回的消息在有限时间内不可见，并为每条消息签发 receipt。处理通过确认 receipt 完成，
+而不是通过提交队列位点完成。
 
-## 公共角色和默认配置
+对此角色，SDK 不会在后台执行队列分配、接收分发或自动确认。
 
-| 键 | 默认值 | 用途 |
-| --- | --- | --- |
-| `RocketMQ:Remoting:NamesrvAddr` | `localhost:9876` | 用于发现 Broker 路由的 NameServer。 |
-| `RocketMQ:PopConsumer:GroupName` | `remoting-sample-pop-consumer` | POP 和 receipt 操作中携带的 consumer group。 |
-| `RocketMQ:PopConsumer:BatchSize` | `32` | 每次 POP 请求的最大消息数；经典 Broker 最多接受 32 条。 |
-| `RocketMQ:PopConsumer:InvisibleDuration` | `00:00:30` | 返回消息对其他 POP consumer 保持不可见的默认时长。 |
-| `RocketMQ:PopConsumer:LongPollingTimeout` | `00:00:05` | 空 POP 请求在 Broker 上的最大等待时间。 |
-| 固定 topic | `eventhorizon-test-topic` | 示例轮转读取其队列的共享普通 topic。 |
-| `Sample:Filter` | `*` | 传给 POP 操作的默认过滤条件。 |
-| `Sample:RetryDelay` | `00:00:01` | 路由或 POP 失败后的重试等待时间。 |
+## 什么时候使用 POP Consumer
 
-公共 API 提供 `GetMessageQueuesAsync`、`PopAsync`、`AcknowledgeAsync` 和
-`ChangeInvisibleTimeAsync`。订阅过滤条件只是 `PopAsync` 的默认值；它不会创建后台分配或接收循环。
+当工作需要暂时领取并逐条结算时，尤其是处理时长可能变化、应用需要延长消息不可见时间时，适合选择 POP。它适用于由调用方
+控制的 worker：希望 Broker 管理重新投递，但不希望自己管理下一队列位点。
 
-## Broker 和网络前置条件
+如果希望 SDK 管理 consumer group 分配、后台长轮询、handler 并发和重试结果，应选择 Push Consumer。如果需要的是
+队列位置、重放和显式位点提交，应选择 Pull 或 Lite Pull。
 
-- 使用 RocketMQ 5 的经典 Broker，并确保其支持 `POP_MESSAGE`、确认和可见期变更命令。仅有 NameServer 并不足够，配置的
-  `NamesrvAddr` 也不是 Proxy 端点。
-- 进程必须能访问 NameServer 和路由发现返回的 Broker 地址。
-- 使用外部 Broker 时，创建普通 topic `eventhorizon-test-topic`，并允许 group
-  `remoting-sample-pop-consumer` 消费。启用 ACL 时，为此 group 授予路由查询、POP、确认和可见期变更权限。
-- 本仓库提供的[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)运行 RocketMQ 5.5.0，适合在宿主机运行
-  此普通 topic POP 示例。它会在启动时自动创建共享 topic：
+POP 要求 Broker 支持 POP、确认和不可见时间变更命令。此客户端当前只支持普通物理 topic 的直接 checkpoint；不提供
+自动分配、广播 POP、有序 POP、批量确认，也不处理 retry/logical topic checkpoint。
+
+## SDK 工作流
+
+通过 `AddRemotingPopConsumer` 注册此角色。在其 options 上调用 `ConsumerOptions.Subscribe` 只会记录该 topic
+的默认过滤条件；它**不会**启动订阅、创建分配或启动接收循环。
+
+公共 API 会显式呈现 receipt 生命周期：
+
+1. `GetMessageQueuesAsync` 发现 topic 的可读物理队列。
+2. `PopAsync` 以一个队列为目标，返回 `RemotingPopResult`，其中包含 `Status`、`RestNum` 和
+   `RemotingPopMessage`。
+3. 每个返回项都包含 `RemotingMessageView` 和 Broker 签发的 `RemotingPopReceipt`。
+4. 处理成功后，以 `AcknowledgeAsync` 结算这一个 receipt。
+5. 如果处理需要更长时间，应在到期前调用 `ChangeInvisibleTimeAsync`。它会返回一个**替代 receipt**；之后的任何
+   延期或确认都必须使用这个替代值。
+
+每次调用 `PopAsync` 时，可以覆盖已配置的 batch 大小、不可见时长和过滤条件。classic Broker 的单次 POP 最多接受
+32 条消息。
+
+## 确认凭据、失败与并发
+
+未确认消息会在不可见时间到期后重新具备投递资格。因此，业务副作用发生后、确认前进程崩溃，确认请求失败，或处理超过不可见
+时间，都可能导致重复处理。handler 应保持幂等；对耗时任务续期时还应留出足够余量，以便处理一次续期失败。
+
+此模式没有应用可见的位点提交。不能把获得 receipt 当作处理完成：只有确认成功才会结算本次投递。如果
+`ChangeInvisibleTimeAsync` 成功，旧 receipt 就已失效。
+
+调用方决定队列选择、同时发起多少个 `PopAsync`，以及处理并发度。Broker 的不可见机制会让正常领取的消息不再立即对
+其他 POP 请求可用，但不会消除至少一次重新投递，也不能代替应用限制本地并发。
+
+POP 命令码要求使用注册时的默认 JSON command serializer。不要为此角色改用 RocketMQ 可选的 binary
+command-header serializer。
+
+## 运行示例
+
+可运行示例轮询 `eventhorizon-test-topic` 的物理队列，并以 group `remoting-sample-pop-consumer` 确认消息。
+
+启动提供兼容 RocketMQ 5.5.0 Broker 的
+[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)，然后运行：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-```
-
-此环境的 Broker 会公布宿主机可访问的地址。在其他容器或网络中运行应用时，请改为配置该环境可访问的 NameServer
-和 Broker 公布地址。
-
-## 运行
-
-```shell
 dotnet run --project samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj
 ```
 
-应用会持续运行，直到按下 Ctrl+C。使用 Remoting Producer 示例或其他 Producer 向 topic 添加消息。
+默认 NameServer 为 `localhost:9876`。使用外部环境时，必须同时暴露 NameServer 和所有公布的 Broker 地址，并为
+外部环境创建普通 topic，再为 group 授予路由查询、POP、确认和不可见时间变更权限。
 
-## 重要行为
-
-- POP 由客户端发起。该示例一次手动选择一个物理队列，不提供后台队列分配、消息分发或自动确认。
-- 每条返回消息都带有 receipt。必须在其可见期到期前确认；否则消息会重新具备投递资格。耗时较长的业务必须在到期前
-  调用 `ChangeInvisibleTimeAsync`，并确认它新返回的 receipt。
-- 示例在记录日志后立即确认，因为日志记录是它的全部处理步骤。应将该位置替换为成功的业务处理；业务逻辑应能容忍
-  重复投递。
-- POP 不是 PushConsumer 的变体。它直接暴露 receipt 生命周期和物理队列，因此扩展方式和队列所有权仍由应用负责。
+完整配置和 API 示例请参阅
+[Remoting 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

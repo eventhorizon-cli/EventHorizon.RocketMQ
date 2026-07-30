@@ -32,9 +32,40 @@ implements `IRemotingPushMessageHandler.HandleAsync` and receives:
 - a `RemotingPushConsumeContext` that controls partial acknowledgement and retry delay;
 - a cancellation token for shutdown and eligible consume timeouts.
 
+One Remoting client registration can own multiple independently configured Push Consumers:
+
+```csharp
+const string Topic = "eventhorizon-test-topic";
+
+builder.Services
+    .AddRocketMQRemoting(remotingSection.Bind)
+    .AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-sample-push-consumer";
+        options.MaxConcurrency = 4;
+        options.BatchSize = 32;
+        options.ConsumeMessageBatchSize = 4;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddRemotingPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-all-messages-push-consumer";
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.ConsumeMessageBatchSize = 1;
+        options.Subscribe(Topic);
+    });
+```
+
+Each call owns its group, subscriptions, handler, scheduling, offset state, and hosted lifecycle. Consumers under the
+same `AddRocketMQRemoting` registration reuse NameServer discovery, route state, and compatible underlying Broker
+connections. Connection and credential settings remain in `appsettings.json`; the Consumer choices are visible in
+`Program.cs`.
+
 A `Singleton` handler can receive concurrent calls and must be thread-safe. `Scoped` and `Transient` handlers are
-resolved in a new asynchronous DI scope for each batch attempt. For a small stateless callback, set
-`RemotingPushConsumerOptions.MessageHandler` instead; a delegate and typed handler cannot be configured together.
+resolved in a new asynchronous DI scope for each batch attempt. Automatic dispatch always uses a typed
+`IRemotingPushMessageHandler` resolved from the application container. Choose `Scoped` when the handler needs scoped
+application services such as a database context; those dependencies are available through constructor injection.
 
 Subscriptions can be configured with `ConsumerOptions.Subscribe` before startup. Runtime `SubscribeAsync` and
 `UnsubscribeAsync` update classic heartbeats and reconcile active receivers.
@@ -49,6 +80,8 @@ different groups receive independent consumption of the topic.
 All clustering instances in the same group must use the same topic and filter subscriptions. Allocation uses the
 group's complete consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is
 not consuming that topic, while inconsistent filters can make accepted messages depend on the current queue owner.
+The registration validates this constraint locally. Compatible same-group registrations receive distinct active
+consumer identities and share queues; they are not independent fan-out subscriptions.
 
 The client maintains one local `ProcessQueue` for every assigned Broker `MessageQueue`. A `ProcessQueue` holds pulled
 messages and their consumption state; it is not a new Broker queue and creates no server resource. The name and
@@ -119,8 +152,10 @@ starting policy.
 
 ## Run the sample
 
-The runnable sample uses a scoped typed handler to consume all messages from `eventhorizon-test-topic` as group
-`remoting-sample-push-consumer`. It uses clustering with a global `MaxConcurrency` of 4.
+The runnable sample registers two scoped typed handlers over `eventhorizon-test-topic`. Group
+`remoting-sample-push-consumer` accepts only the `sample` tag with `MaxConcurrency` 4, while group
+`remoting-all-messages-push-consumer` accepts every tag with `MaxConcurrency` 2. A `sample` message is delivered to both
+handlers because the groups consume independently.
 
 Start the [local RocketMQ environment](../../../test-environments/rocketmq/README.md), then run:
 
@@ -132,5 +167,7 @@ dotnet run --project samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples
 The default NameServer is `localhost:9876`. An external setup must make both the NameServer and every advertised Broker
 address reachable, create the normal topic, and grant route-query and consume access, including access to any retry or
 dead-letter topics used by its outcomes.
+
+Use the [Remoting Producer sample](../Producer/README.md) to publish a matching `sample` message.
 
 See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

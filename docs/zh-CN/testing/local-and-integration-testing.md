@@ -25,23 +25,29 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 | [`tests/ut/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
 | [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
 | [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
+| [`tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost`](../../../tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost) | 跨进程 IT 宿主 | 仅供 Remoting IT 启动独立 Push Consumer 进程，不包含测试断言且不打包。 |
 | [`tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
-| [`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks) | 基准测试 | 性能敏感路径的 BenchmarkDotNet 测量。 |
+| [`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks) | 基准测试 | Remoting 性能敏感路径的 BenchmarkDotNet 测量。 |
 
 单元测试优先使用 `MockBehavior.Strict` 的 Moq，以明确可替换协作者的交互。对于流式 framing、竞争、
 时序或有状态协议协作，保留小型专用 fake 比堆叠 Mock 更清晰时可以例外。
 
-可发布的 gRPC 与 Remoting Package 提供 `net8.0` 和 `net10.0` 两个目标；三套单元测试与兼容性测试都会在这两个
-目标上运行。Docker 驱动的集成测试继续使用 `net8.0`，以免专门优化过的四 job 集成测试矩阵把容器启动成本翻倍；
-solution build 仍会编译两个 Package 目标。
+可发布的 gRPC 与 Remoting Package 提供 `net8.0` 和 `net10.0` 两个目标。所有单元测试、兼容性测试、集成测试、
+sample 和 BenchmarkDotNet 项目统一使用 `net10.0`；`net8.0` 只作为 Package 的受支持 target 保留。solution build
+仍会编译两个 Package 目标，仓库内可运行项目则使用 `global.json` 选择的 SDK。
 
-BenchmarkDotNet 测量独立于 test runner，位于
-[`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks)。
-在仓库根目录使用 Release 模式单独运行 Remoting Push 分发 benchmark：
+Remoting BenchmarkDotNet 测量独立于 test runner，位于
+[`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks)。
+其目录与生产代码职责一致：Push 分发测量放在 `Consumer/Push`，wire 往返测量放在 `Protocol`。在仓库根目录使用
+Release 模式单独运行 Push 分发 benchmark：
 
 ```shell
-dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
+dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
 ```
+
+可长期比较的运行环境、命令、源码 commit 和结果记录保存在 benchmark 项目的
+[`baselines`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks/baselines) 目录；原始
+`BenchmarkDotNet.Artifacts` 输出继续保持忽略。
 
 ## 如何工作
 
@@ -66,6 +72,20 @@ IT 必须同时覆盖这些真实边界上可以确定性执行的正常链路�
 例如，多 Broker、多 Queue 行为必须用 UT 覆盖 route 展开、每个队列只分配一次、Consumer 数量多于队列时的
 空闲分配，以及逐队列调度与 offset 隔离；Docker IT 再验证对应的真实 NameServer route、Broker 持久化和
 跨客户端进程协调，并验证单个队列阻塞或重试时不会干扰已成功的队列。
+
+经典 Push 与 LitePull 的 Rebalance 集成 case 会刻意把路由轮询和心跳间隔设为 1 小时，并要求分配在 10 秒内发生
+变化。生产周期兜底最长为 20 秒，因此 Broker `NotifyConsumerIdsChanged` 或客户端唤醒链路失效时，这些 case 不会
+靠轮询误通过。测试会先等待队列分配互斥且并集完整，再发送消息，避免把启动收敛窗口内正常的 at-least-once 投递
+误判为分配缺陷。
+
+Push Rebalance 同时覆盖一个 `AddRocketMQRemoting` 注册下的两个 Consumer，以及运行在两个独立操作系统进程中的
+两个 Consumer。跨进程 case 会用不同的客户端标识启动两个测试专用的 net10.0 可执行程序
+`EventHorizon.RocketMQ.Remoting.CrossProcessTestHost`，通过重定向的标准输入输出等待分配快照，再正常停止其中
+一个进程；这个仅用于测试的命令行由官方 `System.CommandLine` Package 负责解析和校验。测试会验证存活进程接管
+全部队列，并确认成员变化前后的消息都只消费一次。该 case 会分别运行并发消费与
+顺序消费模式，后者也覆盖跨进程的 Broker 队列锁。另有一个并发模式 case 会强制终止第二个子进程。顺序消费的
+强制终止不使用短 Rebalance 超时断言，因为恢复时长由 Broker 队列锁 lease 过期而非通知链路决定。父测试会持续排空
+两个输出流；清理超时时只终止对应的子进程树，因此断言失败不会在 CI 中遗留 Consumer 进程。
 
 这样失败信息能直接指向客户端逻辑。若测试需要真实 endpoint 才能成立，它应迁移到对应的 integration
 test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
@@ -153,8 +173,9 @@ Docker 不可用时，应报告没有运行哪一个 integration test 以及原�
 
 ### 4.1 CI 也采集 integration coverage
 
-GitHub Actions 会在一个 job 中完成格式化和全量构建，同时并行运行三个按协议/兼容性拆分的单元测试 job。每个
-单元测试 job 都会 restore、build、运行两个目标框架的测试，并单独上传覆盖率报告。两层验证均通过后，再于四个
+GitHub Actions 会在一个 job 中完成格式化和 solution 全量构建，同时并行运行三个按协议/兼容性拆分的单元测试
+job。每个单元测试 job 都会 restore、build、运行对应的 `net10.0` 测试项目并单独上传覆盖率报告；solution build
+和发版 pack 负责验证两个可发布库的全部目标框架。两层验证均通过后，再于四个
 并行的 `ubuntu-latest` matrix job 运行 Docker 驱动的 gRPC 与 Remoting integration test：每个协议各有一个
 single-Broker 与一个 multi-Broker job。类级别的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；
 single-Broker job 运行其余测试。每个 job 只 restore

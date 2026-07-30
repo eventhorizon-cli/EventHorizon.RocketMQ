@@ -13,9 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using BenchmarkDotNet.Running;
-using EventHorizon.RocketMQ.Benchmarks.Protocols.Remoting;
+namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
-BenchmarkSwitcher
-    .FromAssembly(typeof(RemotingRoundTripBenchmarks).Assembly)
-    .Run(args);
+internal readonly record struct RemotingBrokerEndpoint(string BrokerName, string Address);

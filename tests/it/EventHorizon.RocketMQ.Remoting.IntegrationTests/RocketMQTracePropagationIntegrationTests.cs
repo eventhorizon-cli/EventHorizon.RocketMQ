@@ -43,12 +43,12 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
         services
             .AddRocketMQRemoting(options => options.NamesrvAddr = fixture.NameServerAddress)
             .AddRemotingProducer(options => options.GroupName = producerGroup)
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQTracePropagationIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (Encoding.UTF8.GetString(message.Body) == body)
@@ -58,8 +58,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();

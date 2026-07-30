@@ -29,9 +29,38 @@ Push Consumer 不是“每队列固定一个线程”的执行模型。如果应
 - 控制部分确认和重试延迟的 `RemotingPushConsumeContext`；
 - 用于停止，以及符合条件的消费超时的 cancellation token。
 
+一个 Remoting 客户端注册可以包含多个分别配置的 Push Consumer：
+
+```csharp
+const string Topic = "eventhorizon-test-topic";
+
+builder.Services
+    .AddRocketMQRemoting(remotingSection.Bind)
+    .AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-sample-push-consumer";
+        options.MaxConcurrency = 4;
+        options.BatchSize = 32;
+        options.ConsumeMessageBatchSize = 4;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddRemotingPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-all-messages-push-consumer";
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.ConsumeMessageBatchSize = 1;
+        options.Subscribe(Topic);
+    });
+```
+
+每次调用分别拥有自己的 group、订阅、handler、调度、位点状态和 Host 生命周期。同一个
+`AddRocketMQRemoting` 注册下的 Consumer 会复用 NameServer 发现、路由状态以及兼容的底层 Broker 连接。连接和凭据仍放在
+`appsettings.json`；Consumer 的选择则直接展示在 `Program.cs` 中。
+
 `Singleton` handler 可能被并发调用，因此必须线程安全。`Scoped` 和 `Transient` handler 会在每次 batch 尝试时
-从新的异步 DI scope 中解析。简单的无状态回调可以改为设置 `RemotingPushConsumerOptions.MessageHandler`；
-委托和类型化 handler 不能同时配置。
+从新的异步 DI scope 中解析。自动分发始终使用由应用容器解析的 `IRemotingPushMessageHandler` typed handler。handler
+需要数据库上下文等 scoped 应用服务时应选择 `Scoped`，并通过构造函数注入这些依赖。
 
 启动前可通过 `ConsumerOptions.Subscribe` 配置订阅。运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新
 classic 心跳并协调活跃 receiver。
@@ -44,7 +73,8 @@ classic 心跳并协调活跃 receiver。
 
 同一 group 的所有集群实例必须使用相同的 topic 和 filter 订阅。分配会针对每个 topic 使用完整的 group
 consumer-id 列表；订阅不一致可能把队列分给没有消费该 topic 的成员，filter 不一致则会让实际接收结果取决于当前
-队列所有者。
+队列所有者。注册会在本地验证这个约束。配置兼容的同组注册会获得不同的活跃 Consumer 身份并共同分配队列，而不是形成
+各自独立的 fan-out 订阅。
 
 客户端会为每个已分配的 Broker `MessageQueue` 维护一个本地 `ProcessQueue`。`ProcessQueue` 保存已拉取消息及其
 消费状态；它不是新建的 Broker 队列，也不会创建服务端资源。这个名称和职责概念沿用了 RocketMQ 官方 Java 客户端。
@@ -103,8 +133,10 @@ handler 结果会被忽略，不能推进替代它的新分配。
 
 ## 运行示例
 
-可运行示例使用 scoped 类型化 handler，以 group `remoting-sample-push-consumer` 消费
-`eventhorizon-test-topic` 中的全部消息。它使用集群模式，全局 `MaxConcurrency` 为 4。
+可运行示例在 `eventhorizon-test-topic` 上注册两个 scoped 类型化 handler。group
+`remoting-sample-push-consumer` 只接收 `sample` tag，`MaxConcurrency` 为 4；group
+`remoting-all-messages-push-consumer` 接收全部 tag，`MaxConcurrency` 为 2。因为两个 group 独立消费，一条
+`sample` 消息会投递给两个 handler。
 
 启动[本地 RocketMQ 环境](../../../test-environments/rocketmq/README.zh-CN.md)，然后运行：
 
@@ -115,6 +147,8 @@ dotnet run --project samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples
 
 默认 NameServer 为 `localhost:9876`。使用外部环境时，必须保证进程能访问 NameServer 和每个公布的 Broker 地址，
 创建普通 topic，并授予路由查询和消费权限，包括其消费结果会使用的重试和死信 topic。
+
+可使用 [Remoting Producer 示例](../Producer/README.zh-CN.md)发送匹配的 `sample` 消息。
 
 完整配置和 API 示例请参阅
 [Remoting 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

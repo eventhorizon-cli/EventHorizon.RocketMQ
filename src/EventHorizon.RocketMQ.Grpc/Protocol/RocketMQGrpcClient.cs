@@ -13,10 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System.Collections.Concurrent;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Grpc.Core;
-using Grpc.Net.Client;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
@@ -26,14 +24,34 @@ internal sealed class RocketMQGrpcClient : IRocketMQGrpcClient
 {
     private readonly GrpcClientOptions _options;
     private readonly GrpcMetadataFactory _metadata;
+    private readonly GrpcChannelPool _channelPool;
+    private readonly bool _ownsChannelPool;
     private readonly IReadOnlyList<Uri> _accessPoints;
-    private readonly ConcurrentDictionary<string, GrpcChannel> _channels = new(StringComparer.OrdinalIgnoreCase);
     private int _accessPointIndex;
 
     public RocketMQGrpcClient(IOptions<GrpcClientOptions> options, GrpcMetadataFactory metadata)
+        : this(options, metadata, new GrpcChannelPool(), ownsChannelPool: true)
+    {
+    }
+
+    public RocketMQGrpcClient(
+        IOptions<GrpcClientOptions> options,
+        GrpcMetadataFactory metadata,
+        GrpcChannelPool channelPool)
+        : this(options, metadata, channelPool, ownsChannelPool: false)
+    {
+    }
+
+    private RocketMQGrpcClient(
+        IOptions<GrpcClientOptions> options,
+        GrpcMetadataFactory metadata,
+        GrpcChannelPool channelPool,
+        bool ownsChannelPool)
     {
         _options = options.Value;
         _metadata = metadata;
+        _channelPool = channelPool;
+        _ownsChannelPool = ownsChannelPool;
         _accessPoints = GrpcEndpoint.ParseMany(_options.Endpoint, _options.UseTLS);
         AccessPoint = _accessPoints[0];
         AccessPointProtobuf = GrpcEndpoint.ToProtobuf(_accessPoints);
@@ -170,23 +188,11 @@ internal sealed class RocketMQGrpcClient : IRocketMQGrpcClient
         }
     }
 
-    public ValueTask DisposeAsync()
-    {
-        foreach (var channel in _channels.Values)
-        {
-            channel.Dispose();
-        }
-
-        _channels.Clear();
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask DisposeAsync() =>
+        _ownsChannelPool ? _channelPool.DisposeAsync() : ValueTask.CompletedTask;
 
     private Proto.MessagingService.MessagingServiceClient GetClient(Uri endpoint)
-    {
-        var channel = _channels.GetOrAdd(endpoint.AbsoluteUri, static address =>
-            GrpcChannel.ForAddress(address, new GrpcChannelOptions { MaxRetryAttempts = 0 }));
-        return new Proto.MessagingService.MessagingServiceClient(channel);
-    }
+        => _channelPool.GetClient(endpoint);
 
     private CallOptions Options(TimeSpan timeout, CancellationToken cancellationToken) =>
         new(_metadata.Create(), DateTime.UtcNow.Add(timeout), cancellationToken);

@@ -76,8 +76,9 @@ app.MapPost("/messages", async (IRemotingProducer producer, CancellationToken ca
 await app.RunAsync();
 ```
 
-The default client registration resolves through normal parameter or constructor injection. Register a given role
-only once per client registration; a duplicate role registration for the same client registration fails during service registration.
+The default client registration resolves through normal parameter or constructor injection. Producer and Admin can
+each be registered only once per client registration. Consumer registration methods can be called repeatedly on the
+same builder, with independent configuration for every instance.
 
 ## Supported features
 
@@ -517,7 +518,7 @@ Classic `IRemotingPushConsumer` is implemented with client-initiated pulls and l
 not protocol-level Broker push, although it also handles classic Broker callbacks for rebalance and
 offset reset.
 
-There is one Remoting PushConsumer role and one list-based message-handler contract. Configuring a larger
+Remoting exposes one PushConsumer API and one list-based message-handler contract. Configuring a larger
 `ConsumeMessageBatchSize` changes the maximum messages delivered to that contract; it does not select a separate
 consumer implementation.
 
@@ -605,10 +606,11 @@ Broker retry or dead-letter flow, so an unacknowledged batch tail is skipped whi
 confirmation.
 
 Runtime `SubscribeAsync` and `UnsubscribeAsync` calls update classic heartbeats and reconcile active queue receivers.
-The generic registration selects the handler lifetime for the current client registration: `Singleton` creates one
-handler per client registration/role and must be thread-safe; `Scoped` and `Transient` resolve a handler in a new
-async service scope for each batch handling attempt. The `MessageHandler` delegate has the same list-and-context
-signature and remains available for small stateless callbacks, but cannot be combined with a typed handler.
+The generic registration selects the handler lifetime for the current Consumer instance: `Singleton` creates one
+handler per Consumer instance and must be thread-safe; `Scoped` and `Transient` resolve a handler in a new
+async service scope for each batch handling attempt. Automatic dispatch requires a typed
+`IRemotingPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped
+dependencies such as a database context.
 
 ### Queue-orderly consumption
 
@@ -616,13 +618,12 @@ Set `ConsumeOrderly` when a classic PushConsumer must process each assigned phys
 at a time. It delivers singleton lists regardless of `ConsumeMessageBatchSize`:
 
 ```csharp
-rocketMQ.AddRemotingPushConsumer(options =>
+rocketMQ.AddRemotingPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
 {
     options.GroupName = "orders-orderly-consumer";
     options.ConsumeOrderly = true;
     options.MaxConcurrency = 8; // Limits concurrent queues, not a single queue's order.
     options.Subscribe("orders");
-    options.MessageHandler = ProcessOrderAsync;
 });
 ```
 
@@ -666,10 +667,64 @@ Use a stable, instance-specific path when the default client identity changes be
 Broadcast mode has no group-owned retry or dead-letter queue, so `Retry` and `DeadLetter` outcomes
 are dropped and the local offset advances.
 
-## Keyed client registrations and lifecycle
+## Multiple consumers, keyed client registrations, and lifecycle
 
-Use keyed client registrations for multiple clusters or multiple instances of the same role. The registration name
-(`registrationName`) is also used as the .NET keyed-service key.
+The existing method signatures configure each Consumer independently. For example, these Push Consumers use different
+groups and topics beneath one `AddRocketMQRemoting` registration:
+
+```csharp
+var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
+{
+    options.NamesrvAddr = "nameserver:9876";
+});
+
+rocketMQ.AddRemotingPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders", new FilterExpression("created"));
+});
+
+rocketMQ.AddRemotingPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
+
+Every Consumer instance has isolated options, logical client ID, engine, handler binding, and hosted lifecycle. For a
+default client registration, inject `IEnumerable<IRemotingPushConsumer>` to obtain all Push instances. For a keyed
+registration, call `GetKeyedServices<IRemotingPushConsumer>(registrationName)`. Singular resolution returns the last
+registered Consumer, following Microsoft DI ordering.
+
+Ordinary Push subscription combinations have the following semantics:
+
+| Consumer registrations | Behavior |
+| --- | --- |
+| Same group and identical topic/filter subscriptions | Valid clustered replicas; assignments are load-balanced between them. |
+| Different groups and the same topic | Fan-out; each group receives the topic stream independently. |
+| Different groups and different topics | Independent consumption. |
+| Same group and different topics or filters | Invalid; registration rejects the inconsistent ordinary Push subscriptions. |
+
+Same-group Push instances must also use the same clustering/broadcasting mode, orderly mode, and initial position.
+Same-group LitePull instances must use the same subscriptions and initial offset policy. Push and LitePull cannot share
+a group because they advertise different classic Broker consumption types. Instance-local settings such as
+concurrency, timeouts, and handlers may differ. Registration fails fast only for members declared in this process and
+client registration. Keep members in other processes consistent through deployment configuration because the classic
+Broker heartbeat does not carry every client-side setting, including orderly mode.
+
+Within one client registration, roles share NameServer discovery, routing state, and Broker connections where the
+classic protocol permits it. Consumers in distinct groups can share connections. Repeated active group members (Push
+or LitePull) in the same group use separate Broker connections because the classic Broker identifies consumer-group
+members by connection channel. This physical separation does not change the clustered-replica behavior above.
+
+One internal `RemotingRebalanceService` is attached to each physical client. It owns one Broker
+`NotifyConsumerIdsChanged` handler and a periodic fallback capped at 20 seconds. Notifications only enqueue a coalesced
+wakeup; every consumer group reconciles through its own single-flight participant, so a blocked group does not occupy
+an inbound request loop or serialize unrelated groups. Repeated members of one group have separate physical clients
+and therefore separate Rebalance services.
+
+Use keyed client registrations for multiple clusters, independent connection settings, or another Producer/Admin.
+The registration name (`registrationName`) is also used as the .NET keyed-service key.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -689,8 +744,8 @@ public sealed class AuditPublisher(
 }
 ```
 
-Each client registration and role owns an independent transport and lifecycle. When resolving clients from a
-standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and `StopAsync` explicitly.
+When resolving clients from a standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and
+`StopAsync` explicitly.
 
 ## Compatibility and errors
 

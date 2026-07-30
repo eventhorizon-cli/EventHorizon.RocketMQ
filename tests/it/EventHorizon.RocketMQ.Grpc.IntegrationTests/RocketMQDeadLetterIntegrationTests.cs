@@ -38,23 +38,14 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQContainerFixtureR
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-dlq-{Guid.NewGuid():N}";
         var services = new ServiceCollection();
+        services.AddSingleton(new DeadLetterObservation(expected, handled));
         services
             .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer()
-            .AddGrpcPushConsumer(options =>
+            .AddGrpcPushConsumer<DeadLetterMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.GroupName = consumerGroup;
                 options.Subscribe(scope.Topic, new FilterExpression("grpc-dlq"));
-                options.MessageHandler = (message, _) =>
-                {
-                    if (Encoding.UTF8.GetString(message.Body) == expected)
-                    {
-                        handled.TrySetResult();
-                        return ValueTask.FromResult(ConsumeResult.DeadLetter);
-                    }
-
-                    return ValueTask.FromResult(ConsumeResult.Success);
-                };
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -109,5 +100,25 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQContainerFixtureR
         }
 
         return false;
+    }
+
+    private sealed record DeadLetterObservation(
+        string ExpectedBody,
+        TaskCompletionSource Handled);
+
+    private sealed class DeadLetterMessageHandler(DeadLetterObservation observation) : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken)
+        {
+            if (Encoding.UTF8.GetString(message.Body) == observation.ExpectedBody)
+            {
+                observation.Handled.TrySetResult();
+                return ValueTask.FromResult(ConsumeResult.DeadLetter);
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Success);
+        }
     }
 }

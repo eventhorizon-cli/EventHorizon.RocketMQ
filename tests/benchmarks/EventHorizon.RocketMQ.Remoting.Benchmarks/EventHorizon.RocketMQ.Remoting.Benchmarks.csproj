@@ -2,9 +2,11 @@
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
+        <LangVersion>12.0</LangVersion>
+        <RootNamespace>EventHorizon.RocketMQ.Remoting.Benchmarks</RootNamespace>
         <IsPackable>false</IsPackable>
         <Optimize>true</Optimize>
     </PropertyGroup>

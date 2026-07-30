@@ -75,10 +75,10 @@ public sealed class GrpcPushConsumerTests
             });
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var enqueueMethod = typeof(GrpcPushConsumer).GetMethod("EnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var workers = Enumerable.Range(0, 2)
+        var consumeLoops = Enumerable.Range(0, 2)
             .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken])))
             .ToArray();
 
@@ -95,7 +95,7 @@ public sealed class GrpcPushConsumerTests
         Assert.False(firstCancellationRequested.Task.IsCompleted);
         Assert.False(secondStarted.Task.IsCompleted);
         releaseFirst.TrySetResult();
-        await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
         Assert.Equal(new[] { "first", "second" }, processingOrder);
     }
@@ -138,7 +138,7 @@ public sealed class GrpcPushConsumerTests
                 options.RetryDelay = TimeSpan.FromMilliseconds(10);
             });
 
-        var processing = RunOrderedWorkersAsync(
+        var processing = RunOrderedConsumeLoopsAsync(
             consumer,
             engine,
             2,
@@ -190,7 +190,7 @@ public sealed class GrpcPushConsumerTests
                 options.RetryDelay = TimeSpan.FromMilliseconds(1);
             });
 
-        await RunOrderedWorkersAsync(
+        await RunOrderedConsumeLoopsAsync(
             consumer,
             engine,
             2,
@@ -258,7 +258,7 @@ public sealed class GrpcPushConsumerTests
             },
             out var engine);
 
-        await RunWorkerAsync(consumer, engine, cancellationToken, Message("corrupted", corrupted: true));
+        await RunConsumeLoopAsync(consumer, engine, cancellationToken, Message("corrupted", corrupted: true));
 
         Assert.Equal(0, Volatile.Read(ref handlerCalls));
         Assert.Empty(client.AckRequests);
@@ -283,7 +283,7 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             options => options.MaxConcurrency = 2);
 
-        await RunOrderedWorkersAsync(
+        await RunOrderedConsumeLoopsAsync(
             consumer,
             engine,
             2,
@@ -512,9 +512,9 @@ public sealed class GrpcPushConsumerTests
             options => options.MaxCachedMessageBytes = 5);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
+        var consumeLoop = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
         var first = Message("12345678");
         var second = Message("5678");
         engine.BindMessage(first);
@@ -531,7 +531,7 @@ public sealed class GrpcPushConsumerTests
         releaseFirst.TrySetResult();
         await secondEnqueue.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         channel.Writer.Complete();
-        await worker.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        await consumeLoop.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         Assert.Equal(0, consumer.CachedMessageBytes);
     }
 
@@ -709,14 +709,14 @@ public sealed class GrpcPushConsumerTests
             },
             options => options.MaxConcurrency = 1,
             CreateRouteService(queue));
-        Task? worker = null;
+        Task? consumeLoop = null;
 
         try
         {
             await consumer.StartAsync(cancellationToken);
             await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
-            var workersField = typeof(GrpcPushConsumer).GetField("_workers", BindingFlags.Instance | BindingFlags.NonPublic);
-            worker = Assert.Single(Assert.IsType<Task[]>(workersField?.GetValue(consumer)));
+            var consumeLoopTasksField = typeof(GrpcPushConsumer).GetField("_consumeLoopTasks", BindingFlags.Instance | BindingFlags.NonPublic);
+            consumeLoop = Assert.Single(Assert.IsType<Task[]>(consumeLoopTasksField?.GetValue(consumer)));
 
             using var stopCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -726,7 +726,7 @@ public sealed class GrpcPushConsumerTests
             await consumer.StartAsync(cancellationToken);
             releaseHandler.TrySetResult();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+                () => consumeLoop.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
 
             Assert.Empty(client.AckRequests);
             Assert.Empty(client.ChangeInvisibleRequests);
@@ -786,9 +786,9 @@ public sealed class GrpcPushConsumerTests
             telemetry: telemetry.Object);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
+        var consumeLoop = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
         var message = Message("timeout");
         engine.BindMessage(message);
         await channel.Writer.WriteAsync(message, cancellationToken);
@@ -798,7 +798,7 @@ public sealed class GrpcPushConsumerTests
         {
             await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
             await handlerCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
-            await worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await consumeLoop.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
 
             Assert.Empty(client.AckRequests);
             var retry = Assert.Single(client.ChangeInvisibleRequests);
@@ -817,7 +817,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_ContinuesWhenProcessTelemetryStartFails()
+    public async Task ConsumeLoop_ContinuesWhenProcessTelemetryStartFails()
     {
         var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
         telemetry
@@ -842,7 +842,7 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             telemetry: telemetry.Object);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -864,7 +864,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_ContinuesWhenProcessTelemetryCompletionOrDisposalFails()
+    public async Task ConsumeLoop_ContinuesWhenProcessTelemetryCompletionOrDisposalFails()
     {
         var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
         operation
@@ -896,7 +896,7 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             telemetry: telemetry.Object);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -911,7 +911,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_ContinuesAfterUnexpectedMessageProcessingFailure()
+    public async Task ConsumeLoop_ContinuesAfterUnexpectedMessageProcessingFailure()
     {
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
         engine
@@ -932,24 +932,27 @@ public sealed class GrpcPushConsumerTests
             .Returns(Task.CompletedTask);
         engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
         var handled = new ConcurrentQueue<string>();
+        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> handler = (message, _) =>
+        {
+            handled.Enqueue(message.MessageId);
+            return ValueTask.FromResult(ConsumeResult.Success);
+        };
         await using var consumer = new GrpcPushConsumer(
-            Options.Create(PushOptions((message, _) =>
-            {
-                handled.Enqueue(message.MessageId);
-                return ValueTask.FromResult(ConsumeResult.Success);
-            })),
+            Options.Create(PushOptions()),
             engine.Object,
-            NullLogger<GrpcPushConsumer>.Instance);
+            NullLogger<GrpcPushConsumer>.Instance,
+            handler,
+            hasLocalGroupPeer: false);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [TestContext.Current.CancellationToken]));
+        var consumeLoop = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [TestContext.Current.CancellationToken]));
         await channel.Writer.WriteAsync(Message("first"), TestContext.Current.CancellationToken);
         await channel.Writer.WriteAsync(Message("second"), TestContext.Current.CancellationToken);
         channel.Writer.Complete();
 
-        await worker.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await consumeLoop.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.Equal(["second"], handled);
         engine.Verify(
@@ -972,21 +975,24 @@ public sealed class GrpcPushConsumerTests
             .Throws(new InvalidOperationException("processing failed before handling"));
         engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
         var handled = 0;
+        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> handler = (_, _) =>
+        {
+            Interlocked.Increment(ref handled);
+            return ValueTask.FromResult(ConsumeResult.Success);
+        };
         await using var consumer = new GrpcPushConsumer(
-            Options.Create(PushOptions((_, _) =>
-            {
-                Interlocked.Increment(ref handled);
-                return ValueTask.FromResult(ConsumeResult.Success);
-            })),
+            Options.Create(PushOptions()),
             engine.Object,
-            NullLogger<GrpcPushConsumer>.Instance);
+            NullLogger<GrpcPushConsumer>.Instance,
+            handler,
+            hasLocalGroupPeer: false);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
         var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
         var blockedSignal = Assert.IsType<TaskCompletionSource>(blockedSignalField?.GetValue(consumer));
-        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [processingCancellation.Token]));
+        var consumeLoop = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [processingCancellation.Token]));
         await InvokeEnqueueAsync(consumer, Message("first", "account-7"), cancellationToken);
         await InvokeEnqueueAsync(consumer, Message("second", "account-7"), cancellationToken);
         channel.Writer.Complete();
@@ -996,11 +1002,11 @@ public sealed class GrpcPushConsumerTests
 
         processingCancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            worker.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+            consumeLoop.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
     }
 
     [Fact]
-    public async Task Worker_RetriesAckAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_RetriesAckAfterTransientFailureAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1012,7 +1018,7 @@ public sealed class GrpcPushConsumerTests
             static (_, _) => ValueTask.FromResult(ConsumeResult.Success),
             out var engine);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -1023,7 +1029,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_RetriesChangeInvisibleAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_RetriesChangeInvisibleAfterTransientFailureAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1037,7 +1043,7 @@ public sealed class GrpcPushConsumerTests
             return ValueTask.FromResult(ConsumeResult.Retry);
         }, out var engine);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -1052,7 +1058,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_RecordsRetryAsFailedProcessTelemetry()
+    public async Task ConsumeLoop_RecordsRetryAsFailedProcessTelemetry()
     {
         var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
         operation.Setup(value => value.Complete(false, ConsumeResult.Retry.ToString()));
@@ -1075,7 +1081,7 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             telemetry: telemetry.Object);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -1087,7 +1093,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_RetriesDeadLetterAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_RetriesDeadLetterAfterTransientFailureAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1099,7 +1105,7 @@ public sealed class GrpcPushConsumerTests
             static (_, _) => ValueTask.FromResult(ConsumeResult.DeadLetter),
             out var engine);
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -1110,7 +1116,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Worker_AcknowledgesAndContinuesAfterRenewalFailure()
+    public async Task ConsumeLoop_AcknowledgesAndContinuesAfterRenewalFailure()
     {
         var renewalAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new FakeGrpcClient
@@ -1141,7 +1147,7 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             options => options.InvisibleDuration = TimeSpan.FromSeconds(2));
 
-        await RunWorkerAsync(
+        await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
@@ -1187,7 +1193,7 @@ public sealed class GrpcPushConsumerTests
         });
         client.ReceiveResponses.Add(ReceiveStatus(Proto.Code.Ok));
 
-        var options = PushOptions(static (_, _) => ValueTask.FromResult(ConsumeResult.Success));
+        var options = PushOptions();
         await using var engine = new GrpcReceiveConsumerEngine(
             client,
             CreateRouteService(queue),
@@ -1302,7 +1308,7 @@ public sealed class GrpcPushConsumerTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
         var client = new FakeGrpcClient();
-        var options = PushOptions(static (_, _) => ValueTask.FromResult(ConsumeResult.Success));
+        var options = PushOptions();
         await using var engine = new GrpcReceiveConsumerEngine(
             client,
             CreateRouteService(queue),
@@ -1409,7 +1415,7 @@ public sealed class GrpcPushConsumerTests
         ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
         IGrpcRocketMQTelemetry? telemetry = null)
     {
-        var options = PushOptions(handler);
+        var options = PushOptions();
         configure?.Invoke(options);
         engine = new GrpcReceiveConsumerEngine(
             client,
@@ -1425,12 +1431,14 @@ public sealed class GrpcPushConsumerTests
             Options.Create(options),
             engine,
             NullLogger<GrpcPushConsumer>.Instance,
+            handler,
+            hasLocalGroupPeer: false,
             telemetry: telemetry);
     }
 
     private static GrpcReceiveConsumerEngine CreateEngine(FakeGrpcClient client)
     {
-        var options = PushOptions(static (_, _) => ValueTask.FromResult(ConsumeResult.Success));
+        var options = PushOptions();
         return new GrpcReceiveConsumerEngine(
             client,
             CreateUnusedRouteService(),
@@ -1458,31 +1466,29 @@ public sealed class GrpcPushConsumerTests
     private static IGrpcRouteService CreateUnusedRouteService() =>
         new Mock<IGrpcRouteService>(MockBehavior.Strict).Object;
 
-    private static GrpcPushConsumerOptions PushOptions(
-        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> handler)
+    private static GrpcPushConsumerOptions PushOptions()
     {
         var options = new GrpcPushConsumerOptions
         {
             GroupName = "tests",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
-            InvisibleDuration = TimeSpan.FromHours(1),
-            MessageHandler = handler
+            InvisibleDuration = TimeSpan.FromHours(1)
         };
         options.Subscribe("orders");
         return options;
     }
 
-    private static async Task RunWorkerAsync(
+    private static async Task RunConsumeLoopAsync(
         GrpcPushConsumer consumer,
         GrpcReceiveConsumerEngine engine,
         CancellationToken cancellationToken,
         params GrpcMessageView[] messages)
     {
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var worker = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
+        var consumeLoop = Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken]));
         foreach (var message in messages)
         {
             engine.BindMessage(message);
@@ -1490,20 +1496,20 @@ public sealed class GrpcPushConsumerTests
         }
 
         channel.Writer.Complete();
-        await worker.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        await consumeLoop.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
     }
 
-    private static async Task RunOrderedWorkersAsync(
+    private static async Task RunOrderedConsumeLoopsAsync(
         GrpcPushConsumer consumer,
         GrpcReceiveConsumerEngine engine,
-        int workerCount,
+        int consumeLoopCount,
         CancellationToken cancellationToken,
         params GrpcMessageView[] messages)
     {
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var processMethod = typeof(GrpcPushConsumer).GetMethod("ProcessMessagesAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var workers = Enumerable.Range(0, workerCount)
+        var consumeLoops = Enumerable.Range(0, consumeLoopCount)
             .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken])))
             .ToArray();
         foreach (var message in messages)
@@ -1513,7 +1519,7 @@ public sealed class GrpcPushConsumerTests
         }
 
         channel.Writer.Complete();
-        await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
     }
 
     private static ValueTask InvokeEnqueueAsync(

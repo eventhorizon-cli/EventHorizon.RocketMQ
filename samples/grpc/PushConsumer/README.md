@@ -18,34 +18,38 @@ manage numeric offsets.
 
 ## SDK workflow
 
-Register the gRPC transport and a typed handler with an explicit dependency-injection lifetime:
+Register the gRPC transport once, then add each Consumer with its own typed handler and options:
 
 ```csharp
-rocketMQ.AddGrpcPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
-{
-    options.GroupName = "orders-push-consumer";
-    options.MaxConcurrency = 8;
-    options.Subscribe("orders", new FilterExpression("created"));
-});
+const string Topic = "eventhorizon-test-topic";
 
-public sealed class OrderMessageHandler : IGrpcPushMessageHandler
-{
-    public async ValueTask<ConsumeResult> HandleAsync(
-        GrpcMessageView message,
-        CancellationToken cancellationToken)
+builder.Services
+    .AddRocketMQGrpc(clientSection.Bind)
+    .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        await ProcessAsync(message.Body, cancellationToken);
-        return ConsumeResult.Success;
-    }
-
-    private static Task ProcessAsync(byte[] body, CancellationToken cancellationToken) =>
-        Task.CompletedTask;
-}
+        options.GroupName = "rocketmq-dotnet-grpc-push-sample";
+        options.MaxConcurrency = 4;
+        options.BatchSize = 16;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddGrpcPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "rocketmq-dotnet-grpc-push-all-messages";
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.Subscribe(Topic);
+    });
 ```
 
+Each `AddGrpcPushConsumer` call creates an independent logical Consumer, including its group, subscriptions, handler,
+buffering, concurrency, and hosted lifecycle. The two roles remain under the same `AddRocketMQGrpc` registration and
+reuse its transport channel pool to the configured Proxy. Connection and credential settings belong in
+`appsettings.json`; subscription and processing choices are shown directly in `Program.cs`.
+
 `Scoped` and `Transient` handlers are resolved in a new async scope for each handling attempt. A `Singleton` handler is
-shared by concurrent calls and must be thread-safe. For a small stateless callback, the non-generic registration can
-set `GrpcPushConsumerOptions.MessageHandler`; a delegate and a typed handler cannot be configured together.
+shared by concurrent calls and must be thread-safe. Automatic dispatch always uses a typed
+`IGrpcPushMessageHandler` resolved from the application container. Choose `Scoped` when the handler needs scoped
+application services such as a database context; those dependencies are available through constructor injection.
 
 The Generic Host integration calls `StartAsync` and `StopAsync` for the registered role. Outside a host, the application
 must manage that lifecycle through `IGrpcPushConsumer`. `SubscribeAsync` and `UnsubscribeAsync` change the live topic
@@ -76,6 +80,11 @@ message groups do not use this timeout-detach behavior because releasing the nex
 not globally across queues, groups, or consumer instances. Instances using the same consumer group share assignments
 and retry state.
 
+Consumers in different groups receive the topic independently. Consumers in the same group are clustered replicas:
+they must configure identical topic and filter subscriptions, and they share assignments instead of each receiving a
+copy. Registration fails locally when ordinary Push Consumers in one `AddRocketMQGrpc` registration reuse a group with
+different subscriptions.
+
 ## Key SDK options
 
 | Option | What it controls |
@@ -102,8 +111,11 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/grpc/PushConsumer
 ```
 
-The runnable code subscribes to `eventhorizon-test-topic` with the `sample` tag. Use the
-[Producer sample](../Producer/README.md) or another compatible producer to publish matching messages.
+The runnable code registers two Consumers over the one normal topic created by the local environment. Group
+`rocketmq-dotnet-grpc-push-sample` accepts only the `sample` tag, while group
+`rocketmq-dotnet-grpc-push-all-messages` accepts every tag. Because the groups are different, a `sample` message is
+delivered independently to both typed handlers. Use the [Producer sample](../Producer/README.md) to publish such a
+message.
 
 For the complete handler, subscription, and Proxy behavior, see the
 [gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) and

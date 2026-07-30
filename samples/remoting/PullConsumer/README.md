@@ -28,6 +28,10 @@ protocol. Those instances can discover the same physical queues and overwrite th
 Register the role with `AddRemotingPullConsumer`. `ConsumerOptions.Subscribe` associates a topic with its tag or SQL92
 filter; SQL92 filtering also requires the target Broker to allow property filtering.
 
+One `AddRocketMQRemoting` registration may contain multiple independently configured Pull consumers and reuses its
+NameServer, route, and connection infrastructure across them. Each call owns its group, subscription, options, and
+lifecycle. Raw Pull consumers in the same group still require application-owned queue coordination.
+
 The normal read path is explicit:
 
 1. `GetMessageQueuesAsync` returns the readable `RemotingPullMessageQueue` values for a subscribed topic.
@@ -67,8 +71,10 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj
 ```
 
-The default NameServer is `localhost:9876`. An external setup must expose both the NameServer and every Broker address
-advertised in its route data, create the normal topic, and grant the group route-query and consume permissions.
-Use the Remoting Producer sample to publish messages after the consumer starts.
+Only the NameServer connection settings are externalized in `appsettings.json`; the consumer role values remain
+visible beside its registration in `Program.cs`. The default NameServer is `localhost:9876`. An external setup must
+expose both the NameServer and every Broker address advertised in its route data, create the normal topic, and grant
+the group route-query and consume permissions. Use the Remoting Producer sample to publish messages after the
+consumer starts.
 
 See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

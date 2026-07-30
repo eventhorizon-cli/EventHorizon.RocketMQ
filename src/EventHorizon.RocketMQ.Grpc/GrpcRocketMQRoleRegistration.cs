@@ -15,4 +15,14 @@
 
 namespace EventHorizon.RocketMQ.Grpc;
 
-internal sealed record GrpcRocketMQRoleRegistration(GrpcRocketMQRoleKey RoleKey);
+internal sealed record GrpcRocketMQRoleRegistration(
+    GrpcRocketMQRoleKey RoleKey,
+    string RoleOptionsName)
+{
+    internal static GrpcRocketMQRoleRegistration Create(GrpcRocketMQRoleKey roleKey) =>
+        new(
+            roleKey,
+            roleKey.InstanceIndex == 0
+                ? roleKey.OptionsName
+                : $"\0EventHorizon.RocketMQ.Grpc.Role:{Guid.NewGuid():N}");
+}

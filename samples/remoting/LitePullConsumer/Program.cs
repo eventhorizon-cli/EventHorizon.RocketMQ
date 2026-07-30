@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,12 +22,14 @@ using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:LitePullConsumer");
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingLitePullConsumer(options =>
 {
-    consumerSection.Bind(options);
+    options.GroupName = "remoting-sample-lite-pull-consumer";
+    options.BatchSize = 32;
+    options.LongPollingTimeout = TimeSpan.FromSeconds(5);
+    options.InitialOffset = QueryOffsetPolicy.End;
     options.Subscribe("eventhorizon-test-topic");
 });
 builder.Services.AddHostedService<LitePullConsumer>();

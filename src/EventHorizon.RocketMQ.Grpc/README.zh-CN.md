@@ -103,7 +103,7 @@ ASP.NET Core Host 会随应用启动和停止已注册的 Producer。完整应�
 `SecurityToken` 时必须同时提供 access key 和 secret。`Namespace` 用于限定 topic 和 consumer group。
 `AddRocketMQGrpc` 的返回值用于继续添加 Producer 和 Consumer 角色。
 
-当一个 Host 需要连接多个集群或注册同一角色的多个实例时，请使用 keyed 客户端注册。注册名称即
+当一个 Host 需要连接多个集群、使用独立连接配置或添加另一个 Producer 时，请使用 keyed 客户端注册。注册名称即
 `registrationName`；该 `registrationName` 同时作为 keyed service 的 key。
 
 ```csharp
@@ -121,8 +121,49 @@ public sealed class OrderPublisher(
 }
 ```
 
-每个客户端注册中的同一角色只能注册一次。默认客户端注册使用常规构造函数注入。当从独立的
-`ServiceProvider` 而非 Generic Host 解析客户端时，请显式调用其 `StartAsync` 和 `StopAsync`。
+每个客户端注册最多添加一个 Producer。同一个 builder 可重复调用 Consumer 注册方法；每次调用都会创建
+options、逻辑 client ID、接收 Engine、handler 绑定和 hosted 生命周期相互隔离的实例。同一客户端注册内的
+这些实例会共享 HTTP/2 channel，但不会因此合并逻辑身份或订阅。
+
+### 在一个客户端注册中添加多个 Consumer
+
+现有方法签名可以分别配置每个 Consumer。以下两个 PushConsumer 使用不同 group 和 topic，同时共享同一个
+`AddRocketMQGrpc` 连接配置：
+
+```csharp
+var rocketMQ = builder.Services.AddRocketMQGrpc(options =>
+{
+    options.Endpoint = "proxy:8081";
+});
+
+rocketMQ.AddGrpcPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders", new FilterExpression("created"));
+});
+
+rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
+
+默认客户端注册可注入 `IEnumerable<IGrpcPushConsumer>` 取得两个实例；keyed 客户端注册则调用
+`GetKeyedServices<IGrpcPushConsumer>(registrationName)`。按照 Microsoft DI 的注册顺序，单实例解析会返回
+最后注册的 Consumer。
+
+普通 Push 订阅组合具有以下语义：
+
+| Consumer 注册组合 | 行为 |
+| --- | --- |
+| 相同 group、相同 topic/filter 订阅 | 合法的集群副本，分配会在实例间负载均衡。 |
+| 不同 group、相同 topic | 扇出消费，每个 group 独立收到该 topic 的消息流。 |
+| 不同 group、不同 topic | 相互隔离地消费。 |
+| 相同 group、不同 topic 或 filter | 非法组合；注册会拒绝不一致的普通 Push 订阅。 |
+
+默认客户端注册使用常规构造函数注入。当从独立的 `ServiceProvider` 而非 Generic Host 解析客户端时，请显式
+调用其 `StartAsync` 和 `StopAsync`。
 
 ## OpenTelemetry
 
@@ -309,10 +350,10 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 
 返回 `Success` 会确认消息，返回 `Retry` 会使消息重新变为可投递状态，返回 `DeadLetter` 会将消息
 转发到死信队列。损坏的消息不会进入 handler：普通消息会重新变为可投递状态，损坏的 FIFO 消息会
-在释放同组下一条消息前进入死信队列。运行时订阅变更会立即更新当前接收器。泛型注册会为当前客户端注册
-选择 handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，且必须线程安全；`Scoped` 和
-`Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。`MessageHandler` 委托仍适合
-简单的无状态回调，但不能与类型化 handler 同时配置。
+在释放同组下一条消息前进入死信队列。运行时订阅变更会立即更新当前接收器。泛型注册会为当前 Consumer 实例
+选择 handler 生命周期：`Singleton` 会为每个 Consumer 实例创建一个 handler，且必须线程安全；`Scoped` 和
+`Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
+`IGrpcPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
 对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后会取消 handler token、停止客户端的不可见时间续期，并请求消息
 重新投递；延迟返回的成功结果会被忽略。重新投递可能与仍在执行、但忽略取消的代码重叠，因此 handler 必须具备幂等性。
 客户端无法强制停止这段代码。FIFO message group 会刻意排除在该机制之外，以维持其顺序。
@@ -342,6 +383,10 @@ rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 不要为该角色调用继承的 `Subscribe` 方法，也不要配置普通 topic 订阅。客户端会在启动时同步完整的
 LiteTopic 集合，并按配置的间隔再次同步；也可通过 `SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 在运行时
 更新订阅。Lite Push 与标准 Push 使用相同的 `IGrpcPushMessageHandler` 和生命周期语义：
+
+与普通 Push 订阅不同，同一消费组中的 LitePush 实例不要求 LiteTopic 集合完全一致，但客户端要求它们使用
+相同的 bind topic。它们可以分别持有不同的 LiteTopic 集合，最终仍以 Proxy 对该消费组和 bind topic 的配置
+校验为准。
 
 ```csharp
 await consumer.SubscribeLiteAsync(

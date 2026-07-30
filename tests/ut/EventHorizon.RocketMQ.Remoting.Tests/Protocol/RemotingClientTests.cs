@@ -990,7 +990,7 @@ public sealed class RemotingClientTests
         const int InitialBrokerOpaque = 8000;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
-        var workersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestLoopsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCount = 0;
         var serverTask = ServeAsync();
         await using var client = CreateClient();
@@ -998,7 +998,7 @@ public sealed class RemotingClientTests
         {
             if (Interlocked.Increment(ref handlerCount) == 2)
             {
-                workersStarted.TrySetResult();
+                requestLoopsStarted.TrySetResult();
             }
 
             await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken);
@@ -1025,7 +1025,7 @@ public sealed class RemotingClientTests
                     CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + 1)
                 ],
                 server.CancellationToken);
-            await workersStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
+            await requestLoopsStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
 
             await connection.WriteManyAsync(
                 Enumerable.Range(2, 129)

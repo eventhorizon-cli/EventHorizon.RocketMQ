@@ -32,6 +32,10 @@ rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 });
 ```
 
+The same `AddRocketMQGrpc` registration may add multiple independently configured LitePush consumers while reusing
+its underlying gRPC channels. Consumers in the same group must use the same `BindTopic`; their LiteTopic sets may
+differ. Different groups receive independently.
+
 Do not call the inherited `ConsumerOptions.Subscribe` for this role. LitePush receives through `BindTopic` and manages
 logical subscriptions with `LiteTopics`, `SubscribeLiteAsync`, and `UnsubscribeLiteAsync`; it does not accept ordinary
 topic filters.
@@ -110,9 +114,10 @@ docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-The runnable code binds to `eventhorizon-test-lite-parent-topic` and subscribes to
-`eventhorizon-test-lite-topic`. Observing delivery requires a producer that can publish a Lite message under that
-parent; the ordinary Producer sample does not populate LiteTopics.
+Only the Proxy connection settings are externalized in `appsettings.json`; the consumer role values remain visible
+beside its registration in `Program.cs`. The runnable code binds to `eventhorizon-test-lite-parent-topic` and
+subscribes to `eventhorizon-test-lite-topic`. Observing delivery requires a producer that can publish a Lite message
+under that parent; the ordinary Producer sample does not populate LiteTopics.
 
 For the complete API and deployment constraints, see the
 [gRPC guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md) and

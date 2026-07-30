@@ -42,11 +42,16 @@ its own public SDK API:
 ```csharp
 builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
-    .AddGrpcProducer(grpcProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
-    .AddRemotingProducer(remotingProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+    {
+        options.GroupName = "eventhorizon-otel-remoting-producer";
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3);
+    });
 ```
 
 Inject `IGrpcProducer` or `IRemotingProducer` directly. There is no transport-neutral Producer abstraction, even
@@ -96,8 +101,9 @@ receipt semantics remain documented in the [gRPC guide](../../../src/EventHorizo
 
 The application-owned settings are `OpenTelemetry:ServiceName` and `OpenTelemetry:OtlpEndpoint`. The endpoint must
 be an absolute HTTP or HTTPS URI; this project exports with OTLP/gRPC. Override them with
-`OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`. RocketMQ connection and Producer options stay in
-their protocol-specific `RocketMQ:Grpc` and `RocketMQ:Remoting` sections.
+`OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`. RocketMQ connection settings stay in the
+protocol-specific `RocketMQ:Grpc` and `RocketMQ:Remoting` sections; fixed Producer behavior is declared next to each
+registration in code.
 
 Start the shared RocketMQ and Grafana OTEL LGTM environments, then run the Producer integration:
 

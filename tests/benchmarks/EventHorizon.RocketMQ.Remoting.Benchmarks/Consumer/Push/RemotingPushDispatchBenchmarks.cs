@@ -19,7 +19,7 @@ using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace EventHorizon.RocketMQ.Benchmarks.Protocols.Remoting;
+namespace EventHorizon.RocketMQ.Remoting.Benchmarks.Consumer.Push;
 
 [MemoryDiagnoser]
 public class RemotingPushDispatchBenchmarks

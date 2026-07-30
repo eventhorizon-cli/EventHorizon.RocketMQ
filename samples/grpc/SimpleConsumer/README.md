@@ -18,7 +18,7 @@ directly.
 
 ## SDK workflow
 
-Register the gRPC transport with `AddRocketMQGrpc`, then add one SimpleConsumer role to that registration:
+Register the gRPC transport with `AddRocketMQGrpc`, then add a SimpleConsumer role to that registration:
 
 ```csharp
 rocketMQ.AddGrpcSimpleConsumer(options =>
@@ -29,6 +29,10 @@ rocketMQ.AddGrpcSimpleConsumer(options =>
     options.Subscribe("orders", new FilterExpression("created"));
 });
 ```
+
+The same `AddRocketMQGrpc` registration may contain multiple consumer roles. Each `AddGrpcSimpleConsumer` call has
+its own group, subscriptions, options, and lifecycle while the registration reuses its underlying gRPC channels.
+Use different groups when each consumer must observe the topic independently.
 
 The Generic Host integration starts and stops the registered role. Without a host, resolve `IGrpcSimpleConsumer` and
 call `StartAsync` and `StopAsync` explicitly.
@@ -81,7 +85,9 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-The runnable code subscribes to `eventhorizon-test-topic` with the `sample` tag. Use the
+Only the Proxy connection settings are externalized in `appsettings.json`; the runnable consumer's group, timing, and
+subscription values are visible beside its registration in `Program.cs`. It subscribes to
+`eventhorizon-test-topic` with the `sample` tag. Use the
 [Producer sample](../Producer/README.md) or another compatible producer to publish matching messages.
 
 For the complete consumer API and Proxy constraints, see the

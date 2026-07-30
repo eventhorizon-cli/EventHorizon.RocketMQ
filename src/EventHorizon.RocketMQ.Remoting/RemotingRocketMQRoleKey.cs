@@ -15,10 +15,17 @@
 
 namespace EventHorizon.RocketMQ.Remoting;
 
-internal readonly record struct RemotingRocketMQRoleKey(string OptionsName, RemotingRocketMQRole Role)
+internal readonly record struct RemotingRocketMQRoleKey(
+    string OptionsName,
+    RemotingRocketMQRole Role,
+    int InstanceIndex = 0)
 {
+    public string RoleOptionsName => InstanceIndex == 0
+        ? OptionsName
+        : $"{OptionsName}:{RoleToken}:{InstanceIndex + 1}";
+
     public string LogicalClientName =>
-        $"{Normalize(string.IsNullOrEmpty(OptionsName) ? "default" : OptionsName)}-{RoleToken}";
+        $"{Normalize(string.IsNullOrEmpty(OptionsName) ? "default" : OptionsName)}-{RoleToken}{InstanceToken}";
 
     public string DisplayRole => Role switch
     {
@@ -41,6 +48,8 @@ internal readonly record struct RemotingRocketMQRoleKey(string OptionsName, Remo
         RemotingRocketMQRole.PopConsumer => "remoting-pop-consumer",
         _ => Role.ToString().ToLowerInvariant()
     };
+
+    private string InstanceToken => InstanceIndex == 0 ? string.Empty : $"-{InstanceIndex + 1}";
 
     private static string Normalize(string value) =>
         new(value.Select(static character =>

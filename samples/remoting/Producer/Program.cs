@@ -25,9 +25,7 @@ const string AuditRegistrationName = "audit";
 var builder = WebApplication.CreateBuilder(args);
 // NamesrvAddr discovers routes; the producer then sends directly to advertised Broker endpoints.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
-var producerSection = builder.Configuration.GetRequiredSection("RocketMQ:Producer");
 var auditRemotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Remoting");
-var auditProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Producer");
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -40,10 +38,12 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
-rocketMQ.AddRemotingProducer(producerSection.Bind);
+rocketMQ.AddRemotingProducer(static options =>
+    options.GroupName = "remoting-sample-producer");
 builder.Services
     .AddRocketMQRemoting(AuditRegistrationName, auditRemotingSection.Bind)
-    .AddRemotingProducer(auditProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+        options.GroupName = "remoting-sample-audit-producer");
 
 var app = builder.Build();
 

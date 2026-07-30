@@ -53,12 +53,12 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(RemotingTransactionResolution.Unknown);
             })
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
@@ -67,8 +67,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();
@@ -119,13 +118,13 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(RemotingTransactionResolution.Rollback);
             })
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
@@ -134,8 +133,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();
@@ -182,12 +180,12 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.InstanceName = $"remoting-recall-{suffix}";
             })
             .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-recall-producer"))
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
                     if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
@@ -196,8 +194,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();

@@ -36,18 +36,18 @@ builder.Services.AddSwaggerGen(static options =>
 });
 
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
-var producerSection = builder.Configuration.GetRequiredSection("RocketMQ:Producer");
 var auditClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Client");
-var auditProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Audit:Producer");
 
 // Endpoints must target RocketMQ Proxies; gRPC clients do not connect directly to Brokers.
 // The first call creates the default unkeyed registration; the second creates an independent keyed registration.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
-    .AddGrpcProducer(producerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 builder.Services
     .AddRocketMQGrpc(AuditRegistrationName, auditClientSection.Bind)
-    .AddGrpcProducer(auditProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
 var app = builder.Build();
 app.UseSwagger();
@@ -56,9 +56,7 @@ app.UseSwaggerUI();
 app.MapPost("/messages", SendMessageAsync)
     .WithName("SendMessage")
     .WithSummary("Sends a message with the default gRPC producer.")
-    .WithDescription(
-        "Uses the default RocketMQ gRPC producer configured in " +
-        "RocketMQ:Client and RocketMQ:Producer.")
+    .WithDescription("Uses the default RocketMQ gRPC producer connected through RocketMQ:Client.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
@@ -66,7 +64,7 @@ app.MapPost("/clients/audit/messages", SendAuditMessageAsync)
     .WithName("SendAuditMessage")
     .WithSummary("Sends a message with the audit gRPC producer.")
     .WithDescription(
-        "Uses the RocketMQ gRPC producer registered with registration name 'audit' and configured in RocketMQ:Audit.")
+        "Uses the RocketMQ gRPC producer registered with registration name 'audit' and its audit client connection.")
     .Produces<SendMessageResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);

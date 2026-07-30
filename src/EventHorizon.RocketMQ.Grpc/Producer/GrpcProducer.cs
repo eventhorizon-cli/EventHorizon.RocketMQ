@@ -144,7 +144,9 @@ internal sealed class GrpcProducer : IGrpcProducer
                 }
                 catch (Exception exception)
                 {
-                    _logger.LogDebug(exception, "Failed to stop transaction check workers after producer startup failed");
+                    _logger.LogDebug(
+                        exception,
+                        "Failed to stop transaction check loops after producer startup failed");
                 }
 
                 throw;
@@ -945,7 +947,7 @@ internal sealed class GrpcProducer : IGrpcProducer
     {
         private readonly Channel<TransactionCheckWork> _channel;
         private readonly CancellationTokenSource _cts = new();
-        private readonly Task[] _workers;
+        private readonly Task[] _transactionCheckLoopTasks;
 
         public TransactionCheckDispatcher(
             int concurrency,
@@ -957,8 +959,8 @@ internal sealed class GrpcProducer : IGrpcProducer
                 SingleReader = concurrency == 1,
                 SingleWriter = false
             });
-            _workers = Enumerable.Range(0, concurrency)
-                .Select(_ => RunAsync(handler, _cts.Token))
+            _transactionCheckLoopTasks = Enumerable.Range(0, concurrency)
+                .Select(_ => RunTransactionCheckLoopAsync(handler, _cts.Token))
                 .ToArray();
         }
 
@@ -971,7 +973,7 @@ internal sealed class GrpcProducer : IGrpcProducer
             _cts.Cancel();
             try
             {
-                await Task.WhenAll(_workers).ConfigureAwait(false);
+                await Task.WhenAll(_transactionCheckLoopTasks).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -982,7 +984,7 @@ internal sealed class GrpcProducer : IGrpcProducer
             }
         }
 
-        private async Task RunAsync(
+        private async Task RunTransactionCheckLoopAsync(
             Func<TransactionCheckWork, CancellationToken, Task> handler,
             CancellationToken cancellationToken)
         {

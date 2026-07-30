@@ -15,7 +15,8 @@ NameServer 和 Broker 端点而没有 Proxy，应改用 [Remoting Producer](../.
 ```csharp
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
-    .AddGrpcProducer(producerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 ```
 
 该角色通过 `IGrpcProducer` 对外提供。使用依赖注入注册后，.NET Host 会随应用启动和停止 Producer；应用服务通常
@@ -27,7 +28,8 @@ builder.Services
 ```csharp
 builder.Services
     .AddRocketMQGrpc("audit", auditClientSection.Bind)
-    .AddGrpcProducer(auditProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
 static Task<GrpcSendReceipt> PublishAsync(
     Message message,
@@ -82,4 +84,5 @@ dotnet run --project samples/grpc/Producer
 ```
 
 连接外部集群时，将 `RocketMQ:Client:Endpoint` 指向其 Proxy；若集群禁用了自动创建资源，还需预先创建 Topic。
-可运行项目通过 Swagger 和 HTTP 暴露发送操作，这些端点只是上述 SDK 工作流的应用外壳。
+可运行项目通过 Swagger 和 HTTP 暴露发送操作，这些端点只是上述 SDK 工作流的应用外壳。示例只在
+`appsettings.json` 中保留连接配置，固定的 Producer 行为直接写在各自的注册代码旁。

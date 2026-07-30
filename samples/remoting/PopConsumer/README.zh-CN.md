@@ -11,7 +11,7 @@
 ## 什么时候使用 POP Consumer
 
 当工作需要暂时领取并逐条结算时，尤其是处理时长可能变化、应用需要延长消息不可见时间时，适合选择 POP。它适用于由调用方
-控制的 worker：希望 Broker 管理重新投递，但不希望自己管理下一队列位点。
+控制的处理循环：希望 Broker 管理重新投递，但不希望自己管理下一队列位点。
 
 如果希望 SDK 管理 consumer group 分配、后台长轮询、handler 并发和重试结果，应选择 Push Consumer。如果需要的是
 队列位置、重放和显式位点提交，应选择 Pull 或 Lite Pull。
@@ -23,6 +23,9 @@ POP 要求 Broker 支持 POP、确认和不可见时间变更命令。此客户�
 
 通过 `AddRemotingPopConsumer` 注册此角色。在其 options 上调用 `ConsumerOptions.Subscribe` 只会记录该 topic
 的默认过滤条件；它**不会**启动订阅、创建分配或启动接收循环。
+
+同一个 `AddRocketMQRemoting` 注册可以包含多个配置彼此独立的 POP Consumer。每次调用都有自己的 group、默认
+filter、options 和生命周期，同时复用该注册的 NameServer、路由和连接基础设施。
 
 公共 API 会显式呈现 receipt 生命周期：
 
@@ -63,7 +66,8 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj
 ```
 
-默认 NameServer 为 `localhost:9876`。使用外部环境时，必须同时暴露 NameServer 和所有公布的 Broker 地址，并为
+`appsettings.json` 只保存 NameServer 连接设置，Consumer 角色参数都直接写在 `Program.cs` 的注册旁。默认
+NameServer 为 `localhost:9876`。使用外部环境时，必须同时暴露 NameServer 和所有公布的 Broker 地址，并为
 外部环境创建普通 topic，再为 group 授予路由查询、POP、确认和不可见时间变更权限。
 
 完整配置和 API 示例请参阅

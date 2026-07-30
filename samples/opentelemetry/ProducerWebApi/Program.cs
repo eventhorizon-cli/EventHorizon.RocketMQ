@@ -29,9 +29,7 @@ using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 
 var builder = WebApplication.CreateBuilder(args);
 var grpcClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Client");
-var grpcProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Producer");
 var remotingClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Client");
-var remotingProducerSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Producer");
 var openTelemetrySection = builder.Configuration.GetRequiredSection("OpenTelemetry");
 var serviceName = openTelemetrySection.GetValue<string>("ServiceName");
 ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
@@ -62,10 +60,15 @@ builder.Services.AddSwaggerGen(static options =>
 
 builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
-    .AddGrpcProducer(grpcProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
-    .AddRemotingProducer(remotingProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+    {
+        options.GroupName = "eventhorizon-otel-remoting-producer";
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3);
+    });
 
 var app = builder.Build();
 app.UseSwagger();

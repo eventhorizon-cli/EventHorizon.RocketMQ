@@ -26,6 +26,10 @@
 SDK 会解析订阅、发送主动消费心跳，并持续维护集群分配。`Assignment` 提供当前 Consumer 所属队列的快照。当一个 group
 中的 Consumer 数量多于可读队列数量时，部分 Consumer 没有分配是正常情况。
 
+同一个 `AddRocketMQRemoting` 注册可以添加多个 Lite Pull Consumer，每个 Consumer 都有自己的 options 和生命周期。
+该注册会复用 NameServer 与路由状态；同一 group 中的 Consumer 仍作为独立活跃成员参与队列分配。不同 group 可以使用
+不同 topic 和 filter。
+
 同一 group 的所有实例必须使用相同的 topic 和 filter 订阅。分配会针对每个 topic 使用完整的 group consumer-id
 列表；订阅不一致可能把队列分给没有消费该 topic 的成员，filter 不一致则会让实际接收结果取决于当前队列所有者。
 
@@ -68,7 +72,8 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj
 ```
 
-默认 NameServer 为 `localhost:9876`。使用外部环境时，必须保证进程可以同时访问 NameServer 及其公布的 Broker
+`appsettings.json` 只保存 NameServer 连接设置，Consumer 角色参数都直接写在 `Program.cs` 的注册旁。默认
+NameServer 为 `localhost:9876`。使用外部环境时，必须保证进程可以同时访问 NameServer 及其公布的 Broker
 地址、创建普通 topic，并为该 group 授予路由查询和消费权限。可使用 Remoting Producer 示例发送消息。
 
 完整配置和 API 示例请参阅

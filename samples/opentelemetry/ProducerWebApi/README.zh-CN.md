@@ -38,11 +38,16 @@ instrumentation 注册不会创建 RocketMQ 客户端。每种协议及其 Produ
 ```csharp
 builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
-    .AddGrpcProducer(grpcProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
-    .AddRemotingProducer(remotingProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+    {
+        options.GroupName = "eventhorizon-otel-remoting-producer";
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3);
+    });
 ```
 
 直接注入 `IGrpcProducer` 或 `IRemotingProducer`。即使两种协议向同一个 OpenTelemetry provider 导出信号，也不存在
@@ -87,7 +92,8 @@ Trace 上下文注入需要 activity listener。关闭 tracing 后仍可独立�
 
 应用自有配置为 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`。Endpoint 必须是绝对 HTTP 或 HTTPS
 URI；本项目使用 OTLP/gRPC 导出。可通过 `OpenTelemetry__ServiceName` 和 `OpenTelemetry__OtlpEndpoint` 覆盖。
-RocketMQ 连接与 Producer options 仍放在协议专用的 `RocketMQ:Grpc` 和 `RocketMQ:Remoting` 配置节。
+RocketMQ 连接配置仍放在协议专用的 `RocketMQ:Grpc` 和 `RocketMQ:Remoting` 配置节；固定的 Producer 行为直接写在
+各自的注册代码旁。
 
 启动共享 RocketMQ 与 Grafana OTEL LGTM 环境，再运行 Producer 集成：
 

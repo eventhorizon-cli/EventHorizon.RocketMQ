@@ -42,7 +42,7 @@ public static class RemotingRocketMQBuilderExtensions
     public static RemotingRocketMQBuilder AddRemotingAdmin(this RemotingRocketMQBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.Admin);
+        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.Admin).RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
         RemotingRocketMQRegistration.AddRoleSingleton<IRemotingAdmin>(
             builder,
@@ -70,10 +70,11 @@ public static class RemotingRocketMQBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.Producer);
+        var roleRegistration = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.Producer);
+        var roleKey = roleRegistration.RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
 
-        builder.Services.AddOptions<RemotingProducerOptions>(builder.OptionsName)
+        builder.Services.AddOptions<RemotingProducerOptions>(roleRegistration.RoleOptionsName)
             .Configure(configure)
             .Validate(
                 static options => !string.IsNullOrWhiteSpace(options.GroupName),
@@ -98,7 +99,7 @@ public static class RemotingRocketMQBuilderExtensions
                 "in the classic remoting frame for framing and command headers.");
         RemotingRocketMQRegistration.AddRoleSingleton<IRemotingProducer>(
             builder,
-            provider => CreateRemotingProducer(provider, roleKey));
+            provider => CreateRemotingProducer(provider, roleRegistration));
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingProducerHostedService>(
                 provider,
@@ -118,25 +119,24 @@ public static class RemotingRocketMQBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PullConsumer);
+        var roleRegistration = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PullConsumer);
+        var roleKey = roleRegistration.RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
 
-        builder.Services.AddOptions<RemotingPullConsumerOptions>(builder.OptionsName)
+        builder.Services.AddOptions<RemotingPullConsumerOptions>(roleRegistration.RoleOptionsName)
             .Configure(configure)
             .Validate(static options => !string.IsNullOrWhiteSpace(options.GroupName), "Consumer group name is required.")
             .Validate(static options => options.Subscriptions.Count > 0, "At least one subscription is required.")
             .Validate(static options => options.BatchSize > 0, "Batch size must be positive.")
             .Validate(static options => options.MaxMessageBytes > 0, "Maximum pull response size must be positive.")
             .Validate(static options => options.LongPollingTimeout > TimeSpan.Zero, "Long polling timeout must be positive.");
-        RemotingRocketMQRegistration.AddRoleSingleton<IRemotingPullConsumer>(
+        var getConsumer = RemotingRocketMQRegistration.AddConsumerSingleton<IRemotingPullConsumer>(
             builder,
-            provider => CreateRemotingPullConsumer(provider, roleKey));
+            provider => CreateRemotingPullConsumer(provider, roleRegistration));
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPullConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPullConsumer>(
-                    provider,
-                    builder.RegistrationName)));
+                getConsumer(provider)));
         return builder;
     }
 
@@ -152,10 +152,13 @@ public static class RemotingRocketMQBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.LitePullConsumer);
+        var roleRegistration = RemotingRocketMQRegistration.RegisterRole(
+            builder,
+            RemotingRocketMQRole.LitePullConsumer);
+        var roleKey = roleRegistration.RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
 
-        builder.Services.AddOptions<RemotingLitePullConsumerOptions>(builder.OptionsName)
+        builder.Services.AddOptions<RemotingLitePullConsumerOptions>(roleRegistration.RoleOptionsName)
             .Configure(configure)
             .Validate(
                 static options => !string.IsNullOrWhiteSpace(options.GroupName),
@@ -170,32 +173,14 @@ public static class RemotingRocketMQBuilderExtensions
                 static options => options.InitialOffset != QueryOffsetPolicy.Timestamp ||
                                   options.InitialOffsetTimestamp.HasValue,
                 "An initial offset timestamp is required when the initial offset policy is Timestamp.");
-        RemotingRocketMQRegistration.AddRoleSingleton<IRemotingLitePullConsumer>(
+        var getConsumer = RemotingRocketMQRegistration.AddConsumerSingleton<IRemotingLitePullConsumer>(
             builder,
-            provider => CreateRemotingLitePullConsumer(provider, roleKey));
+            provider => CreateRemotingLitePullConsumer(provider, roleRegistration));
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingLitePullConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingLitePullConsumer>(
-                    provider,
-                    builder.RegistrationName)));
+                getConsumer(provider)));
         return builder;
-    }
-
-    /// <summary>
-    /// Adds and configures a classic remoting push-consumer role.
-    /// </summary>
-    /// <param name="builder">The classic remoting client builder.</param>
-    /// <param name="configure">The delegate used to configure the push consumer.</param>
-    /// <returns>The same builder so that additional roles can be registered.</returns>
-    public static RemotingRocketMQBuilder AddRemotingPushConsumer(
-        this RemotingRocketMQBuilder builder,
-        Action<RemotingPushConsumerOptions> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddRemotingPushConsumerCore(builder, configure, null, null);
     }
 
     /// <summary>
@@ -212,9 +197,6 @@ public static class RemotingRocketMQBuilderExtensions
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="handlerLifetime"/> is not a supported service lifetime.
     /// </exception>
-    /// <exception cref="InvalidOperationException">
-    /// A push consumer is already registered for this client registration.
-    /// </exception>
     public static RemotingRocketMQBuilder AddRemotingPushConsumer<TMessageHandler>(
         this RemotingRocketMQBuilder builder,
         ServiceLifetime handlerLifetime,
@@ -225,25 +207,12 @@ public static class RemotingRocketMQBuilderExtensions
         ArgumentNullException.ThrowIfNull(configure);
         ValidateMessageHandlerLifetime(handlerLifetime);
 
-        return AddRemotingPushConsumerCore(
-            builder,
-            configure,
-            (services, roleKey) =>
-                RemotingPushMessageHandlerFactory.Register<TMessageHandler>(services, roleKey, handlerLifetime),
-            handlerLifetime);
-    }
-
-    private static RemotingRocketMQBuilder AddRemotingPushConsumerCore(
-        RemotingRocketMQBuilder builder,
-        Action<RemotingPushConsumerOptions> configure,
-        Action<IServiceCollection, RemotingRocketMQRoleKey>? registerMessageHandler,
-        ServiceLifetime? handlerLifetime)
-    {
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PushConsumer);
+        var roleRegistration = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PushConsumer);
+        var roleKey = roleRegistration.RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
-        registerMessageHandler?.Invoke(builder.Services, roleKey);
+        RemotingPushMessageHandlerFactory.Register<TMessageHandler>(builder.Services, roleKey, handlerLifetime);
 
-        var options = builder.Services.AddOptions<RemotingPushConsumerOptions>(builder.OptionsName)
+        var options = builder.Services.AddOptions<RemotingPushConsumerOptions>(roleRegistration.RoleOptionsName)
             .Configure(configure)
             .Validate(static value => !string.IsNullOrWhiteSpace(value.GroupName), "Consumer group name is required.")
             .Validate(static value => value.MaxConcurrency > 0, "Maximum concurrency must be positive.")
@@ -266,29 +235,17 @@ public static class RemotingRocketMQBuilderExtensions
                 static value => value.InitialPosition != ConsumeFromPosition.Timestamp ||
                                 value.ConsumeTimestamp.HasValue,
                 "A consume timestamp is required when the initial consume position is Timestamp.");
-        if (handlerLifetime.HasValue)
-        {
-            options.Validate(
-                static value => value.MessageHandler is null,
-                "MessageHandler cannot be configured when a typed message handler is registered.");
-        }
-        else
-        {
-            options.Validate(static value => value.MessageHandler is not null, "A message handler is required.");
-        }
         options.Validate(
             static value => value.ConsumeOrderly || value.MaxCachedMessages >= value.ConsumeMessageBatchSize,
             "Maximum cached message count must be at least the consume message batch size.");
 
-        RemotingRocketMQRegistration.AddRoleSingleton<IRemotingPushConsumer>(
+        var getConsumer = RemotingRocketMQRegistration.AddConsumerSingleton<IRemotingPushConsumer>(
             builder,
-            provider => CreateRemotingPushConsumer(provider, roleKey, handlerLifetime));
+            provider => CreateRemotingPushConsumer(provider, roleRegistration, handlerLifetime));
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPushConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPushConsumer>(
-                    provider,
-                    builder.RegistrationName)));
+                getConsumer(provider)));
         return builder;
     }
 
@@ -315,10 +272,11 @@ public static class RemotingRocketMQBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
-        var roleKey = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PopConsumer);
+        var roleRegistration = RemotingRocketMQRegistration.RegisterRole(builder, RemotingRocketMQRole.PopConsumer);
+        var roleKey = roleRegistration.RoleKey;
         RegisterRemotingTransportServices(builder.Services, roleKey);
 
-        builder.Services.AddOptions<RemotingPopConsumerOptions>(builder.OptionsName)
+        builder.Services.AddOptions<RemotingPopConsumerOptions>(roleRegistration.RoleOptionsName)
             .Configure(configure)
             .Validate(static options => !string.IsNullOrWhiteSpace(options.GroupName), "Consumer group name is required.")
             .Validate(
@@ -327,24 +285,29 @@ public static class RemotingRocketMQBuilderExtensions
             .Validate(static options => options.MaxMessageBytes > 0, "Maximum POP response size must be positive.")
             .Validate(static options => options.InvisibleDuration > TimeSpan.Zero, "Invisible duration must be positive.")
             .Validate(static options => options.LongPollingTimeout > TimeSpan.Zero, "Long polling timeout must be positive.");
-        RemotingRocketMQRegistration.AddRoleSingleton<IRemotingPopConsumer>(
+        var getConsumer = RemotingRocketMQRegistration.AddConsumerSingleton<IRemotingPopConsumer>(
             builder,
-            provider => CreateRemotingPopConsumer(provider, roleKey));
+            provider => CreateRemotingPopConsumer(provider, roleRegistration));
         builder.Services.AddSingleton<IHostedService>(provider =>
             ActivatorUtilities.CreateInstance<RemotingPopConsumerHostedService>(
                 provider,
-                RemotingRocketMQRegistration.GetRoleService<IRemotingPopConsumer>(provider, builder.RegistrationName)));
+                getConsumer(provider)));
         return builder;
     }
 
-    private static IRemotingProducer CreateRemotingProducer(IServiceProvider provider, RemotingRocketMQRoleKey roleKey)
+    private static IRemotingProducer CreateRemotingProducer(
+        IServiceProvider provider,
+        RemotingRocketMQRoleRegistration roleRegistration)
     {
+        var roleKey = roleRegistration.RoleKey;
         return ActivatorUtilities.CreateInstance<RemotingProducer>(
             provider,
-            RemotingRocketMQRegistration.GetNamedOptions<RemotingProducerOptions>(provider, roleKey.OptionsName),
+            RemotingRocketMQRegistration.GetNamedOptions<RemotingProducerOptions>(
+                provider,
+                roleRegistration.RoleOptionsName),
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-            provider.GetRequiredKeyedService<ITopicRouteService>(roleKey),
-            provider.GetRequiredKeyedService<IRemotingClient>(roleKey));
+            GetTopicRouteService(provider, roleKey),
+            GetRemotingClientPool(provider, roleKey).SharedClient);
     }
 
     private static IRemotingAdmin CreateRemotingAdmin(IServiceProvider provider, RemotingRocketMQRoleKey roleKey)
@@ -352,16 +315,17 @@ public static class RemotingRocketMQBuilderExtensions
         return ActivatorUtilities.CreateInstance<RemotingAdmin>(
             provider,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-            provider.GetRequiredKeyedService<ITopicRouteService>(roleKey),
-            provider.GetRequiredKeyedService<IRemotingClient>(roleKey));
+            GetTopicRouteService(provider, roleKey),
+            GetRemotingClientPool(provider, roleKey).SharedClient);
     }
 
     private static IRemotingPullConsumer CreateRemotingPullConsumer(
         IServiceProvider provider,
-        RemotingRocketMQRoleKey roleKey)
+        RemotingRocketMQRoleRegistration roleRegistration)
     {
+        var roleKey = roleRegistration.RoleKey;
         var options = RemotingRocketMQRegistration
-            .GetNamedOptions<RemotingPullConsumerOptions>(provider, roleKey.OptionsName)
+            .GetNamedOptions<RemotingPullConsumerOptions>(provider, roleRegistration.RoleOptionsName)
             .Value;
         var settings = CreateRemotingConsumerSettings(
             options,
@@ -375,69 +339,77 @@ public static class RemotingRocketMQBuilderExtensions
 
     private static IRemotingLitePullConsumer CreateRemotingLitePullConsumer(
         IServiceProvider provider,
-        RemotingRocketMQRoleKey roleKey)
+        RemotingRocketMQRoleRegistration roleRegistration)
     {
+        var roleKey = roleRegistration.RoleKey;
         var options = RemotingRocketMQRegistration.GetNamedOptions<RemotingLitePullConsumerOptions>(
             provider,
-            roleKey.OptionsName);
+            roleRegistration.RoleOptionsName);
+        var hasLocalGroupPeer = RemotingConsumerGroupCompatibilityValidator.ValidateGroupMemberSubscriptions(
+            provider,
+            roleRegistration,
+            options.Value);
+        var clientOptions = RemotingRocketMQRegistration.GetClientOptions(provider, roleKey);
         var settings = CreateRemotingConsumerSettings(
             options.Value,
             options.Value.BatchSize,
             options.Value.MaxMessageBytes,
             options.Value.LongPollingTimeout);
+        var groupMember = GetRemotingRebalanceServicePool(provider, roleKey)
+            .AcquireGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
         return ActivatorUtilities.CreateInstance<RemotingLitePullConsumer>(
             provider,
             options,
-            RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-            CreateRemotingConsumerEngine(provider, roleKey, settings),
-            provider.GetRequiredKeyedService<IRemotingClient>(roleKey));
+            clientOptions,
+            CreateRemotingConsumerEngine(provider, roleKey, settings, groupMember.Client),
+            groupMember.Client,
+            groupMember.RebalanceService,
+            hasLocalGroupPeer);
     }
 
     private static IRemotingPushConsumer CreateRemotingPushConsumer(
         IServiceProvider provider,
-        RemotingRocketMQRoleKey roleKey,
-        ServiceLifetime? handlerLifetime)
+        RemotingRocketMQRoleRegistration roleRegistration,
+        ServiceLifetime handlerLifetime)
     {
+        var roleKey = roleRegistration.RoleKey;
         var options = RemotingRocketMQRegistration.GetNamedOptions<RemotingPushConsumerOptions>(
             provider,
-            roleKey.OptionsName);
+            roleRegistration.RoleOptionsName);
+        var hasLocalGroupPeer = RemotingConsumerGroupCompatibilityValidator.ValidateGroupMemberSubscriptions(
+            provider,
+            roleRegistration,
+            options.Value);
         var clientOptions = RemotingRocketMQRegistration.GetClientOptions(provider, roleKey);
-        var routes = provider.GetRequiredKeyedService<ITopicRouteService>(roleKey);
-        var remotingClient = provider.GetRequiredKeyedService<IRemotingClient>(roleKey);
+        var routes = GetTopicRouteService(provider, roleKey);
+        var groupMember = GetRemotingRebalanceServicePool(provider, roleKey)
+            .AcquireGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
         var settings = CreateRemotingConsumerSettings(
             options.Value,
             options.Value.BatchSize,
             options.Value.MaxMessageBytes,
             options.Value.LongPollingTimeout);
-        var consumerEngine = CreateRemotingConsumerEngine(provider, roleKey, settings);
-        if (handlerLifetime is not { } lifetime)
-        {
-            return ActivatorUtilities.CreateInstance<RemotingPushConsumer>(
-                provider,
-                options,
-                clientOptions,
-                consumerEngine,
-                routes,
-                remotingClient);
-        }
-
+        var consumerEngine = CreateRemotingConsumerEngine(provider, roleKey, settings, groupMember.Client);
         return ActivatorUtilities.CreateInstance<RemotingPushConsumer>(
             provider,
             options,
             clientOptions,
             consumerEngine,
             routes,
-            remotingClient,
-            RemotingPushMessageHandlerFactory.Create(provider, roleKey, lifetime));
+            groupMember.Client,
+            groupMember.RebalanceService,
+            RemotingPushMessageHandlerFactory.Create(provider, roleKey, handlerLifetime),
+            hasLocalGroupPeer);
     }
 
     private static IRemotingPopConsumer CreateRemotingPopConsumer(
         IServiceProvider provider,
-        RemotingRocketMQRoleKey roleKey)
+        RemotingRocketMQRoleRegistration roleRegistration)
     {
+        var roleKey = roleRegistration.RoleKey;
         var options = RemotingRocketMQRegistration.GetNamedOptions<RemotingPopConsumerOptions>(
             provider,
-            roleKey.OptionsName);
+            roleRegistration.RoleOptionsName);
         var settings = CreateRemotingConsumerSettings(
             options.Value,
             options.Value.BatchSize,
@@ -448,20 +420,21 @@ public static class RemotingRocketMQBuilderExtensions
             options,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
             CreateRemotingConsumerEngine(provider, roleKey, settings),
-            provider.GetRequiredKeyedService<IRemotingClient>(roleKey));
+            GetRemotingClientPool(provider, roleKey).SharedClient);
     }
 
     private static IRemotingConsumerEngine CreateRemotingConsumerEngine(
         IServiceProvider provider,
         RemotingRocketMQRoleKey roleKey,
-        RemotingConsumerSettings settings)
+        RemotingConsumerSettings settings,
+        IRemotingClient? remotingClient = null)
     {
         return ActivatorUtilities.CreateInstance<RemotingConsumerEngine>(
             provider,
             settings,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-            provider.GetRequiredKeyedService<ITopicRouteService>(roleKey),
-            provider.GetRequiredKeyedService<IRemotingClient>(roleKey));
+            GetTopicRouteService(provider, roleKey),
+            remotingClient ?? GetRemotingClientPool(provider, roleKey).SharedClient);
     }
 
     private static RemotingConsumerSettings CreateRemotingConsumerSettings(
@@ -481,21 +454,40 @@ public static class RemotingRocketMQBuilderExtensions
         RemotingRocketMQRoleKey roleKey)
     {
         services.TryAddSingleton<IRemoteCommandSerializer, RemoteCommandSerializer>();
-        services.AddKeyedSingleton<IRemotingClient>(roleKey, (provider, _) =>
-            ActivatorUtilities.CreateInstance<RemotingClient>(
+        services.TryAddKeyedSingleton<RemotingClientPool>(roleKey.OptionsName, (provider, _) =>
+            ActivatorUtilities.CreateInstance<RemotingClientPool>(
                 provider,
-                provider.GetRequiredService<IRemoteCommandSerializer>(),
-                RemotingRocketMQRegistration.GetClientOptions(provider, roleKey)));
-        services.AddKeyedSingleton<INameServer>(roleKey, (provider, _) =>
+                RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
+        services.TryAddKeyedSingleton<RemotingRebalanceServicePool>(roleKey.OptionsName, (provider, _) =>
+            ActivatorUtilities.CreateInstance<RemotingRebalanceServicePool>(
+                provider,
+                provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName),
+                RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
+        services.TryAddKeyedSingleton<INameServer>(roleKey.OptionsName, (provider, _) =>
             new NameServer(
-                provider.GetRequiredKeyedService<IRemotingClient>(roleKey),
-                RemotingRocketMQRegistration.GetClientOptions(provider, roleKey)));
-        services.AddKeyedSingleton<ITopicRouteService>(roleKey, (provider, _) =>
+                provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName).SharedClient,
+                RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
+        services.TryAddKeyedSingleton<ITopicRouteService>(roleKey.OptionsName, (provider, _) =>
             new TopicRouteService(
-                provider.GetRequiredKeyedService<INameServer>(roleKey),
-                RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
+                provider.GetRequiredKeyedService<INameServer>(roleKey.OptionsName),
+                RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName),
                 provider.GetRequiredService<TimeProvider>()));
     }
+
+    private static RemotingClientPool GetRemotingClientPool(
+        IServiceProvider provider,
+        RemotingRocketMQRoleKey roleKey) =>
+        provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName);
+
+    private static RemotingRebalanceServicePool GetRemotingRebalanceServicePool(
+        IServiceProvider provider,
+        RemotingRocketMQRoleKey roleKey) =>
+        provider.GetRequiredKeyedService<RemotingRebalanceServicePool>(roleKey.OptionsName);
+
+    private static ITopicRouteService GetTopicRouteService(
+        IServiceProvider provider,
+        RemotingRocketMQRoleKey roleKey) =>
+        provider.GetRequiredKeyedService<ITopicRouteService>(roleKey.OptionsName);
 
     private static bool IsWithinLegacyRemotingFrameBudget(int messageSize, RemotingClientOptions clientOptions) =>
         messageSize <= clientOptions.MaxRemotingFrameSize - RemotingClientOptions.RemotingMessageFrameReserve;

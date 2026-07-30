@@ -22,15 +22,16 @@ using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
-// Unlike Push consumers, SimpleConsumer leaves receiving, acknowledgement, and DLQ forwarding to the hosted worker.
+// Unlike Push consumers, SimpleConsumer leaves receiving, acknowledgement, and DLQ forwarding to the hosted loop.
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcSimpleConsumer(options =>
     {
-        consumerSection.Bind(options);
+        options.GroupName = "rocketmq-dotnet-grpc-simple-sample";
+        options.AwaitDuration = TimeSpan.FromSeconds(5);
+        options.InvisibleDuration = TimeSpan.FromSeconds(30);
         options.Subscribe("eventhorizon-test-topic", new FilterExpression("sample"));
     });
 builder.Services.AddHostedService<SimpleConsumer>();

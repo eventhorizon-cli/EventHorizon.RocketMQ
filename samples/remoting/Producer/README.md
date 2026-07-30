@@ -18,7 +18,8 @@ Register the Remoting client, then add the Producer role:
 ```csharp
 builder.Services
     .AddRocketMQRemoting(remotingSection.Bind)
-    .AddRemotingProducer(producerSection.Bind);
+    .AddRemotingProducer(static options =>
+        options.GroupName = "remoting-sample-producer");
 ```
 
 The role is exposed as `IRemotingProducer`. The .NET host owns the lifecycle of a DI-registered Producer, so
@@ -31,7 +32,8 @@ named client registration and resolve its `IRemotingProducer` as a keyed service
 ```csharp
 builder.Services
     .AddRocketMQRemoting("audit", auditRemotingSection.Bind)
-    .AddRemotingProducer(auditProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+        options.GroupName = "remoting-sample-audit-producer");
 
 static Task<RemotingSendResult> PublishAsync(
     Message message,
@@ -95,3 +97,5 @@ dotnet run --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Rem
 For an external cluster, configure `RocketMQ:Remoting:NamesrvAddr`, ensure every advertised Broker endpoint is
 reachable, and create the topic when automatic resource creation is disabled. The runnable project exposes the
 normal-send workflow through Swagger and HTTP; its transport semantics come from `IRemotingProducer`, not from HTTP.
+The sample keeps connection settings in `appsettings.json` and declares its fixed Producer behavior next to each
+registration.

@@ -101,6 +101,51 @@ application code that ignores cancellation; its late result is ignored and can o
 cooperate with the token and remain idempotent. FIFO and orderly delivery intentionally remain outside this recovery
 path to preserve ordering guarantees.
 
+#### Push group membership, Rebalance, and connection ownership
+
+One `AddRocketMQRemoting` registration may add multiple Push Consumers. Every instance owns its options, logical
+client identity, consumer engine, typed handler binding, assignment state, and hosted lifecycle. Consumers in
+different groups can share NameServer discovery, routes, and a physical `RemotingClient`. Repeated active members of
+the same group use separate physical clients because the classic Broker identifies group members by connection
+channel as well as client ID.
+
+Each physical client owns one `RemotingRebalanceService` and therefore one `NotifyConsumerIdsChanged` request handler:
+
+```text
+Broker membership change
+    -> RemotingClient inbound request loop
+    -> RemotingRebalanceService group lookup
+    -> coalesced participant wakeup
+    -> route refresh / heartbeat / consumer-ID query
+    -> queue allocation and assignment reconciliation
+```
+
+The inbound handler only records a wakeup; it does not perform route or Broker I/O on the receive loop. Every group
+has an independent single-flight participant, so a blocked or failing group cannot serialize unrelated groups.
+Failures retry after one second, and a periodic fallback capped at 20 seconds repairs missed notifications. Shared
+heartbeat, membership-query, and unregister operations belong to `RemotingConsumerGroupSession`; orderly queue lock
+and unlock commands belong to `RemotingPushQueueLockManager`.
+
+For orderly Push, a denied initial lock or a failed lock renewal leaves reconciliation incomplete so the participant
+retries it. The consumer never dispatches a queue until the Broker has granted its lock.
+
+Members of one Push group must use identical topic/filter subscriptions, clustering or broadcasting mode, orderly
+mode, and initial position. Concurrency, timeouts, and typed handlers remain instance-local. These are group-wide
+rules, but registration can fail fast only for members visible in the same process and client registration. The
+classic heartbeat does not carry the orderly flag, so deployments must keep other processes consistent. This matches
+the official Java and Go protocol behavior: group membership is Broker-visible, while orderly locking is a local
+client Rebalance decision.
+
+Once another same-group member is registered locally, an individual Remoting Push or LitePull member cannot change
+subscriptions with `SubscribeAsync` or `UnsubscribeAsync`. Update the identical group-wide subscription set and
+restart the local members together. Cross-process members still require coordinated deployment.
+
+Docker integration coverage exercises both two members under one registration and two independent operating-system
+processes. The cross-process case runs concurrent and orderly modes, proves mutually exclusive complete assignments,
+then gracefully stops one member and verifies notification-driven takeover before the periodic fallback can run. A
+separate concurrent case force-terminates a member. Orderly force termination is not asserted against a short deadline
+because Broker queue-lock lease expiry, rather than client notification, determines its recovery bound.
+
 #### Concurrent Push dispatch and offset safety
 
 In concurrent mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue` holds

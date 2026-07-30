@@ -121,19 +121,4 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// <see cref="ConsumeFromPosition.Timestamp"/>.
     /// </summary>
     public DateTimeOffset? ConsumeTimestamp { get; set; }
-
-    /// <summary>
-    /// Gets or sets the asynchronous handler that processes one delivered message batch and reports its outcome.
-    /// </summary>
-    /// <remarks>
-    /// This delegate is invoked directly. Use the generic <c>AddRemotingPushConsumer&lt;TMessageHandler&gt;</c>
-    /// overload to use a dependency-injected handler with an explicit lifetime. When it returns
-    /// <see cref="ConsumeResult.Success"/>, use the supplied <see cref="RemotingPushConsumeContext"/> for a
-    /// concurrent non-FIFO batch to acknowledge a prefix and retry its remaining messages.
-    /// </remarks>
-    public Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler
-    {
-        get;
-        set;
-    }
 }

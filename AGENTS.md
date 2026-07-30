@@ -80,11 +80,22 @@ topology, or manual environment.
   `CS1591` project-wide.
 - Prefer constructor injection and standard Microsoft DI. Add an interface only for a real replacement or testing
   boundary; do not abstract data objects, options, framework types, or internal implementation details by default.
+- Keep each class focused on one cohesive responsibility. When orchestration, scheduling, registration lifetime,
+  mutable state management, and protocol I/O start accumulating in one class, extract clearly owned internal
+  collaborators instead of continuing to grow the class. Do not split code mechanically when the extracted type
+  would have no independent responsibility or would only add indirection.
 - Prefer base libraries and existing dependencies. Explain any new production dependency and compatibility impact.
   Do not add a repository `NuGet.config`, hard-code NuGet.org, or create an internal shared package.
 
 ## Testing and validation
 
+- Prefer test-driven development for behavior changes. Start with the smallest test that expresses the intended
+  contract, run it, and confirm that it fails for the expected reason before changing production code. Then implement
+  the smallest coherent change that makes the test pass, rerun the focused test, and finish with the affected complete
+  test project and broader checks required by the change.
+- Do not manufacture a failing test for documentation, mechanical configuration changes, or pure refactors whose
+  behavior is already covered. For those cases, state why a meaningful red phase does not apply and run the relevant
+  characterization, build, formatting, or verification checks instead.
 - Put deterministic isolated tests in `tests/ut`; put Docker-backed behavior in the matching project under `tests/it`;
   keep reusable Testcontainers code in `tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure`; keep performance
   work under `tests/benchmarks`.

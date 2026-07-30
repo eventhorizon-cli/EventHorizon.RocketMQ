@@ -25,7 +25,7 @@ internal sealed class PushConsumerMessageHandler(ILogger<PushConsumerMessageHand
     public ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
         logger.LogInformation(
-            "Received message {MessageId} from {Topic}: {Body}",
+            "Sample-tag consumer received message {MessageId} from {Topic}: {Body}",
             message.MessageId,
             message.Topic,
             Encoding.UTF8.GetString(message.Body));

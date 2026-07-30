@@ -46,12 +46,12 @@ public sealed class RocketMQRequestReplyIntegrationTests(RocketMQContainerFixtur
                 options.InstanceName = $"request-reply-{suffix}";
             })
             .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("request-reply-producer"))
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQRequestReplyIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = async (messages, _, token) =>
+            }, async (messages, _, token) =>
                 {
                     var message = Assert.Single(messages);
                     if (!string.Equals(Encoding.UTF8.GetString(message.Body), requestBody, StringComparison.Ordinal))
@@ -63,8 +63,7 @@ public sealed class RocketMQRequestReplyIntegrationTests(RocketMQContainerFixtur
                     var reply = RemotingReply.FromRequestProperties(message.Properties, Encoding.UTF8.GetBytes(replyBody));
                     await responder.SendReplyAsync(reply, token).ConfigureAwait(false);
                     return ConsumeResult.Success;
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         producer = provider.GetRequiredService<IRemotingProducer>();

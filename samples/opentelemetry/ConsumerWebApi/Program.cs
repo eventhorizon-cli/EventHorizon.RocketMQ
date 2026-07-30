@@ -24,11 +24,11 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
+const string Topic = "eventhorizon-test-topic";
+
 var builder = WebApplication.CreateBuilder(args);
 var grpcClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Client");
-var grpcConsumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Consumer");
 var remotingClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Client");
-var remotingConsumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting:Consumer");
 var openTelemetrySection = builder.Configuration.GetRequiredSection("OpenTelemetry");
 var serviceName = openTelemetrySection.GetValue<string>("ServiceName");
 ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
@@ -67,15 +67,27 @@ builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
     .AddGrpcPushConsumer<GrpcConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        grpcConsumerSection.Bind(options);
-        options.Subscribe("eventhorizon-test-topic");
+        options.GroupName = "eventhorizon-otel-grpc-consumer";
+        options.BatchSize = 16;
+        options.MaxConcurrency = 4;
+        options.MaxDeliveryAttempts = 16;
+        options.InvisibleDuration = TimeSpan.FromSeconds(30);
+        options.ConsumeTimeout = TimeSpan.FromMinutes(15);
+        options.LongPollingTimeout = TimeSpan.FromSeconds(15);
+        options.Subscribe(Topic);
     });
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
     .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        remotingConsumerSection.Bind(options);
-        options.Subscribe("eventhorizon-test-topic");
+        options.GroupName = "eventhorizon-otel-remoting-consumer";
+        options.BatchSize = 16;
+        options.ConsumeMessageBatchSize = 4;
+        options.MaxConcurrency = 4;
+        options.ConsumeTimeout = TimeSpan.FromMinutes(15);
+        options.LongPollingTimeout = TimeSpan.FromSeconds(5);
+        options.RetryDelay = TimeSpan.FromSeconds(1);
+        options.Subscribe(Topic);
     });
 
 var app = builder.Build();
@@ -96,7 +108,7 @@ await app.RunAsync();
 
 static IResult GetConsumers() => Results.Ok(
     new ConsumerStatusResponse(
-        "eventhorizon-test-topic",
+        Topic,
         nameof(IGrpcPushConsumer),
         nameof(IRemotingPushConsumer)));
 

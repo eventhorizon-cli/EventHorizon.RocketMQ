@@ -101,7 +101,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -111,7 +111,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQMultiBrokerRemotingContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     foreach (var message in messages)
                     {
@@ -125,8 +125,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var admin = provider.GetRequiredService<IRemotingAdmin>();
@@ -182,7 +181,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -193,7 +192,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQMultiBrokerRemotingContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = async (messages, _, token) =>
+            }, async (messages, _, token) =>
                 {
                     var body = Encoding.UTF8.GetString(Assert.Single(messages).Body);
                     if (string.Equals(body, slowBody, StringComparison.Ordinal))
@@ -214,8 +213,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                     }
 
                     return ConsumeResult.Success;
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var admin = provider.GetRequiredService<IRemotingAdmin>();
@@ -296,7 +294,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -308,7 +306,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQMultiBrokerRemotingContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     var body = Encoding.UTF8.GetString(Assert.Single(messages).Body);
                     var attempt = attempts.AddOrUpdate(body, 1, static (_, count) => count + 1);
@@ -330,8 +328,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var admin = provider.GetRequiredService<IRemotingAdmin>();
@@ -456,7 +453,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
             })
-            .AddRemotingPushConsumer(options =>
+            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -466,7 +463,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQMultiBrokerRemotingContainerFixture.TestTopic, new FilterExpression(tag));
-                options.MessageHandler = (messages, _, _) =>
+            }, (messages, _, _) =>
                 {
                     foreach (var message in messages)
                     {
@@ -474,8 +471,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                     }
 
                     return ValueTask.FromResult(ConsumeResult.Success);
-                };
-            });
+                });
 
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
     }

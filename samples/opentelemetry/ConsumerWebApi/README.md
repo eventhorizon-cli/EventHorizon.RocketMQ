@@ -42,23 +42,31 @@ builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
     .AddGrpcPushConsumer<GrpcConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        grpcConsumerSection.Bind(options);
-        options.Subscribe("orders");
+        options.GroupName = "eventhorizon-otel-grpc-consumer";
+        options.BatchSize = 16;
+        options.MaxConcurrency = 4;
+        options.LongPollingTimeout = TimeSpan.FromSeconds(15);
+        options.Subscribe("eventhorizon-test-topic");
     });
 
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
     .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        remotingConsumerSection.Bind(options);
-        options.Subscribe("orders");
+        options.GroupName = "eventhorizon-otel-remoting-consumer";
+        options.BatchSize = 16;
+        options.ConsumeMessageBatchSize = 4;
+        options.MaxConcurrency = 4;
+        options.LongPollingTimeout = TimeSpan.FromSeconds(5);
+        options.RetryDelay = TimeSpan.FromSeconds(1);
+        options.Subscribe("eventhorizon-test-topic");
     });
 ```
 
 The .NET host starts and stops both Consumer roles. A scoped gRPC handler is resolved in a new async DI scope for
 each handling attempt; a scoped Remoting handler gets one scope per batch attempt. A singleton handler is shared by
-concurrent deliveries and must be thread-safe. Typed handlers cannot be combined with the corresponding
-`MessageHandler` delegate.
+concurrent deliveries and must be thread-safe. Both automatic Consumer roles resolve their typed handlers and handler
+dependencies from the application container.
 
 ## Trace and metric model
 
@@ -119,8 +127,9 @@ defines span attributes, links, and metric tags.
 
 The application-owned settings are `OpenTelemetry:ServiceName` and `OpenTelemetry:OtlpEndpoint`; override them with
 `OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`. The endpoint must be an absolute HTTP or HTTPS URI,
-and this project exports with OTLP/gRPC. Client, consumer-group, concurrency, timeout, and batch settings remain in
-the protocol-specific `RocketMQ:Grpc` and `RocketMQ:Remoting` sections.
+and this project exports with OTLP/gRPC. `appsettings.json` keeps only the environment-dependent RocketMQ client
+connections under `RocketMQ:Grpc:Client` and `RocketMQ:Remoting:Client`. Consumer groups, subscriptions, concurrency,
+timeouts, retries, and batch sizes are explicit beside each role registration in `Program.cs`.
 
 Start the shared environments and then the Consumer integration:
 

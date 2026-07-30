@@ -21,12 +21,13 @@ using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:PullConsumer");
 
 var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingPullConsumer(options =>
 {
-    consumerSection.Bind(options);
+    options.GroupName = "remoting-sample-pull-consumer";
+    options.BatchSize = 32;
+    options.LongPollingTimeout = TimeSpan.FromSeconds(5);
     options.Subscribe("eventhorizon-test-topic");
 });
 builder.Services.AddHostedService<PullConsumer>();

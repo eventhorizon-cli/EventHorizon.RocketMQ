@@ -107,8 +107,8 @@ request, route refresh, and heartbeat timing. Set `UseTLS` to use TLS. `AccessKe
 `Namespace` qualifies topics and consumer groups. The `AddRocketMQGrpc` return value is the builder
 used to add Producer and Consumer roles.
 
-When one host needs multiple clusters or multiple instances of the same role, add a keyed client registration.
-Its `registrationName` is also used as the .NET keyed-service key.
+When one host needs multiple clusters, independent connection settings, or another Producer, add a keyed client
+registration. Its `registrationName` is also used as the .NET keyed-service key.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -125,9 +125,50 @@ public sealed class OrderPublisher(
 }
 ```
 
-A role can be registered only once per client registration. The default client registration uses ordinary constructor
-injection. When clients are resolved from a standalone `ServiceProvider` instead of a Generic Host,
-call their `StartAsync` and `StopAsync` methods explicitly.
+A Producer can be registered only once per client registration. Consumer methods can be called repeatedly on the same
+builder, and every call creates an instance with isolated options, logical client ID, receive engine, handler binding,
+and hosted lifecycle. The instances share HTTP/2 channels within that client registration; channel sharing does not
+merge their logical identities or subscriptions.
+
+### Multiple Consumers in one client registration
+
+The existing registration signatures configure each Consumer independently. For example, these Push Consumers use
+different groups and topics while sharing the `AddRocketMQGrpc` connection configuration:
+
+```csharp
+var rocketMQ = builder.Services.AddRocketMQGrpc(options =>
+{
+    options.Endpoint = "proxy:8081";
+});
+
+rocketMQ.AddGrpcPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders", new FilterExpression("created"));
+});
+
+rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
+
+For a default client registration, inject `IEnumerable<IGrpcPushConsumer>` to obtain both instances. For a keyed
+registration, call `GetKeyedServices<IGrpcPushConsumer>(registrationName)`. Singular resolution returns the last
+registered Consumer, following Microsoft DI ordering.
+
+Ordinary Push subscription combinations have the following semantics:
+
+| Consumer registrations | Behavior |
+| --- | --- |
+| Same group and identical topic/filter subscriptions | Valid clustered replicas; assignments are load-balanced between them. |
+| Different groups and the same topic | Fan-out; each group receives the topic stream independently. |
+| Different groups and different topics | Independent consumption. |
+| Same group and different topics or filters | Invalid; registration rejects the inconsistent ordinary Push subscriptions. |
+
+The default client registration uses ordinary constructor injection. When clients are resolved from a standalone
+`ServiceProvider` instead of a Generic Host, call their `StartAsync` and `StopAsync` methods explicitly.
 
 ## OpenTelemetry
 
@@ -323,10 +364,11 @@ Return `Success` to acknowledge a message, `Retry` to make it available for rede
 `DeadLetter` to forward it to the dead-letter queue. Corrupted messages do not reach the handler:
 ordinary messages become available for redelivery, while corrupted FIFO messages are dead-lettered
 before the next group member is released. Runtime subscription changes reconcile receivers
-immediately. The generic registration selects the handler lifetime for the current client registration:
-`Singleton` creates one handler per client registration/role and must be thread-safe; `Scoped` and `Transient`
-resolve a handler in a new async service scope for each handling attempt. The `MessageHandler`
-delegate remains available for small stateless callbacks, but cannot be combined with a typed handler.
+immediately. The generic registration selects the handler lifetime for the current Consumer instance:
+`Singleton` creates one handler per Consumer instance and must be thread-safe; `Scoped` and `Transient`
+resolve a handler in a new async service scope for each handling attempt. Automatic dispatch requires a typed
+`IGrpcPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped dependencies
+such as a database context.
 For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. On expiry, the handler cancellation token is
 canceled, client invisibility renewal stops, and the message is requested for retry; a late successful handler result
 is ignored. Retried delivery can overlap code that ignored cancellation, so handlers must be idempotent. The client
@@ -358,6 +400,10 @@ Do not call the inherited `Subscribe` method or configure normal topic subscript
 sends the complete configured LiteTopic set when it starts, reconciles that set periodically, and supports
 runtime changes through `SubscribeLiteAsync` and `UnsubscribeLiteAsync`. Lite Push uses the same
 `IGrpcPushMessageHandler` and lifetime semantics as standard Push:
+
+Unlike ordinary Push subscriptions, LiteTopic sets do not have to be identical across LitePush instances in the same
+consumer group. They may own different LiteTopic sets, but the client requires every instance in that group to use the
+same bind topic. The Proxy remains authoritative for the group and bind-topic configuration.
 
 ```csharp
 await consumer.SubscribeLiteAsync(

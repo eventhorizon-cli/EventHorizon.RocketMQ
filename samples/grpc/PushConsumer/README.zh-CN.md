@@ -15,34 +15,36 @@ Broker queue 并管理数字 offset，请使用经典 Remoting Pull。
 
 ## SDK 工作流
 
-注册 gRPC 传输，并为类型化 handler 指定明确的依赖注入生命周期：
+只注册一次 gRPC 传输，再为每个 Consumer 分别添加类型化 handler 和 options：
 
 ```csharp
-rocketMQ.AddGrpcPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
-{
-    options.GroupName = "orders-push-consumer";
-    options.MaxConcurrency = 8;
-    options.Subscribe("orders", new FilterExpression("created"));
-});
+const string Topic = "eventhorizon-test-topic";
 
-public sealed class OrderMessageHandler : IGrpcPushMessageHandler
-{
-    public async ValueTask<ConsumeResult> HandleAsync(
-        GrpcMessageView message,
-        CancellationToken cancellationToken)
+builder.Services
+    .AddRocketMQGrpc(clientSection.Bind)
+    .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        await ProcessAsync(message.Body, cancellationToken);
-        return ConsumeResult.Success;
-    }
-
-    private static Task ProcessAsync(byte[] body, CancellationToken cancellationToken) =>
-        Task.CompletedTask;
-}
+        options.GroupName = "rocketmq-dotnet-grpc-push-sample";
+        options.MaxConcurrency = 4;
+        options.BatchSize = 16;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddGrpcPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "rocketmq-dotnet-grpc-push-all-messages";
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.Subscribe(Topic);
+    });
 ```
 
+每次调用 `AddGrpcPushConsumer` 都会创建独立的逻辑 Consumer，分别拥有自己的 group、订阅、handler、本地缓冲、并发配置和
+Host 生命周期。两个角色仍属于同一个 `AddRocketMQGrpc` 注册，并复用连接到已配置 Proxy 的底层传输 channel pool。
+连接和凭据放在 `appsettings.json`；订阅和处理策略则直接写在 `Program.cs`，便于比较。
+
 `Scoped` 和 `Transient` handler 会在每次处理尝试中新建异步 scope，再从中解析。`Singleton` handler 会被并发调用共享，
-因此必须线程安全。对于很小的无状态回调，可以使用非泛型注册并设置 `GrpcPushConsumerOptions.MessageHandler`；委托和类型化
-handler 不能同时配置。
+因此必须线程安全。自动分发始终使用由应用容器解析的 `IGrpcPushMessageHandler` typed handler。handler 需要数据库上下文等
+scoped 应用服务时应选择 `Scoped`，并通过构造函数注入这些依赖。
 
 Generic Host 集成会为已注册角色调用 `StartAsync` 和 `StopAsync`。不使用 Host 时，应用必须通过 `IGrpcPushConsumer`
 管理生命周期。`SubscribeAsync` 和 `UnsubscribeAsync` 用于在启动后修改当前 topic 和过滤条件；Options 上的 `Subscribe`
@@ -71,6 +73,10 @@ handler 运行期间，客户端会续期消息的不可见时间。对于非 FI
 `MaxConcurrency` 控制本地 handler 并发，不代表 Broker queue 数量。FIFO 顺序只在一个 message group 内成立，不是跨
 queue、consumer group 或 Consumer 实例的全局顺序。使用相同 consumer group 的实例会共享分配和重试状态。
 
+不同 group 会分别独立消费 topic。同一 group 的 Consumer 则是集群副本：它们必须配置完全相同的 topic 和 filter
+订阅，并共同分配消息，而不是每个实例都收到一份。同一个 `AddRocketMQGrpc` 注册中的普通 Push Consumer 如果复用 group
+却配置了不同订阅，注册会在本地失败。
+
 ## 关键 SDK options
 
 | Option | 控制内容 |
@@ -96,8 +102,10 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/grpc/PushConsumer
 ```
 
-可运行代码订阅 `eventhorizon-test-topic`，并使用 `sample` tag 过滤。可通过
-[Producer 示例](../Producer/README.zh-CN.md)或其他兼容 Producer 发送匹配消息。
+可运行代码在本地环境创建的同一个普通 topic 上注册两个 Consumer。group
+`rocketmq-dotnet-grpc-push-sample` 只接收 `sample` tag，group
+`rocketmq-dotnet-grpc-push-all-messages` 接收全部 tag。因为 group 不同，一条 `sample` 消息会独立投递给两个类型化
+handler。可通过 [Producer 示例](../Producer/README.zh-CN.md)发送这种消息。
 
 完整 handler、订阅和 Proxy 行为请参阅
 [gRPC 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)与

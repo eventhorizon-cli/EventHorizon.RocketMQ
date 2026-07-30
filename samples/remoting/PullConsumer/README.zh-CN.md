@@ -27,6 +27,10 @@ Broker 位点操作，但不会在应用实例之间分配队列，也不会把�
 通过 `AddRemotingPullConsumer` 注册此角色。`ConsumerOptions.Subscribe` 将 topic 与 tag 或 SQL92 过滤条件关联；
 使用 SQL92 过滤还要求目标 Broker 允许属性过滤。
 
+同一个 `AddRocketMQRemoting` 注册可以包含多个配置彼此独立的 Pull Consumer，并在它们之间复用 NameServer、路由和
+连接基础设施。每次调用都有自己的 group、订阅、options 和生命周期；同一 group 中的底层 Pull Consumer 仍需由应用
+协调队列归属。
+
 标准读取流程是显式的：
 
 1. `GetMessageQueuesAsync` 返回已订阅 topic 的可读 `RemotingPullMessageQueue`。
@@ -63,7 +67,8 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj
 ```
 
-默认 NameServer 为 `localhost:9876`。使用外部环境时，进程必须同时能访问 NameServer 和路由数据中公布的每个
+`appsettings.json` 只保存 NameServer 连接设置，Consumer 角色参数都直接写在 `Program.cs` 的注册旁。默认
+NameServer 为 `localhost:9876`。使用外部环境时，进程必须同时能访问 NameServer 和路由数据中公布的每个
 Broker 地址、创建普通 topic，并为该 group 授予路由查询和消费权限。Consumer 启动后，可用 Remoting Producer
 示例发送消息。
 

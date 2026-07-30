@@ -29,7 +29,7 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtur
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcFifoMessagesRemainOrderedWithConcurrentWorkers()
+    public async Task GrpcFifoMessagesRemainOrderedWithConcurrentConsumeLoops()
     {
         const int messageCount = 8;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -41,27 +41,15 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtur
         var received = new ConcurrentQueue<int>();
         var allReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var services = new ServiceCollection();
+        services.AddSingleton(new FifoMessageObservation(tag, messageCount, received, allReceived));
         services
             .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
-            .AddGrpcPushConsumer(options =>
+            .AddGrpcPushConsumer<FifoMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.GroupName = consumerGroup;
                 options.MaxConcurrency = 4;
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (message, _) =>
-                {
-                    if (message.Tag == tag && int.TryParse(Encoding.UTF8.GetString(message.Body), out var sequence))
-                    {
-                        received.Enqueue(sequence);
-                        if (received.Count == messageCount)
-                        {
-                            allReceived.TrySetResult();
-                        }
-                    }
-
-                    return ValueTask.FromResult(ConsumeResult.Success);
-                };
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -89,6 +77,32 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtur
         {
             await consumer.StopAsync(CancellationToken.None);
             await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed record FifoMessageObservation(
+        string Tag,
+        int MessageCount,
+        ConcurrentQueue<int> Received,
+        TaskCompletionSource AllReceived);
+
+    private sealed class FifoMessageHandler(FifoMessageObservation observation) : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken)
+        {
+            if (message.Tag == observation.Tag &&
+                int.TryParse(Encoding.UTF8.GetString(message.Body), out var sequence))
+            {
+                observation.Received.Enqueue(sequence);
+                if (observation.Received.Count == observation.MessageCount)
+                {
+                    observation.AllReceived.TrySetResult();
+                }
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Success);
         }
     }
 }

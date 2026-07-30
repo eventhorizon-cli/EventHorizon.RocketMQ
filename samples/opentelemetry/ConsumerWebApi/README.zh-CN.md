@@ -39,22 +39,30 @@ builder.Services
     .AddRocketMQGrpc(grpcClientSection.Bind)
     .AddGrpcPushConsumer<GrpcConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        grpcConsumerSection.Bind(options);
-        options.Subscribe("orders");
+        options.GroupName = "eventhorizon-otel-grpc-consumer";
+        options.BatchSize = 16;
+        options.MaxConcurrency = 4;
+        options.LongPollingTimeout = TimeSpan.FromSeconds(15);
+        options.Subscribe("eventhorizon-test-topic");
     });
 
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
     .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        remotingConsumerSection.Bind(options);
-        options.Subscribe("orders");
+        options.GroupName = "eventhorizon-otel-remoting-consumer";
+        options.BatchSize = 16;
+        options.ConsumeMessageBatchSize = 4;
+        options.MaxConcurrency = 4;
+        options.LongPollingTimeout = TimeSpan.FromSeconds(5);
+        options.RetryDelay = TimeSpan.FromSeconds(1);
+        options.Subscribe("eventhorizon-test-topic");
     });
 ```
 
 .NET Host 会启动和停止两个 Consumer 角色。Scoped gRPC handler 的每次处理尝试都会创建新的异步 DI scope；Scoped
-Remoting handler 则每个批次尝试使用一个 scope。Singleton handler 会被并发投递共享，因此必须线程安全。typed
-handler 不能与对应的 `MessageHandler` delegate 同时使用。
+Remoting handler 则每个批次尝试使用一个 scope。Singleton handler 会被并发投递共享，因此必须线程安全。两个自动
+Consumer 角色都会从应用容器解析 typed handler 及其依赖。
 
 ## Trace 与 metric 模型
 
@@ -106,8 +114,9 @@ Remoting FIFO 与 orderly 路径只投递单消息列表，不支持批量部分
 
 应用自有配置为 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`；可通过
 `OpenTelemetry__ServiceName` 和 `OpenTelemetry__OtlpEndpoint` 覆盖。Endpoint 必须是绝对 HTTP 或 HTTPS URI，
-本项目使用 OTLP/gRPC 导出。客户端、Consumer Group、并发、超时和批量设置仍放在协议专用的 `RocketMQ:Grpc`
-与 `RocketMQ:Remoting` 配置节。
+本项目使用 OTLP/gRPC 导出。`appsettings.json` 仅在 `RocketMQ:Grpc:Client` 和
+`RocketMQ:Remoting:Client` 中保留随环境变化的 RocketMQ 客户端连接信息；Consumer Group、订阅、并发、超时、
+重试与批量设置都直接写在 `Program.cs` 的对应角色注册旁。
 
 启动共享环境，再运行 Consumer 集成：
 

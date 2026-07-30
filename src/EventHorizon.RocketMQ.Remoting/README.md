@@ -653,6 +653,14 @@ options.ConsumeTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
 The initial position does not reset an existing group offset, and retry queues retain their recovery
 position.
 
+`StartAsync` starts the Consumer lifecycle and schedules receiver initialization; it does not guarantee that every
+newly assigned queue has already resolved and persisted its first offset or issued its first pull. With the default
+`End` policy, a record published after `StartAsync` returns but before that initial offset query can be behind the
+resolved end offset and is intentionally skipped. This matches classic RocketMQ's `CONSUME_FROM_LAST_OFFSET`
+semantics. Use `Beginning`, `Timestamp`, an existing committed group offset, or an explicit application readiness
+handshake when a deployment cutover must include every record. Tests that are not testing startup timing should set a
+deterministic initial position or establish readiness before publishing.
+
 Broadcasting assigns every readable queue to every consumer instance and stores offsets locally:
 
 ```csharp

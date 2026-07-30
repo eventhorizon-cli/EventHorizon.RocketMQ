@@ -611,6 +611,12 @@ options.ConsumeTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
 
 起始位置不会重置已有的消费组位点，重试队列也会保留其恢复位置。
 
+`StartAsync` 会启动 Consumer 生命周期并安排接收器初始化，但不保证每个新分配队列都已完成首个 offset 的查询和持久化，
+也不保证已经发起首个拉取。默认的 `End` 策略下，若消息在 `StartAsync` 返回后、首个 offset 查询完成前写入，它可能位于
+最终解析出的队尾之前，因此会被有意跳过。这与经典 RocketMQ 的 `CONSUME_FROM_LAST_OFFSET` 语义一致。部署切换必须包含
+每条消息时，应使用 `Beginning`、`Timestamp`、已有的消费组已提交位点，或显式的应用就绪握手。并非测试启动时序的测试应
+设置确定性的初始位置，或在发送前建立就绪条件。
+
 广播消费会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点：
 
 ```csharp

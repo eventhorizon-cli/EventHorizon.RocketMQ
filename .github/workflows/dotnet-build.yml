@@ -127,9 +127,53 @@ jobs:
           name: ${{ matrix.coverage_name }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  net8_runtime:
+    name: ${{ matrix.name }} .NET 8 runtime validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gRPC
+            test_project: tests/ut/EventHorizon.RocketMQ.Grpc.Tests/EventHorizon.RocketMQ.Grpc.Tests.csproj
+          - name: Remoting
+            test_project: tests/ut/EventHorizon.RocketMQ.Remoting.Tests/EventHorizon.RocketMQ.Remoting.Tests.csproj
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET SDKs
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.*.props', '**/Directory.*.targets', 'NuGet.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore .NET 8 runtime validation
+        run: >-
+          dotnet restore "${{ matrix.test_project }}"
+          -p:TargetFramework=net8.0
+
+      - name: Test .NET 8 runtime validation
+        run: >-
+          dotnet test "${{ matrix.test_project }}"
+          --configuration Release
+          --no-restore
+          -p:TargetFramework=net8.0
+
   integration:
     name: ${{ matrix.protocol }} ${{ matrix.topology }} Docker integration tests and coverage
-    needs: [validate, unit_tests]
+    needs: [validate, unit_tests, net8_runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 40
 

@@ -90,6 +90,9 @@ so a failed assertion cannot leave Consumer processes running in CI.
 The publishable gRPC and Remoting packages target `net8.0` and `net10.0`. All unit, compatibility, integration,
 sample, and BenchmarkDotNet projects target `net10.0`; `net8.0` remains only as a supported package target. The
 solution build compiles both package targets while runnable repository projects use the SDK selected by `global.json`.
+CI also executes the gRPC and Remoting unit suites against `net8.0` through a command-line target-framework override.
+The test projects still declare `net10.0`; the override verifies the published `net8.0` library assets without
+expanding the repository's runnable-project target policy.
 
 Remoting BenchmarkDotNet measurements remain separate from the test runner in
 [`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks).
@@ -157,7 +160,9 @@ them.
 
 GitHub Actions runs formatting and a full solution build in one job while three protocol/compatibility unit-test jobs
 run in parallel. Each unit-test job restores, builds and tests its `net10.0` project, and uploads its own coverage
-report; the solution build and release pack verify both target frameworks of each publishable library.
+report. Two additional non-coverage jobs install the .NET 8 runtime and run the protocol unit suites with
+`-p:TargetFramework=net8.0`; the solution build and release pack verify both target frameworks of each publishable
+library.
 After both stages complete, Docker-backed gRPC and Remoting integration tests run in four parallel `ubuntu-latest`
 matrix jobs: one single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
 selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores

@@ -126,6 +126,14 @@ Failures retry after one second, and a periodic fallback capped at 20 seconds re
 heartbeat, membership-query, and unregister operations belong to `RemotingConsumerGroupSession`; orderly queue lock
 and unlock commands belong to `RemotingPushQueueLockManager`.
 
+Consumer lifecycle readiness and initial-offset readiness are separate. `StartAsync` creates the lifecycle and starts
+assignment reconciliation, but concurrent queue receivers resolve their initial offsets asynchronously. For a fresh
+group using the default end position, a record written before a receiver resolves its first `maxOffset` can be behind
+that position and is intentionally outside the group's consumption range. This is the classic Java
+`CONSUME_FROM_LAST_OFFSET` behavior, not a Rebalance or typed-handler failure. Applications that need a precise
+cutover must choose a beginning or timestamp position, preserve a committed group offset, or establish an explicit
+readiness handshake. Integration tests must not use the default end position to assert delivery across this boundary.
+
 For orderly Push, a denied initial lock or a failed lock renewal leaves reconciliation incomplete so the participant
 retries it. The consumer never dispatches a queue until the Broker has granted its lock.
 

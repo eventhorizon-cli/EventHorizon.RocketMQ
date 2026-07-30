@@ -1,5 +1,6 @@
 # EventHorizon.RocketMQ
 
+[![.NET Build](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/actions/workflows/dotnet-build.yml/badge.svg?branch=main)](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/actions/workflows/dotnet-build.yml)
 [![NuGet gRPC](https://img.shields.io/nuget/vpre/EventHorizon.RocketMQ.Grpc.svg?label=NuGet%20gRPC)](https://www.nuget.org/packages/EventHorizon.RocketMQ.Grpc)
 [![NuGet Remoting](https://img.shields.io/nuget/vpre/EventHorizon.RocketMQ.Remoting.svg?label=NuGet%20Remoting)](https://www.nuget.org/packages/EventHorizon.RocketMQ.Remoting)
 [![Codecov](https://codecov.io/gh/eventhorizon-cli/EventHorizon.RocketMQ/graph/badge.svg)](https://codecov.io/gh/eventhorizon-cli/EventHorizon.RocketMQ)

@@ -150,6 +150,11 @@ value: the Broker group offset in clustering mode, or the instance's local offse
 not reset an existing position. Retry queues retain their recovery boundaries and do not use this normal-queue
 starting policy.
 
+This sample sets `InitialPosition` to `End`, the default for a fresh group. `StartAsync` does not make that initial
+offset query a deployment cutover: a message published before a newly assigned receiver resolves its first offset can
+be considered existing backlog and skipped. Choose `Beginning` or `Timestamp` for deliberate replay, or use a
+committed group offset or application readiness handshake when the cutover must include every message.
+
 ## Run the sample
 
 The runnable sample registers two scoped typed handlers over `eventhorizon-test-topic`. Group

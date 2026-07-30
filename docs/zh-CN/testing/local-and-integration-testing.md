@@ -35,6 +35,8 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 可发布的 gRPC 与 Remoting Package 提供 `net8.0` 和 `net10.0` 两个目标。所有单元测试、兼容性测试、集成测试、
 sample 和 BenchmarkDotNet 项目统一使用 `net10.0`；`net8.0` 只作为 Package 的受支持 target 保留。solution build
 仍会编译两个 Package 目标，仓库内可运行项目则使用 `global.json` 选择的 SDK。
+CI 还会通过命令行 target-framework override 在 `net8.0` 上执行 gRPC 和 Remoting 单元测试。测试项目本身仍声明
+`net10.0`；该 override 用于验证已发布 Package 的 `net8.0` 资产，而不扩展仓库内可运行项目的 target 策略。
 
 Remoting BenchmarkDotNet 测量独立于 test runner，位于
 [`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks)。
@@ -175,7 +177,8 @@ Docker 不可用时，应报告没有运行哪一个 integration test 以及原�
 
 GitHub Actions 会在一个 job 中完成格式化和 solution 全量构建，同时并行运行三个按协议/兼容性拆分的单元测试
 job。每个单元测试 job 都会 restore、build、运行对应的 `net10.0` 测试项目并单独上传覆盖率报告；solution build
-和发版 pack 负责验证两个可发布库的全部目标框架。两层验证均通过后，再于四个
+另有两个不上传覆盖率的 job 会安装 .NET 8 runtime，并用 `-p:TargetFramework=net8.0` 运行两个协议的单元测试；
+solution build 和发版 pack 负责验证两个可发布库的全部目标框架。两层验证均通过后，再于四个
 并行的 `ubuntu-latest` matrix job 运行 Docker 驱动的 gRPC 与 Remoting integration test：每个协议各有一个
 single-Broker 与一个 multi-Broker job。类级别的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；
 single-Broker job 运行其余测试。每个 job 只 restore

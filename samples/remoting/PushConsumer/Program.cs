@@ -15,6 +15,7 @@
 
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,6 +33,9 @@ builder.Services
     .AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         options.GroupName = "remoting-sample-push-consumer";
+        // Fresh groups start at End. Records published before first offset resolution are existing backlog;
+        // use Beginning or Timestamp for replay, or an application readiness handshake for a precise cutover.
+        options.InitialPosition = ConsumeFromPosition.End;
         options.MaxConcurrency = 4;
         options.BatchSize = 32;
         options.ConsumeMessageBatchSize = 4;
@@ -40,6 +44,7 @@ builder.Services
     .AddRemotingPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         options.GroupName = "remoting-all-messages-push-consumer";
+        options.InitialPosition = ConsumeFromPosition.End;
         options.MaxConcurrency = 2;
         options.BatchSize = 8;
         options.ConsumeMessageBatchSize = 1;

@@ -119,6 +119,12 @@ Broker 成员变化
 共享 heartbeat、成员查询和 unregister 操作归 `RemotingConsumerGroupSession` 所有；顺序消费的队列 lock/unlock
 命令归 `RemotingPushQueueLockManager` 所有。
 
+Consumer 生命周期就绪与初始位点就绪是两件事。`StartAsync` 会创建生命周期并启动 assignment 收敛，但并发队列接收器的
+初始位点仍会异步解析。对于使用默认末尾位置的新 group，若消息在接收器解析首个 `maxOffset` 前写入，该消息可能位于该
+位置之前，因此有意不属于该 group 的消费范围。这是经典 Java `CONSUME_FROM_LAST_OFFSET` 的行为，不是 Rebalance 或
+typed handler 的故障。需要精确切换边界的应用应选择起始或时间戳位置、保留已提交的 group 位点，或建立显式的就绪握手。
+集成测试不能依赖默认末尾位置来断言跨越此边界的消息送达。
+
 对于顺序 Push，初始 lock 被拒绝或 lock 续期失败都会使本次收敛保持未完成状态，participant 会重试。只有 Broker
 授予队列锁后，Consumer 才会开始分发该队列。
 

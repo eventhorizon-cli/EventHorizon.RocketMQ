@@ -134,6 +134,9 @@ alive, while isolated same-group members each maintain their own membership. Dir
 intentionally do not create background consumer-group membership or heartbeat loops; Producers maintain their own
 producer heartbeat lifecycle.
 
+Clearing a LitePull manual assignment with `AssignAsync([])` ends that active membership immediately: the session
+unregisters from its known Brokers, while retaining those endpoints so shutdown can retry an unsuccessful unregister.
+
 Consumer lifecycle readiness and initial-offset readiness are separate. `StartAsync` creates the lifecycle and starts
 assignment reconciliation, but concurrent queue receivers resolve their initial offsets asynchronously. For a fresh
 group using the default end position, a record written before a receiver resolves its first `maxOffset` can be behind

@@ -435,6 +435,7 @@ public sealed class OrderLitePuller(IRemotingLitePullConsumer consumer)
 订阅和手动分配不能同时使用。手动模式不要配置订阅，通过 `GetMessageQueuesAsync` 发现队列后，将选中的
 队列传给 `AssignAsync`。可使用 `Pause`、`Resume`、`Seek`、`SeekToBeginningAsync` 和
 `SeekToEndAsync` 控制本地拉取位点。
+向 `AssignAsync` 传入空集合会清除手动分配，并立即向已知 Broker 注销该 LitePull 消费组成员。
 
 Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长轮询，而不是协议层面的 Broker Push；当前
 有意不提供广播模式的本地位点存储。

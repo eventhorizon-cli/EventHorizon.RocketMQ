@@ -456,6 +456,8 @@ public sealed class OrderLitePuller(IRemotingLitePullConsumer consumer)
 Subscriptions and manual assignment are mutually exclusive. For manual mode, configure no subscriptions,
 discover queues through `GetMessageQueuesAsync`, and pass the selected queues to `AssignAsync`. Use
 `Pause`, `Resume`, `Seek`, `SeekToBeginningAsync`, or `SeekToEndAsync` to control local polling positions.
+Passing an empty collection to `AssignAsync` clears the manual assignment and immediately unregisters the
+LitePull consumer-group member from its known Brokers.
 
 Lite Pull currently supports clustered consumption only. It is still client-initiated Broker long polling,
 not protocol-level Broker push; broadcast local-offset storage is intentionally not provided.

@@ -329,6 +329,7 @@ public sealed class RemotingLitePullConsumerTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
         var heartbeats = new List<byte[]>();
+        var unregisterCount = 0;
         var engine = CreateEngine();
         engine
             .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
@@ -343,7 +344,7 @@ public sealed class RemotingLitePullConsumerTests
         var remoting = CreateRemotingClient(request => request.Code switch
         {
             RequestCode.HeartBeat => CaptureHeartbeat(request, heartbeats),
-            RequestCode.UnregisterClient => SuccessResponse(),
+            RequestCode.UnregisterClient => CountUnregister(ref unregisterCount),
             _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
         });
         var rebalance = new TestRemotingRebalanceService();
@@ -367,6 +368,10 @@ public sealed class RemotingLitePullConsumerTests
         Assert.True(await rebalance.RebalanceAsync("orders-consumer", cancellationToken));
 
         Assert.Equal(2, heartbeats.Count);
+
+        await consumer.AssignAsync([], cancellationToken);
+
+        Assert.Equal(1, unregisterCount);
     }
 
     [Fact]

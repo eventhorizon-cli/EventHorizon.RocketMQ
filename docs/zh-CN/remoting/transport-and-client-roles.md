@@ -125,6 +125,9 @@ Broker 成员变化
 可以保持多个不同 group 的活跃状态，而同组的隔离成员会分别维护自己的 membership。直接 Pull 和 POP 是显式 API，
 有意不创建后台消费组成员关系或 heartbeat 循环；Producer 维护自己的 producer heartbeat 生命周期。
 
+通过 `AssignAsync([])` 清除 LitePull 手工分配会立即结束该活跃成员关系：session 会向已知 Broker 注销，同时保留这些
+端点，以便 shutdown 时可重试一次失败的注销。
+
 Consumer 生命周期就绪与初始位点就绪是两件事。`StartAsync` 会创建生命周期并启动 assignment 收敛，但并发队列接收器的
 初始位点仍会异步解析。对于使用默认末尾位置的新 group，若消息在接收器解析首个 `maxOffset` 前写入，该消息可能位于该
 位置之前，因此有意不属于该 group 的消费范围。这是经典 Java `CONSUME_FROM_LAST_OFFSET` 的行为，不是 Rebalance 或

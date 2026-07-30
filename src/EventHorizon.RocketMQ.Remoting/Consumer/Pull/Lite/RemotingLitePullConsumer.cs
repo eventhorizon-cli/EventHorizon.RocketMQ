@@ -243,15 +243,23 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                run.ManualAssignment = requestedQueues.Length > 0;
+                var wasManualAssignment = run.ManualAssignment;
+                var hasManualAssignment = requestedQueues.Length > 0;
+                run.ManualAssignment = hasManualAssignment;
                 await ReconcileAssignmentsAsync(run, requestedQueues, cancellationToken).ConfigureAwait(false);
-                if (run.ManualAssignment)
+                if (hasManualAssignment)
                 {
                     // Manual assignment does not use group allocation, but LitePull still represents an active
                     // classic group member. Retain every assigned Broker so the initial and periodic heartbeats
                     // keep that membership visible while the manual assignment remains active.
                     AddKnownBrokers(run, requestedQueues);
                     await SendHeartbeatsAsync(run, [], cancellationToken).ConfigureAwait(false);
+                }
+                else if (wasManualAssignment)
+                {
+                    // Clearing the final manual assignment ends this consumer's group membership immediately.
+                    // Keep the Broker endpoints for ShutdownRunAsync so a transient unregister failure is retried.
+                    await _groupSession.UnregisterAsync(run.KnownBrokers.Values).ConfigureAwait(false);
                 }
             }
             finally

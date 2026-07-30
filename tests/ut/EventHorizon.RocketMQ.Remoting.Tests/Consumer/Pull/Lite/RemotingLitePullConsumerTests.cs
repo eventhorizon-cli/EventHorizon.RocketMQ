@@ -110,7 +110,7 @@ public sealed class RemotingLitePullConsumerTests
         engine
             .Setup(value => value.UpdateOffsetAsync(queue, 5, It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
-        var remoting = CreateRemotingClient();
+        var remoting = CreateManualAssignmentRemotingClient();
         var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
 
         {
@@ -229,7 +229,7 @@ public sealed class RemotingLitePullConsumerTests
         engine
             .Setup(value => value.UpdateOffsetAsync(queue, 10, It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
-        var remoting = CreateRemotingClient();
+        var remoting = CreateManualAssignmentRemotingClient();
         var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
 
         {
@@ -300,7 +300,7 @@ public sealed class RemotingLitePullConsumerTests
         engine
             .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
-        var remoting = CreateRemotingClient();
+        var remoting = CreateManualAssignmentRemotingClient();
 
         await using var consumer = CreateConsumer(
             new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
@@ -321,6 +321,52 @@ public sealed class RemotingLitePullConsumerTests
         Assert.Empty(consumer.Assignment);
         engine.Verify(value => value.SetSubscription("orders", FilterExpression.All), Times.Once);
         engine.Verify(value => value.RemoveSubscription("orders"), Times.Once);
+    }
+
+    [Fact]
+    public async Task ManualAssignment_HeartbeatsImmediatelyAndWhenRebalanced()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+        var heartbeats = new List<byte[]>();
+        var engine = CreateEngine();
+        engine
+            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(-1L);
+        engine
+            .Setup(value => value.QueryOffsetAsync(
+                queue,
+                QueryOffsetPolicy.End,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0L);
+        var remoting = CreateRemotingClient(request => request.Code switch
+        {
+            RequestCode.HeartBeat => CaptureHeartbeat(request, heartbeats),
+            RequestCode.UnregisterClient => SuccessResponse(),
+            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
+        });
+        var rebalance = new TestRemotingRebalanceService();
+
+        await using var consumer = CreateConsumer(
+            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
+            engine.Object,
+            remoting.Object,
+            rebalance);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken);
+
+        var initialHeartbeat = Assert.Single(heartbeats);
+        using (var document = JsonDocument.Parse(initialHeartbeat))
+        {
+            var consumerData = Assert.Single(document.RootElement.GetProperty("consumerDataSet").EnumerateArray());
+            Assert.Equal("CONSUME_ACTIVELY", consumerData.GetProperty("consumeType").GetString());
+            Assert.Empty(consumerData.GetProperty("subscriptionDataSet").EnumerateArray());
+        }
+
+        Assert.True(await rebalance.RebalanceAsync("orders-consumer", cancellationToken));
+
+        Assert.Equal(2, heartbeats.Count);
     }
 
     [Fact]
@@ -349,7 +395,7 @@ public sealed class RemotingLitePullConsumerTests
         engine
             .Setup(value => value.PullAsync(queue, 9L, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new RemotingPullResult([], 10L, RemotingPullStatus.NoNewMessage));
-        var remoting = CreateRemotingClient();
+        var remoting = CreateManualAssignmentRemotingClient();
 
         await using var consumer = CreateConsumer(
             new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
@@ -404,7 +450,7 @@ public sealed class RemotingLitePullConsumerTests
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
                 return new RemotingPullResult([], 0L, RemotingPullStatus.NoNewMessage);
             });
-        var remoting = CreateRemotingClient();
+        var remoting = CreateManualAssignmentRemotingClient();
 
         await using var consumer = CreateConsumer(
             new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
@@ -571,6 +617,9 @@ public sealed class RemotingLitePullConsumerTests
         return remoting;
     }
 
+    private static Mock<IRemotingClient> CreateManualAssignmentRemotingClient() =>
+        CreateRemotingClient(DefaultMaintenanceResponse);
+
     private static RemotingLitePullConsumer CreateConsumer(
         RemotingLitePullConsumerOptions options,
         IRemotingConsumerEngine engine,
@@ -596,6 +645,18 @@ public sealed class RemotingLitePullConsumerTests
         heartbeat = request.Body;
         return SuccessResponse();
     }
+
+    private static RemotingCommand CaptureHeartbeat(RemotingCommand request, List<byte[]> heartbeats)
+    {
+        heartbeats.Add(Assert.IsType<byte[]>(request.Body));
+        return SuccessResponse();
+    }
+
+    private static RemotingCommand DefaultMaintenanceResponse(RemotingCommand request) => request.Code switch
+    {
+        RequestCode.HeartBeat or RequestCode.UnregisterClient => SuccessResponse(),
+        _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
+    };
 
     private static RemotingCommand ConsumerListResponse(params string[] consumerIds) =>
         new()

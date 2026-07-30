@@ -69,13 +69,20 @@ gRPC 的实现可从
 
 同一客户端注册不等于每个 Consumer 都创建一套物理连接。gRPC Consumer 会共享 HTTP/2 channel，但仍使用
 不同的逻辑 client ID 和请求元数据。Remoting 会在经典协议身份允许时共享 NameServer 发现、路由状态和
-Broker 连接；不同消费组可共享连接，但同一消费组下重复注册的活跃组成员（Push 或 LitePull）必须使用不同
-Broker 连接，因为经典 Broker 以连接 channel 标识消费组成员。
+Broker 连接；不同消费组可共享连接，但同一 Push 或 LitePull 消费组下重复配置的成员必须使用不同 Broker
+连接：经典 Broker 的消费组表以连接 channel 作为成员键，同一 channel 上另一 client ID 的 heartbeat 会替换
+已有条目。
 
-每个物理 Remoting Client 拥有一个内部 `RemotingRebalanceService`。共享该 Client 的不同 group 会共用唯一的
-`NotifyConsumerIdsChanged` 请求处理器和周期兜底，但每个 group 都有独立、单飞且可合并信号的 participant，因此
-一个 group 阻塞或失败不会拖住其他 group。Broker 回调只发送唤醒信号；路由刷新、成员查询和队列收敛都在入站
-请求循环之外执行。同一 group 的重复成员使用隔离的物理 Client，因此也分别拥有独立的 Rebalance service。
+分配给活跃 Push 或 LitePull 成员的每个物理 Remoting Client 都拥有一个内部 `RemotingRebalanceService`。共享该
+Client 的不同 group 会共用唯一的 `NotifyConsumerIdsChanged` 请求处理器和周期兜底，但每个 group 都有独立、单飞且
+可合并信号的 participant，因此一个 group 阻塞或失败不会拖住其他 group。Broker 回调只发送唤醒信号；路由刷新、
+成员查询和队列收敛都在入站请求循环之外执行。同一 group 的重复成员使用隔离的物理 Client，因此也分别拥有独立的
+Rebalance service。
+
+heartbeat 属于逻辑 group session，而不属于物理 `RemotingClient`：活跃的 Push 或 LitePull 会在初始和周期协调时，
+经由分配给自己的 Client 发送心跳。LitePull 在拥有订阅或手工分配队列后开始这项维护。因此共享 Client 可以维护多个
+不同 group，而同组的隔离成员会分别维护自己的 Broker membership。直接 Pull 和 POP 是由应用驱动的显式 API，不会注册
+后台消费组成员关系或 heartbeat 循环；Producer 则维护自己的 producer heartbeat 生命周期。
 
 Push 与 LitePull 各自在 Consumer 实现中保留队列分配决策。两者共享的经典消费组协议操作由
 `RemotingConsumerGroupSession` 负责，顺序 Push 的队列锁 wire 操作由 `RemotingPushQueueLockManager` 负责，从而

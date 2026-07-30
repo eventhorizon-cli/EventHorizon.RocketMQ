@@ -357,7 +357,8 @@ For a runnable HTTP and Swagger interface, see the
 
 ## PullConsumer
 
-`IRemotingPullConsumer` leaves queue assignment, processing, and commit timing to the application.
+`IRemotingPullConsumer` leaves queue assignment, processing, and commit timing to the application. It is an explicit
+request API and does not register a background consumer-group heartbeat.
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -415,10 +416,11 @@ FilterExpressionType.Sql)` for SQL92 filtering; the target Broker must allow pro
 
 ## LitePullConsumer
 
-`IRemotingLitePullConsumer` is the classic assignment-oriented pull model. In subscription mode, it sends
-`CONSUME_ACTIVELY` heartbeats, participates in clustered consumer-group allocation, and long-polls assigned
-queues. `PollAsync` advances only the local queue position; `CommitAsync` is the explicit operation that
-writes that position to the Broker.
+`IRemotingLitePullConsumer` is the classic assignment-oriented pull model. It sends `CONSUME_ACTIVELY` heartbeats
+while subscriptions or manual queue assignments are active. Subscription mode participates in clustered
+consumer-group allocation; manual assignment retains application-selected queues. Both modes long-poll their assigned
+queues. `PollAsync` advances only the local queue position; `CommitAsync` is the explicit operation that writes that
+position to the Broker.
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -463,7 +465,7 @@ not protocol-level Broker push; broadcast local-offset storage is intentionally 
 `IRemotingPopConsumer` exposes classic Broker POP as an explicit receipt-based operation. The application
 selects a physical queue, processes returned messages, and acknowledges each broker-issued receipt. It does
 not run background assignment or dispatch, and a missing acknowledgement lets the Broker redeliver after the
-receipt's invisible interval.
+receipt's invisible interval. It does not register a background consumer-group heartbeat.
 
 Classic Brokers accept at most 32 messages in one POP request. Both `BatchSize` and the per-call
 `maxMessages` argument enforce that limit.
@@ -725,11 +727,17 @@ classic protocol permits it. Consumers in distinct groups can share connections.
 or LitePull) in the same group use separate Broker connections because the classic Broker identifies consumer-group
 members by connection channel. This physical separation does not change the clustered-replica behavior above.
 
-One internal `RemotingRebalanceService` is attached to each physical client. It owns one Broker
+One internal `RemotingRebalanceService` is attached to each physical client allocated to an active Push or LitePull
+member. It owns one Broker
 `NotifyConsumerIdsChanged` handler and a periodic fallback capped at 20 seconds. Notifications only enqueue a coalesced
 wakeup; every consumer group reconciles through its own single-flight participant, so a blocked group does not occupy
 an inbound request loop or serialize unrelated groups. Repeated members of one group have separate physical clients
 and therefore separate Rebalance services.
+
+The physical `RemotingClient` is transport only; it has no independent consumer-group identity. Each active Push or
+LitePull instance sends its own heartbeat through its assigned client during initial and periodic coordination. A
+shared client can consequently maintain several distinct groups, while isolated same-group members maintain their
+membership separately. Producers maintain their own producer heartbeat lifecycle.
 
 Use keyed client registrations for multiple clusters, independent connection settings, or another Producer/Admin.
 The registration name (`registrationName`) is also used as the .NET keyed-service key.

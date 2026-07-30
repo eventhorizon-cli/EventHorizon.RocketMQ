@@ -307,7 +307,7 @@ public static class RemotingRocketMQBuilderExtensions
                 roleRegistration.RoleOptionsName),
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
             GetTopicRouteService(provider, roleKey),
-            GetRemotingClientPool(provider, roleKey).SharedClient);
+            GetRemotingClientRegistry(provider, roleKey).SharedClient);
     }
 
     private static IRemotingAdmin CreateRemotingAdmin(IServiceProvider provider, RemotingRocketMQRoleKey roleKey)
@@ -316,7 +316,7 @@ public static class RemotingRocketMQBuilderExtensions
             provider,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
             GetTopicRouteService(provider, roleKey),
-            GetRemotingClientPool(provider, roleKey).SharedClient);
+            GetRemotingClientRegistry(provider, roleKey).SharedClient);
     }
 
     private static IRemotingPullConsumer CreateRemotingPullConsumer(
@@ -355,8 +355,10 @@ public static class RemotingRocketMQBuilderExtensions
             options.Value.BatchSize,
             options.Value.MaxMessageBytes,
             options.Value.LongPollingTimeout);
-        var groupMember = GetRemotingRebalanceServicePool(provider, roleKey)
-            .AcquireGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
+        // LitePull advertises active classic consumer-group membership, so a repeated local group member may
+        // require a channel-distinct client. Pull, POP, producer, and admin roles keep the registration's shared one.
+        var groupMember = GetRemotingRebalanceServiceRegistry(provider, roleKey)
+            .GetGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
         return ActivatorUtilities.CreateInstance<RemotingLitePullConsumer>(
             provider,
             options,
@@ -382,8 +384,10 @@ public static class RemotingRocketMQBuilderExtensions
             options.Value);
         var clientOptions = RemotingRocketMQRegistration.GetClientOptions(provider, roleKey);
         var routes = GetTopicRouteService(provider, roleKey);
-        var groupMember = GetRemotingRebalanceServicePool(provider, roleKey)
-            .AcquireGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
+        // Push uses the same active-group channel rule as LitePull; the registry shares whenever the Broker can still
+        // distinguish group membership correctly and isolates only repeated members of the same group.
+        var groupMember = GetRemotingRebalanceServiceRegistry(provider, roleKey)
+            .GetGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
         var settings = CreateRemotingConsumerSettings(
             options.Value,
             options.Value.BatchSize,
@@ -420,7 +424,7 @@ public static class RemotingRocketMQBuilderExtensions
             options,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
             CreateRemotingConsumerEngine(provider, roleKey, settings),
-            GetRemotingClientPool(provider, roleKey).SharedClient);
+            GetRemotingClientRegistry(provider, roleKey).SharedClient);
     }
 
     private static IRemotingConsumerEngine CreateRemotingConsumerEngine(
@@ -434,7 +438,7 @@ public static class RemotingRocketMQBuilderExtensions
             settings,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
             GetTopicRouteService(provider, roleKey),
-            remotingClient ?? GetRemotingClientPool(provider, roleKey).SharedClient);
+            remotingClient ?? GetRemotingClientRegistry(provider, roleKey).SharedClient);
     }
 
     private static RemotingConsumerSettings CreateRemotingConsumerSettings(
@@ -454,18 +458,20 @@ public static class RemotingRocketMQBuilderExtensions
         RemotingRocketMQRoleKey roleKey)
     {
         services.TryAddSingleton<IRemoteCommandSerializer, RemoteCommandSerializer>();
-        services.TryAddKeyedSingleton<RemotingClientPool>(roleKey.OptionsName, (provider, _) =>
-            ActivatorUtilities.CreateInstance<RemotingClientPool>(
+        // The options name is the AddRocketMQRemoting registration boundary. Repeating role methods under one
+        // registration reuses this registry; a separate keyed registration gets an independent client lifetime.
+        services.TryAddKeyedSingleton<RemotingClientRegistry>(roleKey.OptionsName, (provider, _) =>
+            ActivatorUtilities.CreateInstance<RemotingClientRegistry>(
                 provider,
                 RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
-        services.TryAddKeyedSingleton<RemotingRebalanceServicePool>(roleKey.OptionsName, (provider, _) =>
-            ActivatorUtilities.CreateInstance<RemotingRebalanceServicePool>(
+        services.TryAddKeyedSingleton<RemotingRebalanceServiceRegistry>(roleKey.OptionsName, (provider, _) =>
+            ActivatorUtilities.CreateInstance<RemotingRebalanceServiceRegistry>(
                 provider,
-                provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName),
+                provider.GetRequiredKeyedService<RemotingClientRegistry>(roleKey.OptionsName),
                 RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
         services.TryAddKeyedSingleton<INameServer>(roleKey.OptionsName, (provider, _) =>
             new NameServer(
-                provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName).SharedClient,
+                provider.GetRequiredKeyedService<RemotingClientRegistry>(roleKey.OptionsName).SharedClient,
                 RemotingRocketMQRegistration.GetNamedOptions<RemotingClientOptions>(provider, roleKey.OptionsName)));
         services.TryAddKeyedSingleton<ITopicRouteService>(roleKey.OptionsName, (provider, _) =>
             new TopicRouteService(
@@ -474,15 +480,15 @@ public static class RemotingRocketMQBuilderExtensions
                 provider.GetRequiredService<TimeProvider>()));
     }
 
-    private static RemotingClientPool GetRemotingClientPool(
+    private static RemotingClientRegistry GetRemotingClientRegistry(
         IServiceProvider provider,
         RemotingRocketMQRoleKey roleKey) =>
-        provider.GetRequiredKeyedService<RemotingClientPool>(roleKey.OptionsName);
+        provider.GetRequiredKeyedService<RemotingClientRegistry>(roleKey.OptionsName);
 
-    private static RemotingRebalanceServicePool GetRemotingRebalanceServicePool(
+    private static RemotingRebalanceServiceRegistry GetRemotingRebalanceServiceRegistry(
         IServiceProvider provider,
         RemotingRocketMQRoleKey roleKey) =>
-        provider.GetRequiredKeyedService<RemotingRebalanceServicePool>(roleKey.OptionsName);
+        provider.GetRequiredKeyedService<RemotingRebalanceServiceRegistry>(roleKey.OptionsName);
 
     private static ITopicRouteService GetTopicRouteService(
         IServiceProvider provider,

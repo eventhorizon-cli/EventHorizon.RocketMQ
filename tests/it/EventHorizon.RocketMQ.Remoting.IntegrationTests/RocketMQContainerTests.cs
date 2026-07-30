@@ -898,7 +898,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();
         var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
-        var lockClient = provider.GetRequiredKeyedService<RemotingClientPool>(Options.DefaultName).SharedClient;
+        var lockClient = provider.GetRequiredKeyedService<RemotingClientRegistry>(Options.DefaultName).SharedClient;
         var brokerEndpoint = EndpointParser.Parse(_fixture.BrokerAddress);
         byte[]? lockBody = null;
         var lockHeld = false;

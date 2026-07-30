@@ -409,6 +409,15 @@ public sealed class RemotingClientTests
             callerCts.Token);
 
         await firstReceived.Task.WaitAsync(OperationTimeout, cancellationToken);
+        var barrierRequest = CreateRequest("write-barrier");
+        var barrierResponse = await client.InvokeAsync(
+            server.EndPoint,
+            barrierRequest,
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal(barrierRequest.Opaque, barrierResponse.Opaque);
+        Assert.Equal("barrier-response", Encoding.UTF8.GetString(barrierResponse.Body!));
         if (callerCancellation)
         {
             callerCts.Cancel();
@@ -433,6 +442,10 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var first = await connection.ReadAsync(server.CancellationToken);
             firstReceived.TrySetResult();
+            var barrier = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateResponse(barrier, "barrier-response"),
+                server.CancellationToken);
             var second = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteManyAsync(
                 [CreateResponse(first, "late-response"), CreateResponse(second, "second-response")],

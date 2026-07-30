@@ -332,6 +332,30 @@ public sealed class RemotingRebalanceServiceTests
         await called.Task.WaitAsync(TestTimeout, cancellationToken);
     }
 
+    [Fact]
+    public async Task PeriodicInterval_RebalancesEveryRegisteredParticipant()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var ordersCalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var auditCalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fixture = CreateService(
+            rebalanceInterval: TimeSpan.FromMilliseconds(20),
+            retryInterval: TimeSpan.FromMilliseconds(1));
+        await using var service = fixture.Service;
+        await using var orders = service.Register("orders", _ =>
+        {
+            ordersCalled.TrySetResult();
+            return Task.FromResult(true);
+        });
+        await using var audit = service.Register("audit", _ =>
+        {
+            auditCalled.TrySetResult();
+            return Task.FromResult(true);
+        });
+
+        await Task.WhenAll(ordersCalled.Task, auditCalled.Task).WaitAsync(TestTimeout, cancellationToken);
+    }
+
     private static ServiceFixture CreateService(
         TimeSpan? rebalanceInterval = null,
         TimeSpan? retryInterval = null)

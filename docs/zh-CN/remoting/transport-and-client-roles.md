@@ -100,10 +100,11 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 
 一个 `AddRocketMQRemoting` 注册可以添加多个 Push Consumer。每个实例分别拥有自己的 options、逻辑 client
 identity、Consumer Engine、typed handler 绑定、分配状态和 hosted 生命周期。不同 group 的 Consumer 可以共享
-NameServer 发现、route 和物理 `RemotingClient`；同一 group 的重复活跃成员则使用不同物理 Client，因为经典
-Broker 会同时根据连接 channel 和 client ID 识别消费组成员。
+NameServer 发现、route 和物理 `RemotingClient`；同一 group 的重复配置成员则使用不同物理 Client：经典 Broker
+的消费组表以连接 channel 作为成员键，同一 channel 上另一 client ID 的 heartbeat 会替换已有条目。
 
-每个物理 Client 拥有一个 `RemotingRebalanceService`，因此也只注册一个 `NotifyConsumerIdsChanged` handler：
+分配给活跃 Push 或 LitePull 成员的每个物理 Client 拥有一个 `RemotingRebalanceService`，因此也只注册一个
+`NotifyConsumerIdsChanged` handler：
 
 ```text
 Broker 成员变化
@@ -118,6 +119,11 @@ Broker 成员变化
 因此一个 group 阻塞或失败不会串行阻塞其他 group。失败会在 1 秒后重试，最长 20 秒的周期兜底会修复丢失的通知。
 共享 heartbeat、成员查询和 unregister 操作归 `RemotingConsumerGroupSession` 所有；顺序消费的队列 lock/unlock
 命令归 `RemotingPushQueueLockManager` 所有。
+
+物理 `RemotingClient` 只负责传输，本身没有 group identity。每个活跃的 Push 或 LitePull session 都会在初始和周期
+协调时，经由分配给自己的 Client 发送 heartbeat；LitePull 在拥有订阅或手工分配队列后成为活跃成员。因此共享 Client
+可以保持多个不同 group 的活跃状态，而同组的隔离成员会分别维护自己的 membership。直接 Pull 和 POP 是显式 API，
+有意不创建后台消费组成员关系或 heartbeat 循环；Producer 维护自己的 producer heartbeat 生命周期。
 
 Consumer 生命周期就绪与初始位点就绪是两件事。`StartAsync` 会创建生命周期并启动 assignment 收敛，但并发队列接收器的
 初始位点仍会异步解析。对于使用默认末尾位置的新 group，若消息在接收器解析首个 `maxOffset` 前写入，该消息可能位于该

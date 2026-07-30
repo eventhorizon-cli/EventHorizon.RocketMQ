@@ -105,11 +105,12 @@ path to preserve ordering guarantees.
 
 One `AddRocketMQRemoting` registration may add multiple Push Consumers. Every instance owns its options, logical
 client identity, consumer engine, typed handler binding, assignment state, and hosted lifecycle. Consumers in
-different groups can share NameServer discovery, routes, and a physical `RemotingClient`. Repeated active members of
-the same group use separate physical clients because the classic Broker identifies group members by connection
-channel as well as client ID.
+different groups can share NameServer discovery, routes, and a physical `RemotingClient`. Repeated configured members
+of the same group use separate physical clients because the classic Broker's consumer-group table keys membership by
+connection channel; a heartbeat for another client ID on that channel replaces the existing entry.
 
-Each physical client owns one `RemotingRebalanceService` and therefore one `NotifyConsumerIdsChanged` request handler:
+Each physical client allocated to an active Push or LitePull member owns one `RemotingRebalanceService` and therefore
+one `NotifyConsumerIdsChanged` request handler:
 
 ```text
 Broker membership change
@@ -125,6 +126,13 @@ has an independent single-flight participant, so a blocked or failing group cann
 Failures retry after one second, and a periodic fallback capped at 20 seconds repairs missed notifications. Shared
 heartbeat, membership-query, and unregister operations belong to `RemotingConsumerGroupSession`; orderly queue lock
 and unlock commands belong to `RemotingPushQueueLockManager`.
+
+A physical `RemotingClient` is transport only and has no group identity of its own. Each active Push or LitePull
+session sends its own heartbeat through its assigned client on initial and periodic coordination; LitePull becomes
+active when it has subscriptions or manual queue assignments. Thus a shared client can keep several distinct groups
+alive, while isolated same-group members each maintain their own membership. Direct Pull and POP are explicit APIs and
+intentionally do not create background consumer-group membership or heartbeat loops; Producers maintain their own
+producer heartbeat lifecycle.
 
 Consumer lifecycle readiness and initial-offset readiness are separate. `StartAsync` creates the lifecycle and starts
 assignment reconciliation, but concurrent queue receivers resolve their initial offsets asynchronously. For a fresh

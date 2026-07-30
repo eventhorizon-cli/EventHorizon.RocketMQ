@@ -338,7 +338,8 @@ var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancel
 
 ## PullConsumer
 
-`IRemotingPullConsumer` 将队列分配、消息处理和位点提交时机交给应用程序控制。
+`IRemotingPullConsumer` 将队列分配、消息处理和位点提交时机交给应用程序控制。它是显式请求 API，不会注册后台
+消费组 heartbeat。
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -396,9 +397,9 @@ FilterExpressionType.Sql)`；目标 Broker 必须允许属性过滤。
 
 ## LitePullConsumer
 
-`IRemotingLitePullConsumer` 是经典的面向分配的拉取模型。订阅模式下，它会发送
-`CONSUME_ACTIVELY` 心跳，参与集群消费组分配，并对已分配队列执行长轮询。`PollAsync` 仅推进本地队列
-位点；只有显式调用 `CommitAsync` 才会将该位点写入 Broker。
+`IRemotingLitePullConsumer` 是经典的面向分配的拉取模型。在订阅或手工分配队列处于活跃状态时，它会发送
+`CONSUME_ACTIVELY` 心跳。订阅模式参与集群消费组分配；手工分配保留应用选择的队列。两种模式都对已分配队列
+执行长轮询。`PollAsync` 仅推进本地队列位点；只有显式调用 `CommitAsync` 才会将该位点写入 Broker。
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -442,7 +443,7 @@ Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长�
 
 `IRemotingPopConsumer` 将经典 Broker POP 暴露为显式的 receipt 消费操作。应用选择物理队列、处理返回
 消息，并确认每条 Broker 签发的 receipt。它不执行后台分配或自动分发；未确认的消息会在 receipt 可见期
-到期后由 Broker 重新投递。
+到期后由 Broker 重新投递。它不会注册后台消费组 heartbeat。
 
 经典 Broker 的单次 POP 最多接受 32 条消息；`BatchSize` 和每次调用的 `maxMessages` 参数均受该上限限制。
 
@@ -677,10 +678,14 @@ rocketMQ.AddRemotingPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =
 可以共享连接；同一消费组下重复注册的活跃组成员（Push 或 LitePull）则使用不同 Broker 连接，因为经典
 Broker 以连接 channel 标识消费组成员。这种物理连接隔离不会改变上述集群副本语义。
 
-每个物理 Client 都绑定一个内部 `RemotingRebalanceService`，由它持有唯一的 Broker
+分配给活跃 Push 或 LitePull 成员的每个物理 Client 都绑定一个内部 `RemotingRebalanceService`，由它持有唯一的 Broker
 `NotifyConsumerIdsChanged` handler 和最长 20 秒的周期兜底。通知只写入可合并的唤醒信号；每个消费组通过自己
 独立、单飞的 participant 完成收敛，因此阻塞的 group 不会占住入站请求循环，也不会串行阻塞无关 group。同一
 group 的重复成员使用不同物理 Client，所以也分别拥有独立的 Rebalance service。
+
+物理 `RemotingClient` 只负责传输，并不单独拥有消费组 identity。每个活跃的 Push 或 LitePull 会在初始和周期协调时，
+经由分配给自己的 Client 发送 heartbeat。共享 Client 因而可以维护多个不同 group；同组的隔离成员则分别维护自己的
+membership。Producer 维护自己的 producer heartbeat 生命周期。
 
 同一应用连接多个集群、使用独立连接配置或添加另一个 Producer/Admin 时，请使用 keyed 客户端注册。注册名称即
 `registrationName`；该 `registrationName` 同时作为 keyed service 的 key。

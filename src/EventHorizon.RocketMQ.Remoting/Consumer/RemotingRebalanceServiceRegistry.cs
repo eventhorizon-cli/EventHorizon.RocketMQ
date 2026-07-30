@@ -19,20 +19,25 @@ using Microsoft.Extensions.Options;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
-internal sealed class RemotingRebalanceServicePool : IAsyncDisposable
+internal sealed class RemotingRebalanceServiceRegistry : IAsyncDisposable
 {
     private static readonly TimeSpan MaximumRebalanceInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan RebalanceRetryInterval = TimeSpan.FromSeconds(1);
     private readonly object _sync = new();
-    private readonly RemotingClientPool _clients;
+    private readonly RemotingClientRegistry _clients;
     private readonly ILogger<RemotingRebalanceService> _logger;
     private readonly TimeSpan _rebalanceInterval;
+
+    // The registry attaches one Broker NotifyConsumerIdsChanged handler and service to each physical client.
+    // Different groups sharing the shared client therefore share one service, while a same-group replica with an
+    // isolated client gets its own. The service periodically wakes every registered participant; the participant's
+    // active Push or LitePull group session then creates the group-specific heartbeat on its assigned client.
     private readonly Dictionary<IRemotingClient, RemotingRebalanceService> _services =
         new(ReferenceEqualityComparer.Instance);
     private int _disposed;
 
-    public RemotingRebalanceServicePool(
-        RemotingClientPool clients,
+    public RemotingRebalanceServiceRegistry(
+        RemotingClientRegistry clients,
         IOptions<RemotingClientOptions> options,
         ILogger<RemotingRebalanceService> logger)
     {
@@ -41,15 +46,17 @@ internal sealed class RemotingRebalanceServicePool : IAsyncDisposable
         _rebalanceInterval = GetRebalanceInterval(options.Value);
     }
 
-    public RemotingGroupMemberClient AcquireGroupMember(string consumerGroup)
+    public RemotingGroupMemberClient GetGroupMember(string consumerGroup)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroup);
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            var client = _clients.AcquireGroupMemberClient(consumerGroup);
+            var client = _clients.GetGroupMemberClient(consumerGroup);
             if (!_services.TryGetValue(client, out var service))
             {
+                // Cache by client reference rather than group: one service owns the inbound handler for that
+                // physical channel and independently tracks every group that legitimately shares it.
                 service = new RemotingRebalanceService(
                     client,
                     _logger,

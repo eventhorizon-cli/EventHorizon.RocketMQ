@@ -31,6 +31,11 @@ Use the following as the source of truth for detailed, evolving guidance instead
 Read the relevant reference before changing an architectural boundary, transport behavior, DI lifecycle, test
 topology, or manual environment.
 
+- When an implementation requires a behavioral or design decision, first consult the corresponding official
+  Apache RocketMQ Java and Go client implementations. Use their semantics and underlying approach as a reference,
+  adapting it to this client's architecture and .NET runtime rather than copying implementation details wholesale.
+  Preserve established protocol semantics unless a documented protocol-specific reason requires this client to differ.
+
 ## Architecture constraints
 
 - Production contains exactly two independent client projects: `EventHorizon.RocketMQ.Grpc` for RocketMQ 5 Proxy/gRPC

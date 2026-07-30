@@ -64,15 +64,23 @@ request the collection unless the last-instance behavior is intentional.
 The logical Consumer boundary does not require a separate physical transport for every instance. Within one client
 registration, gRPC Consumers share HTTP/2 channels while retaining distinct logical client IDs and request metadata.
 Remoting roles share NameServer discovery, route state, and Broker connections where classic protocol identity permits
-it. Distinct Remoting consumer groups can share connections, but repeated active group members (Push or LitePull) in
-the same group use separate Broker connections because classic Broker consumer membership is identified by the
-connection channel.
+it. Distinct Remoting consumer groups can share connections, but repeated configured members of the same Push or
+LitePull group use separate Broker connections: the classic Broker's consumer-group table keys membership by connection
+channel, and a heartbeat for another client ID on that same channel replaces the existing entry.
 
-Each physical Remoting client owns one internal `RemotingRebalanceService`. Distinct groups that share that client also
-share its single `NotifyConsumerIdsChanged` request handler and periodic fallback, while each group has an independent,
-single-flight participant so a blocked or failing group cannot delay another. The Broker callback only coalesces a
-wakeup signal; route refresh, membership queries, and queue reconciliation run outside the inbound request loop. A
-repeated member of the same group uses its isolated physical client and therefore a separate Rebalance service.
+Each physical Remoting client allocated to an active Push or LitePull member owns one internal
+`RemotingRebalanceService`. Distinct groups that share that client also share its single
+`NotifyConsumerIdsChanged` request handler and periodic fallback, while each group has an independent, single-flight
+participant so a blocked or failing group cannot delay another. The Broker callback only coalesces a wakeup signal;
+route refresh, membership queries, and queue reconciliation run outside the inbound request loop. A repeated member of
+the same group uses its isolated physical client and therefore a separate Rebalance service.
+
+Heartbeats belong to a logical group session, not to the physical `RemotingClient`: an active Push or LitePull instance
+sends its own heartbeat through its assigned client during initial and periodic coordination. LitePull begins this
+maintenance when it has subscriptions or manual queue assignments. A shared client can therefore maintain several
+distinct groups, while isolated same-group members maintain their own Broker membership separately. Direct Pull and
+POP are explicit, application-driven APIs; they do not register background consumer-group membership or heartbeat
+loops. Producers maintain their own producer heartbeat lifecycle.
 
 Push and LitePull keep queue-allocation decisions in their own Consumer implementations. Their shared classic group
 protocol operations are owned by `RemotingConsumerGroupSession`; orderly Push queue-lock wire operations are owned by

@@ -245,6 +245,14 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             {
                 run.ManualAssignment = requestedQueues.Length > 0;
                 await ReconcileAssignmentsAsync(run, requestedQueues, cancellationToken).ConfigureAwait(false);
+                if (run.ManualAssignment)
+                {
+                    // Manual assignment does not use group allocation, but LitePull still represents an active
+                    // classic group member. Retain every assigned Broker so the initial and periodic heartbeats
+                    // keep that membership visible while the manual assignment remains active.
+                    AddKnownBrokers(run, requestedQueues);
+                    await SendHeartbeatsAsync(run, [], cancellationToken).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -450,6 +458,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         {
             if (run.ManualAssignment)
             {
+                await SendHeartbeatsAsync(run, [], cancellationToken).ConfigureAwait(false);
                 return true;
             }
 
@@ -470,13 +479,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                     subscription.Key,
                     cancellationToken).ConfigureAwait(false);
                 queuesByTopic[subscription.Key] = queues;
-                foreach (var queue in queues)
-                {
-                    foreach (var address in queue.BrokerAddresses.Values)
-                    {
-                        run.KnownBrokers[address] = new RemotingBrokerEndpoint(queue.BrokerName, address);
-                    }
-                }
+                AddKnownBrokers(run, queues);
             }
 
             await SendHeartbeatsAsync(run, subscriptions, cancellationToken).ConfigureAwait(false);
@@ -538,6 +541,19 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             run.KnownBrokers.Values,
             body,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddKnownBrokers(
+        RunState run,
+        IEnumerable<RemotingPullMessageQueue> queues)
+    {
+        foreach (var queue in queues)
+        {
+            foreach (var address in queue.BrokerAddresses.Values)
+            {
+                run.KnownBrokers[address] = new RemotingBrokerEndpoint(queue.BrokerName, address);
+            }
+        }
     }
 
     private async Task ReconcileAssignmentsAsync(

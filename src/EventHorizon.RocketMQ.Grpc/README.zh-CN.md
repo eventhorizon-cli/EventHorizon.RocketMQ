@@ -354,6 +354,11 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 选择 handler 生命周期：`Singleton` 会为每个 Consumer 实例创建一个 handler，且必须线程安全；`Scoped` 和
 `Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
 `IGrpcPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
+
+> **0.2.0 破坏性迁移：** Push 和 LitePush options 上的 `MessageHandler`，以及非泛型注册 overload，已被移除。
+> 请将委托逻辑移入 `IGrpcPushMessageHandler` 实现，并通过 `AddGrpcPushConsumer<THandler>` 或
+> `AddGrpcLitePushConsumer<THandler>` 注册。handler 依赖 scoped 应用服务时应选择 `Scoped`。
+
 对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后会取消 handler token、停止客户端的不可见时间续期，并请求消息
 重新投递；延迟返回的成功结果会被忽略。重新投递可能与仍在执行、但忽略取消的代码重叠，因此 handler 必须具备幂等性。
 客户端无法强制停止这段代码。FIFO message group 会刻意排除在该机制之外，以维持其顺序。

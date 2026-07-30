@@ -616,6 +616,11 @@ async service scope for each batch handling attempt. Automatic dispatch requires
 `IRemotingPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped
 dependencies such as a database context.
 
+> **0.2.0 breaking migration:** `RemotingPushConsumerOptions.MessageHandler` and the non-generic
+> `AddRemotingPushConsumer` overload have been removed. Move delegate logic into an
+> `IRemotingPushMessageHandler` implementation and register it through `AddRemotingPushConsumer<THandler>`. Choose
+> `Scoped` when the handler depends on scoped application services.
+
 ### Queue-orderly consumption
 
 Set `ConsumeOrderly` when a classic PushConsumer must process each assigned physical queue one message

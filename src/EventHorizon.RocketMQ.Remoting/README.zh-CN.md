@@ -576,6 +576,10 @@ handler 生命周期：`Singleton` 会为每个 Consumer 实例创建一个 hand
 `Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
 `IRemotingPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
 
+> **0.2.0 破坏性迁移：** `RemotingPushConsumerOptions.MessageHandler` 和非泛型
+> `AddRemotingPushConsumer` overload 已被移除。请将委托逻辑移入 `IRemotingPushMessageHandler` 实现，并通过
+> `AddRemotingPushConsumer<THandler>` 注册。handler 依赖 scoped 应用服务时应选择 `Scoped`。
+
 ### 队列有序消费
 
 当经典 PushConsumer 需要让每个已分配的物理队列一次只处理一条消息时，设置 `ConsumeOrderly`。无论

@@ -369,6 +369,12 @@ immediately. The generic registration selects the handler lifetime for the curre
 resolve a handler in a new async service scope for each handling attempt. Automatic dispatch requires a typed
 `IGrpcPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped dependencies
 such as a database context.
+
+> **0.2.0 breaking migration:** `MessageHandler` on Push and LitePush options, together with the non-generic
+> registration overloads, has been removed. Move delegate logic into an `IGrpcPushMessageHandler` implementation and
+> register it through `AddGrpcPushConsumer<THandler>` or `AddGrpcLitePushConsumer<THandler>`. Choose `Scoped` when
+> the handler depends on scoped application services.
+
 For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. On expiry, the handler cancellation token is
 canceled, client invisibility renewal stops, and the message is requested for retry; a late successful handler result
 is ignored. Retried delivery can overlap code that ignored cancellation, so handlers must be idempotent. The client

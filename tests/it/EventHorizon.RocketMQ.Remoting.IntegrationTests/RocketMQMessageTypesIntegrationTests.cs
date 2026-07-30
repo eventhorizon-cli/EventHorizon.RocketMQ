@@ -44,7 +44,7 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQContainerFixtur
                 options.NamesrvAddr = fixture.NameServerAddress;
             })
             .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-delay-producer"))
-            .AddTestRemotingPushConsumer<RocketMQMessageTypesIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMessageTypesIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);

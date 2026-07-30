@@ -94,11 +94,11 @@ public sealed class RocketMQRebalanceIntegrationTests(
         });
         rocketMQ.AddRemotingProducer(options =>
             options.GroupName = scope.CreateProducerGroupName("remoting-push-rebalance-producer"));
-        rocketMQ.AddTestRemotingPushConsumer<FirstPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<FirstPushConsumerMarker>(options =>
         {
             ConfigurePushConsumer(options, group, scope.Topic, tag);
         }, CreateHandler(0));
-        rocketMQ.AddTestRemotingPushConsumer<SecondPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<SecondPushConsumerMarker>(options =>
         {
             ConfigurePushConsumer(options, group, scope.Topic, tag);
         }, CreateHandler(1));

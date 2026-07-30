@@ -101,7 +101,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -181,7 +181,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -251,8 +251,10 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
             var slowCommitted = await admin.GetConsumerOffsetAsync(group, slowQueue, cancellationToken);
             Assert.True(
+                slowCommitted is null ||
                 slowCommitted < expectedOffsets[(slowQueue.BrokerName, slowQueue.QueueId)],
-                $"Blocked queue {slowQueue.BrokerName}/{slowQueue.QueueId} advanced to {slowCommitted} before its handler completed.");
+                $"Blocked queue {slowQueue.BrokerName}/{slowQueue.QueueId} advanced to " +
+                $"{slowCommitted?.ToString() ?? "<none>"} before its handler completed.");
 
             releaseSlow.TrySetResult();
             await allConsumed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
@@ -294,7 +296,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -453,7 +455,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
             })
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;

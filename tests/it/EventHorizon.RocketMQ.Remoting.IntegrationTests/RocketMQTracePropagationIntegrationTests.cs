@@ -43,7 +43,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
         services
             .AddRocketMQRemoting(options => options.NamesrvAddr = fixture.NameServerAddress)
             .AddRemotingProducer(options => options.GroupName = producerGroup)
-            .AddTestRemotingPushConsumer<RocketMQTracePropagationIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQTracePropagationIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);

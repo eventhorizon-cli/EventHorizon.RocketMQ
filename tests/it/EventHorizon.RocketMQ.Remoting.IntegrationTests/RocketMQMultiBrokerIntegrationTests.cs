@@ -251,8 +251,10 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
             var slowCommitted = await admin.GetConsumerOffsetAsync(group, slowQueue, cancellationToken);
             Assert.True(
+                slowCommitted is null ||
                 slowCommitted < expectedOffsets[(slowQueue.BrokerName, slowQueue.QueueId)],
-                $"Blocked queue {slowQueue.BrokerName}/{slowQueue.QueueId} advanced to {slowCommitted} before its handler completed.");
+                $"Blocked queue {slowQueue.BrokerName}/{slowQueue.QueueId} advanced to " +
+                $"{slowCommitted?.ToString() ?? "<none>"} before its handler completed.");
 
             releaseSlow.TrySetResult();
             await allConsumed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);

@@ -47,6 +47,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
             }, (messages, _, _) =>
                 {

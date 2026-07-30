@@ -315,7 +315,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.NamesrvAddr = _fixture.NameServerAddress;
             })
             .AddRemotingProducer(options => options.GroupName = "legacy-push-producer-it")
-            .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
             {
                 options.GroupName = "legacy-push-consumer-it";
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -402,7 +402,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         });
         rocketMQ.AddRemotingProducer(options =>
             options.GroupName = orders.CreateProducerGroupName("multiple-remoting-push-producer"));
-        rocketMQ.AddTestRemotingPushConsumer<OrdersPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<OrdersPushConsumerMarker>(options =>
         {
             options.GroupName = orders.CreateConsumerGroupName("orders-remoting-push-consumer");
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
@@ -425,7 +425,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
                 return ValueTask.FromResult(ConsumeResult.Success);
             });
-        rocketMQ.AddTestRemotingPushConsumer<OrdersObserverPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<OrdersObserverPushConsumerMarker>(options =>
         {
             options.GroupName = orders.CreateConsumerGroupName("orders-observer-remoting-push-consumer");
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
@@ -448,7 +448,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
                 return ValueTask.FromResult(ConsumeResult.Success);
             });
-        rocketMQ.AddTestRemotingPushConsumer<PaymentsPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<PaymentsPushConsumerMarker>(options =>
         {
             options.GroupName = payments.CreateConsumerGroupName("payments-remoting-push-consumer");
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
@@ -581,14 +581,14 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         });
         rocketMQ.AddRemotingProducer(options =>
             options.GroupName = scope.CreateProducerGroupName("remoting-shared-push-producer"));
-        rocketMQ.AddTestRemotingPushConsumer<FirstSharedGroupPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<FirstSharedGroupPushConsumerMarker>(options =>
         {
             options.GroupName = group;
             options.MaxConcurrency = 4;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.Subscribe(scope.Topic, new FilterExpression(tag));
         }, CreateHandler(() => Interlocked.Increment(ref firstConsumerCalls)));
-        rocketMQ.AddTestRemotingPushConsumer<SecondSharedGroupPushConsumerMarker>(options =>
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<SecondSharedGroupPushConsumerMarker>(options =>
         {
             options.GroupName = group;
             options.MaxConcurrency = 4;
@@ -672,7 +672,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.NamesrvAddr = _fixture.NameServerAddress;
             })
             .AddRemotingProducer(options => options.GroupName = $"legacy-push-batch-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -756,7 +756,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.NamesrvAddr = _fixture.NameServerAddress;
             })
             .AddRemotingProducer(options => options.GroupName = $"legacy-push-partial-ack-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -876,7 +876,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
             })
             .AddRemotingProducer(options => options.GroupName = $"legacy-orderly-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
             {
                 options.GroupName = group;
                 options.ConsumeOrderly = true;
@@ -1023,7 +1023,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                     options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                     options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
                 })
-                .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+                .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
                 {
                     options.GroupName = "legacy-push-cluster-it";
                     options.MaxConcurrency = 4;
@@ -1120,7 +1120,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
             })
             .AddRemotingProducer(options => options.GroupName = $"legacy-backlog-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
             {
                 options.GroupName = $"legacy-backlog-consumer-{suffix}";
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -1199,7 +1199,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                     options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                     options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
                 })
-                .AddTestRemotingPushConsumer<RocketMQContainerTests>(options =>
+                .AddRemotingPushConsumerWithTestHandler<RocketMQContainerTests>(options =>
                 {
                     options.GroupName = group;
                     options.ConsumerMode = ConsumerMode.Broadcasting;

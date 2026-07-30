@@ -46,7 +46,7 @@ public sealed class RocketMQRequestReplyIntegrationTests(RocketMQContainerFixtur
                 options.InstanceName = $"request-reply-{suffix}";
             })
             .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("request-reply-producer"))
-            .AddTestRemotingPushConsumer<RocketMQRequestReplyIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQRequestReplyIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);

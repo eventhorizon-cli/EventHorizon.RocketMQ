@@ -101,7 +101,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -181,7 +181,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -294,7 +294,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             })
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}")
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -453,7 +453,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
             })
-            .AddTestRemotingPushConsumer<RocketMQMultiBrokerIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQMultiBrokerIntegrationTests>(options =>
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;

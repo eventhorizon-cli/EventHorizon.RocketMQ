@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
 internal static class RemotingTestPushMessageHandlerExtensions
 {
-    internal static RemotingRocketMQBuilder AddTestRemotingPushConsumer<TMarker>(
+    internal static RemotingRocketMQBuilder AddRemotingPushConsumerWithTestHandler<TMarker>(
         this RemotingRocketMQBuilder builder,
         Action<RemotingPushConsumerOptions> configure,
         Func<

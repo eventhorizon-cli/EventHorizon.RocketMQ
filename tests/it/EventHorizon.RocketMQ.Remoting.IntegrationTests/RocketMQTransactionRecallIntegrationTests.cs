@@ -53,7 +53,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(RemotingTransactionResolution.Unknown);
             })
-            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
@@ -118,7 +118,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.TransactionChecker = static (_, _) =>
                     ValueTask.FromResult(RemotingTransactionResolution.Rollback);
             })
-            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
@@ -180,7 +180,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerF
                 options.InstanceName = $"remoting-recall-{suffix}";
             })
             .AddRemotingProducer(options => options.GroupName = scope.CreateProducerGroupName("remoting-recall-producer"))
-            .AddTestRemotingPushConsumer<RocketMQTransactionRecallIntegrationTests>(options =>
+            .AddRemotingPushConsumerWithTestHandler<RocketMQTransactionRecallIntegrationTests>(options =>
             {
                 options.GroupName = consumerGroup;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);

@@ -31,7 +31,8 @@ internal sealed class PushConsumerMessageHandler(
         foreach (var message in messages)
         {
             logger.LogInformation(
-                "Received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",
+                "Sample-tag consumer received {MessageId} from {Topic}/{BrokerName}/{QueueId} " +
+                "at offset {QueueOffset}: {Body}",
                 message.MessageId,
                 message.Topic,
                 message.BrokerName,

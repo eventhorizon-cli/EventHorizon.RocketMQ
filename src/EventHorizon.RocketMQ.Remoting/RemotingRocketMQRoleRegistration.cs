@@ -15,4 +15,6 @@
 
 namespace EventHorizon.RocketMQ.Remoting;
 
-internal sealed record RemotingRocketMQRoleRegistration(RemotingRocketMQRoleKey RoleKey);
+internal sealed record RemotingRocketMQRoleRegistration(
+    RemotingRocketMQRoleKey RoleKey,
+    string RoleOptionsName);

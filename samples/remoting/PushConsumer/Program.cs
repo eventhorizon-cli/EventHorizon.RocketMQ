@@ -14,22 +14,41 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Samples.Remoting.PushConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+const string Topic = "eventhorizon-test-topic";
+
 var builder = Host.CreateApplicationBuilder(args);
 // NamesrvAddr discovers routes; this client then long-polls the assigned Brokers directly.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:PushConsumer");
 
-var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 // A scoped handler is resolved in a new async DI scope for each message delivery.
-rocketMQ.AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
-{
-    consumerSection.Bind(options);
-    options.Subscribe("eventhorizon-test-topic");
-});
+builder.Services
+    .AddRocketMQRemoting(remotingSection.Bind)
+    .AddRemotingPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-sample-push-consumer";
+        // Fresh groups start at End. Records published before first offset resolution are existing backlog;
+        // use Beginning or Timestamp for replay, or an application readiness handshake for a precise cutover.
+        options.InitialPosition = ConsumeFromPosition.End;
+        options.MaxConcurrency = 4;
+        options.BatchSize = 32;
+        options.ConsumeMessageBatchSize = 4;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddRemotingPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "remoting-all-messages-push-consumer";
+        options.InitialPosition = ConsumeFromPosition.End;
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.ConsumeMessageBatchSize = 1;
+        options.Subscribe(Topic);
+    });
 
 await builder.Build().RunAsync();

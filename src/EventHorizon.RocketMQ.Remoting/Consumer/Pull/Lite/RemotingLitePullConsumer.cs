@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using System.Collections.Concurrent;
-using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,18 +22,16 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 
 internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
 {
-    private static readonly TimeSpan MaximumCoordinationInterval = TimeSpan.FromSeconds(20);
-
     private readonly RemotingLitePullConsumerOptions _options;
     private readonly RemotingClientOptions _clientOptions;
     private readonly IRemotingConsumerEngine _consumerEngine;
-    private readonly IRemotingClient _remotingClient;
+    private readonly IRemotingRebalanceService _rebalanceService;
+    private readonly RemotingConsumerGroupSession _groupSession;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<RemotingLitePullConsumer> _logger;
-    private readonly string _clientId;
+    private readonly bool _hasLocalGroupPeer;
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
-    private readonly IDisposable _consumerIdsChangedRegistration;
     private RunState? _run;
     private int _disposed;
 
@@ -43,22 +40,26 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         IOptions<RemotingClientOptions> clientOptions,
         IRemotingConsumerEngine consumerEngine,
         IRemotingClient remotingClient,
+        IRemotingRebalanceService rebalanceService,
         TimeProvider timeProvider,
-        ILogger<RemotingLitePullConsumer> logger)
+        ILogger<RemotingLitePullConsumer> logger,
+        bool hasLocalGroupPeer = false)
     {
         _options = options.Value;
         _clientOptions = clientOptions.Value;
         _consumerEngine = consumerEngine;
-        _remotingClient = remotingClient;
+        _rebalanceService = rebalanceService;
         _timeProvider = timeProvider;
-        _clientId = _clientOptions.BuildRemotingClientId();
+        _hasLocalGroupPeer = hasLocalGroupPeer;
+        _groupSession = new RemotingConsumerGroupSession(
+            remotingClient,
+            _clientOptions,
+            _options.GroupName,
+            logger);
         _subscriptions = new ConcurrentDictionary<string, FilterExpression>(
             _options.Subscriptions,
             StringComparer.Ordinal);
         _logger = logger;
-        _consumerIdsChangedRegistration = _remotingClient.RegisterRequestHandler(
-            RequestCode.NotifyConsumerIdsChanged,
-            HandleConsumerIdsChangedAsync);
     }
 
     public IReadOnlyList<RemotingPullMessageQueue> Assignment
@@ -108,12 +109,13 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             _run = run;
             try
             {
+                run.RebalanceRegistration = _rebalanceService.Register(
+                    _groupSession.ConsumerGroup,
+                    token => RebalanceAsync(run, token));
                 if (!_subscriptions.IsEmpty)
                 {
-                    await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false);
+                    await CoordinateAndScheduleRetryAsync(run, cancellationToken).ConfigureAwait(false);
                 }
-
-                run.Coordinator = CoordinateAsync(run);
             }
             catch
             {
@@ -155,6 +157,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfRuntimeSubscriptionChangesAreUnsupported();
         var filter = expression ?? FilterExpression.All;
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -170,7 +173,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             if (run is not null)
             {
                 run.BumpSubscriptionVersion();
-                await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false);
+                await CoordinateAndScheduleRetryAsync(run, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -183,6 +186,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfRuntimeSubscriptionChangesAreUnsupported();
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -201,10 +205,10 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             if (run is not null)
             {
                 run.BumpSubscriptionVersion();
-                await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false);
+                await CoordinateAndScheduleRetryAsync(run, cancellationToken).ConfigureAwait(false);
                 if (_subscriptions.IsEmpty)
                 {
-                    await UnregisterAsync(run).ConfigureAwait(false);
+                    await _groupSession.UnregisterAsync(run.KnownBrokers.Values).ConfigureAwait(false);
                 }
             }
         }
@@ -239,8 +243,24 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                run.ManualAssignment = requestedQueues.Length > 0;
+                var wasManualAssignment = run.ManualAssignment;
+                var hasManualAssignment = requestedQueues.Length > 0;
+                run.ManualAssignment = hasManualAssignment;
                 await ReconcileAssignmentsAsync(run, requestedQueues, cancellationToken).ConfigureAwait(false);
+                if (hasManualAssignment)
+                {
+                    // Manual assignment does not use group allocation, but LitePull still represents an active
+                    // classic group member. Retain every assigned Broker so the initial and periodic heartbeats
+                    // keep that membership visible while the manual assignment remains active.
+                    AddKnownBrokers(run, requestedQueues);
+                    await SendHeartbeatsAsync(run, [], cancellationToken).ConfigureAwait(false);
+                }
+                else if (wasManualAssignment)
+                {
+                    // Clearing the final manual assignment ends this consumer's group membership immediately.
+                    // Keep the Broker endpoints for ShutdownRunAsync so a transient unregister failure is retried.
+                    await _groupSession.UnregisterAsync(run.KnownBrokers.Values).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -396,78 +416,58 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             return;
         }
 
-        _consumerIdsChangedRegistration.Dispose();
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         await _consumerEngine.DisposeAsync().ConfigureAwait(false);
     }
 
-    private async ValueTask<RemotingRequestResult> HandleConsumerIdsChangedAsync(RemotingRequestContext context)
+    private void ThrowIfRuntimeSubscriptionChangesAreUnsupported()
     {
-        if (!context.Request.ExtFields.TryGetValue("consumerGroup", out var consumerGroup) ||
-            consumerGroup is not string group ||
-            !string.Equals(group, GetConsumerGroup(), StringComparison.Ordinal))
+        if (_hasLocalGroupPeer)
         {
-            return RemotingRequestResult.NotHandled;
+            throw new InvalidOperationException(
+                $"Runtime subscription changes are not supported when multiple Remoting Lite Pull consumers in the " +
+                $"same consumer group '{_options.GroupName}' share a client registration. Configure identical " +
+                "subscriptions for all group members and restart them together.");
+        }
+    }
+
+    private async Task<bool> RebalanceAsync(RunState run, CancellationToken cancellationToken)
+    {
+        if (run.Stopping.IsCancellationRequested)
+        {
+            return true;
         }
 
-        await _lifecycleGate.WaitAsync(context.CancellationToken).ConfigureAwait(false);
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            run.Stopping.Token);
         try
         {
-            if (_run is { ManualAssignment: false } run)
-            {
-                SignalRebalance(run);
-            }
+            return await CoordinateOnceAsync(run, linkedCancellation.Token).ConfigureAwait(false);
         }
-        finally
+        catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
         {
-            _lifecycleGate.Release();
+            return true;
         }
-
-        return RemotingRequestResult.NoResponse;
     }
 
-    private async Task CoordinateAsync(RunState run)
+    private async Task CoordinateAndScheduleRetryAsync(RunState run, CancellationToken cancellationToken)
     {
-        var interval = GetCoordinationInterval();
-        while (!run.Stopping.IsCancellationRequested)
+        if (!await CoordinateOnceAsync(run, cancellationToken).ConfigureAwait(false))
         {
-            try
-            {
-                await run.RebalanceSignal.WaitAsync(interval, run.Stopping.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
-            {
-                return;
-            }
-
-            if (run.Stopping.IsCancellationRequested || run.ManualAssignment || _subscriptions.IsEmpty)
-            {
-                continue;
-            }
-
-            try
-            {
-                await CoordinateOnceAsync(run, run.Stopping.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogWarning(exception, "Legacy Lite Pull consumer coordination failed; retrying");
-            }
+            run.RebalanceRegistration?.Wakeup();
         }
     }
 
-    private async Task CoordinateOnceAsync(RunState run, CancellationToken cancellationToken)
+    private async Task<bool> CoordinateOnceAsync(RunState run, CancellationToken cancellationToken)
     {
         await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (run.ManualAssignment)
             {
-                return;
+                await SendHeartbeatsAsync(run, [], cancellationToken).ConfigureAwait(false);
+                return true;
             }
 
             var subscriptions = _subscriptions
@@ -476,7 +476,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             if (subscriptions.Length == 0)
             {
                 await ReconcileAssignmentsAsync(run, [], cancellationToken).ConfigureAwait(false);
-                return;
+                return true;
             }
 
             var queuesByTopic = new Dictionary<string, IReadOnlyList<RemotingPullMessageQueue>>(
@@ -487,17 +487,12 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                     subscription.Key,
                     cancellationToken).ConfigureAwait(false);
                 queuesByTopic[subscription.Key] = queues;
-                foreach (var queue in queues)
-                {
-                    foreach (var address in queue.BrokerAddresses.Values)
-                    {
-                        run.KnownBrokers[address] = new BrokerEndpoint(queue.BrokerName, address);
-                    }
-                }
+                AddKnownBrokers(run, queues);
             }
 
             await SendHeartbeatsAsync(run, subscriptions, cancellationToken).ConfigureAwait(false);
             var assigned = new List<RemotingPullMessageQueue>();
+            var balanced = true;
             foreach (var (_, queues) in queuesByTopic)
             {
                 if (queues.Count == 0)
@@ -505,20 +500,26 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                     continue;
                 }
 
-                var consumerIds = await GetConsumerIdsAsync(queues[0], cancellationToken).ConfigureAwait(false);
-                if (!consumerIds.Contains(_clientId, StringComparer.Ordinal))
+                var consumerIds = await _groupSession.GetConsumerIdsAsync(queues[0], cancellationToken)
+                    .ConfigureAwait(false);
+                if (!consumerIds.Contains(_groupSession.ClientId, StringComparer.Ordinal))
                 {
+                    balanced = false;
                     _logger.LogWarning(
                         "Broker membership for legacy Lite Pull group {GroupName} does not contain client {ClientId}",
                         _options.GroupName,
-                        _clientId);
+                        _groupSession.ClientId);
                     continue;
                 }
 
-                assigned.AddRange(LegacyConsumerProtocol.Allocate(queues, consumerIds, _clientId));
+                assigned.AddRange(LegacyConsumerProtocol.Allocate(
+                    queues,
+                    consumerIds,
+                    _groupSession.ClientId));
             }
 
             await ReconcileAssignmentsAsync(run, assigned, cancellationToken).ConfigureAwait(false);
+            return balanced;
         }
         finally
         {
@@ -536,57 +537,31 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             static entry => entry.Value,
             StringComparer.Ordinal);
         var body = LegacyConsumerProtocol.EncodeHeartbeat(
-            _clientId,
-            GetConsumerGroup(),
+            _groupSession.ClientId,
+            _groupSession.ConsumerGroup,
             wireSubscriptions,
             run.SubscriptionVersion,
             "CONSUME_ACTIVELY",
             "CLUSTERING",
             GetConsumeFromWhere(),
             _clientOptions.UnitMode);
-        foreach (var broker in run.KnownBrokers.Values.DistinctBy(
-                     static broker => broker.Address,
-                     StringComparer.Ordinal))
-        {
-            try
-            {
-                var response = await _remotingClient.InvokeAsync(
-                    EndpointParser.Parse(broker.Address),
-                    new RemotingCommand(RequestCode.HeartBeat, new HeartbeatRequestHeader()) { Body = body },
-                    _clientOptions.RequestTimeout,
-                    cancellationToken).ConfigureAwait(false);
-                EnsureSuccess(response, "send heartbeat");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogWarning(
-                    exception,
-                    "Unable to send legacy Lite Pull heartbeat to broker {BrokerName} at {BrokerAddress}",
-                    broker.BrokerName,
-                    broker.Address);
-            }
-        }
+        await _groupSession.SendHeartbeatsAsync(
+            run.KnownBrokers.Values,
+            body,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<string>> GetConsumerIdsAsync(
-        RemotingPullMessageQueue queue,
-        CancellationToken cancellationToken)
+    private static void AddKnownBrokers(
+        RunState run,
+        IEnumerable<RemotingPullMessageQueue> queues)
     {
-        var response = await _remotingClient.InvokeAsync(
-            EndpointParser.Parse(queue.BrokerAddress),
-            new RemotingCommand(RequestCode.GetConsumerListByGroup, new GetConsumerListByGroupRequestHeader
+        foreach (var queue in queues)
+        {
+            foreach (var address in queue.BrokerAddresses.Values)
             {
-                ConsumerGroup = GetConsumerGroup(),
-                Bname = queue.BrokerName
-            }),
-            _clientOptions.RequestTimeout,
-            cancellationToken).ConfigureAwait(false);
-        EnsureSuccess(response, "query consumer list");
-        return LegacyConsumerProtocol.DecodeConsumerIds(response.Body);
+                run.KnownBrokers[address] = new RemotingBrokerEndpoint(queue.BrokerName, address);
+            }
+        }
     }
 
     private async Task ReconcileAssignmentsAsync(
@@ -635,18 +610,15 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     {
         run.Stopping.Cancel();
         run.CancelAllQueues();
-        SignalRebalance(run);
-        try
+        if (run.RebalanceRegistration is { } rebalanceRegistration)
         {
-            await run.Coordinator.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
-        {
+            run.RebalanceRegistration = null;
+            await rebalanceRegistration.DisposeAsync().ConfigureAwait(false);
         }
 
         await run.OperationGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         run.OperationGate.Release();
-        await UnregisterAsync(run).ConfigureAwait(false);
+        await _groupSession.UnregisterAsync(run.KnownBrokers.Values).ConfigureAwait(false);
         try
         {
             await _consumerEngine.StopAsync(CancellationToken.None).ConfigureAwait(false);
@@ -698,37 +670,6 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    private async Task UnregisterAsync(RunState run)
-    {
-        foreach (var broker in run.KnownBrokers.Values.DistinctBy(
-                     static broker => broker.Address,
-                     StringComparer.Ordinal))
-        {
-            try
-            {
-                var response = await _remotingClient.InvokeAsync(
-                    EndpointParser.Parse(broker.Address),
-                    new RemotingCommand(RequestCode.UnregisterClient, new UnregisterClientRequestHeader
-                    {
-                        ClientID = _clientId,
-                        ConsumerGroup = GetConsumerGroup(),
-                        Bname = broker.BrokerName
-                    }),
-                    _clientOptions.RequestTimeout,
-                    CancellationToken.None).ConfigureAwait(false);
-                EnsureSuccess(response, "unregister consumer");
-            }
-            catch (Exception exception)
-            {
-                _logger.LogDebug(
-                    exception,
-                    "Unable to unregister legacy Lite Pull consumer from broker {BrokerName} at {BrokerAddress}",
-                    broker.BrokerName,
-                    broker.Address);
-            }
-        }
-    }
-
     private async Task<RunState> GetActiveRunAsync(CancellationToken cancellationToken)
     {
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -749,15 +690,6 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         return _run ?? throw new InvalidOperationException("Lite Pull consumer has not been started.");
     }
 
-    private TimeSpan GetCoordinationInterval()
-    {
-        var configured = new[] { _clientOptions.PollNameServerInterval, _clientOptions.HeartbeatBrokerInterval }
-            .Where(static interval => interval > TimeSpan.Zero)
-            .DefaultIfEmpty(MaximumCoordinationInterval)
-            .Min();
-        return configured < MaximumCoordinationInterval ? configured : MaximumCoordinationInterval;
-    }
-
     private string GetConsumeFromWhere() => _options.InitialOffset switch
     {
         QueryOffsetPolicy.Beginning => "CONSUME_FROM_FIRST_OFFSET",
@@ -766,28 +698,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         _ => throw new ArgumentOutOfRangeException(nameof(_options.InitialOffset), _options.InitialOffset, null)
     };
 
-    private string GetConsumerGroup() => LegacyNamespace.Wrap(_clientOptions.Namespace, _options.GroupName);
-
     private string GetWireTopic(string topic) => LegacyNamespace.Wrap(_clientOptions.Namespace, topic);
-
-    private static void EnsureSuccess(RemotingCommand response, string operation)
-    {
-        if (response.Code != ResponseCodes.ResSuccess)
-        {
-            throw new RemotingCommandException(response.Code, response.Remark ?? $"Unable to {operation}.");
-        }
-    }
-
-    private static void SignalRebalance(RunState run)
-    {
-        try
-        {
-            run.RebalanceSignal.Release();
-        }
-        catch (SemaphoreFullException)
-        {
-        }
-    }
 
     private sealed class RunState
     {
@@ -806,9 +717,8 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         public CancellationTokenSource Stopping { get; } = new();
         public SemaphoreSlim CoordinationGate { get; } = new(1, 1);
         public SemaphoreSlim OperationGate { get; } = new(1, 1);
-        public SemaphoreSlim RebalanceSignal { get; } = new(0, 1);
-        public Dictionary<string, BrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
-        public Task Coordinator { get; set; } = Task.CompletedTask;
+        public Dictionary<string, RemotingBrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
+        public IRemotingRebalanceRegistration? RebalanceRegistration { get; set; }
         public bool ManualAssignment { get; set; }
         public long SubscriptionVersion { get; private set; }
 
@@ -1059,5 +969,4 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         long Offset,
         long Version,
         CancellationToken CancellationToken);
-    private readonly record struct BrokerEndpoint(string BrokerName, string Address);
 }

@@ -295,12 +295,11 @@ public sealed class GrpcLitePushConsumerTests
         var services = new ServiceCollection();
         services
             .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
-            .AddGrpcLitePushConsumer(options =>
+            .AddGrpcLitePushConsumer<TestMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.GroupName = "lite-tests";
                 options.BindTopic = "orders";
                 options.LiteTopics.Add("alpha");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
         await using var provider = services.BuildServiceProvider();
 
@@ -318,12 +317,11 @@ public sealed class GrpcLitePushConsumerTests
         var services = new ServiceCollection();
         services
             .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
-            .AddGrpcLitePushConsumer(options =>
+            .AddGrpcLitePushConsumer<TestMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.GroupName = "lite-tests";
                 options.BindTopic = "orders";
                 options.Subscribe("payments");
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
             });
         using var provider = services.BuildServiceProvider();
 
@@ -603,8 +601,7 @@ public sealed class GrpcLitePushConsumerTests
         {
             GroupName = "lite-tests",
             BindTopic = "orders",
-            SubscriptionSyncInterval = TimeSpan.FromDays(1),
-            MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success)
+            SubscriptionSyncInterval = TimeSpan.FromDays(1)
         };
         configure?.Invoke(options);
         return new GrpcLiteSubscriptionManager(
@@ -650,4 +647,12 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     private static Proto.Status OkStatus() => new() { Code = Proto.Code.Ok };
+
+    private sealed class TestMessageHandler : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(ConsumeResult.Success);
+    }
 }

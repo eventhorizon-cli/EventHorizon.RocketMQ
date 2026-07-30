@@ -182,27 +182,6 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_TypedHandlerRejectsDelegateHandler()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
-            .AddRemotingPushConsumer<TrackingMessageHandler>(
-                ServiceLifetime.Singleton,
-                options =>
-                {
-                    ConfigurePushConsumer(options);
-                    options.MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success);
-                });
-        await using var provider = services.BuildServiceProvider();
-
-        var exception = Assert.Throws<OptionsValidationException>(
-            provider.GetRequiredService<IRemotingPushConsumer>);
-
-        Assert.Contains("MessageHandler cannot be configured", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task AddRemotingPushConsumer_TypedHandlersAreIsolatedByRegistrationName()
     {
         var services = new ServiceCollection();

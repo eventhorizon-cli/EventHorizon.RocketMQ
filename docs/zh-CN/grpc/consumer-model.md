@@ -75,7 +75,7 @@ PushConsumer 启动后大致执行如下循环：
 查询分配 ──> 对已分配队列发起 ReceiveMessage 长轮询
                          │
                          ▼
-                  有界消息缓存与 worker
+                  有界消息缓存与消费循环
                          │
                          ▼
               handler 返回 Success / Retry / DeadLetter
@@ -89,17 +89,32 @@ PushConsumer 启动后大致执行如下循环：
 只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认失败仍可能造成重复投递，因此 handler
 必须具备幂等性。
 
-`MaxConcurrency` 控制 worker 并发度，`MaxCachedMessages` 与 `MaxCachedMessageBytes` 限制本地缓冲。开启
+`MaxConcurrency` 控制消费循环数量，`MaxCachedMessages` 与 `MaxCachedMessageBytes` 限制本地缓冲。开启
 FIFO 分发时，客户端为同一消息组维持顺序尾链并阻塞同组后续消息；这是应用处理顺序的约束，不应被理解为
 跨消费组、跨队列或跨消费者的全局顺序保证。
 
 对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后 dispatcher 会取消 handler token、停止客户端的
-不可见时间续期并请求重新投递；延迟返回的成功结果会被忽略。即使应用代码忽略取消，dispatcher 也会释放 worker 容量，
+不可见时间续期并请求重新投递；延迟返回的成功结果会被忽略。即使应用代码忽略取消，dispatcher 也会释放消费循环的并发槽位，
 但客户端无法强制终止这段代码。重新投递可能与仍在执行、但忽略取消的调用重叠，因此 handler 必须具备幂等性。FIFO message
 group 会刻意排除在此机制之外，因为脱离一个超时 handler 可能破坏顺序。
 
-通过 `AddGrpcPushConsumer<THandler>(ServiceLifetime.Scoped, ...)` 注册 typed handler 时，每次处理都会创建
-DI scope。详情见[依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)。
+#### 多 Push 实例与 handler 所有权
+
+一个 `AddRocketMQGrpc` 注册可以添加多个 Simple、Push 或 LitePush Consumer。每个实例分别拥有自己的 options、
+逻辑 client identity、接收 Engine、订阅、typed handler 绑定和 hosted 生命周期；同一客户端注册中的实例通过
+`GrpcChannelPool` 共享 HTTP/2 channel，但不会因此合并消费组或运行状态。
+
+同一消费组中的普通 Push 实例必须声明完全相同的 topic 和 filter 订阅；不同 group 的实例可以独立消费相同或
+不同 topic。同一 LitePush group 的成员必须使用相同 bind topic，但 LiteTopic 集合可以不同。注册层会校验当前
+进程内可见的组合，远端成员和服务端 group 配置仍以 Proxy 为准。
+
+当普通 Push group 中已有另一个本地成员时，`SubscribeAsync` 和 `UnsubscribeAsync` 会拒绝单个成员的订阅变更。
+应让全部成员使用相同的新订阅集合后一起重启。LitePush 的 LiteTopic 变更有独立的 group 语义，不受此限制。
+
+自动 Push 分发只接受通过泛型 Consumer 方法注册的 typed `IGrpcPushMessageHandler`，options 不再提供委托 handler。
+`Scoped` 或 `Transient` handler 会在每次处理尝试中从新的异步 DI scope 解析，因此可以正常依赖数据库上下文等
+scoped 应用服务；`Singleton` handler 归当前 Consumer 实例所有，并且必须支持并发调用。详情见
+[依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)。
 
 ### LitePush：Push 调度器加上 Lite 订阅控制面
 

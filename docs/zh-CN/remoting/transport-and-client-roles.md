@@ -96,6 +96,60 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。
 延迟返回的结果会被忽略，并可能与重新投递重叠。FIFO 和顺序投递为保持顺序保证而不会进入此恢复路径。
 
+#### Push group membership、Rebalance 与连接所有权
+
+一个 `AddRocketMQRemoting` 注册可以添加多个 Push Consumer。每个实例分别拥有自己的 options、逻辑 client
+identity、Consumer Engine、typed handler 绑定、分配状态和 hosted 生命周期。不同 group 的 Consumer 可以共享
+NameServer 发现、route 和物理 `RemotingClient`；同一 group 的重复配置成员则使用不同物理 Client：经典 Broker
+的消费组表以连接 channel 作为成员键，同一 channel 上另一 client ID 的 heartbeat 会替换已有条目。
+
+分配给活跃 Push 或 LitePull 成员的每个物理 Client 拥有一个 `RemotingRebalanceService`，因此也只注册一个
+`NotifyConsumerIdsChanged` handler：
+
+```text
+Broker 成员变化
+    -> RemotingClient 入站请求循环
+    -> RemotingRebalanceService 按 group 查找
+    -> participant 写入可合并的唤醒信号
+    -> route 刷新 / heartbeat / Consumer ID 查询
+    -> 队列分配与 assignment 收敛
+```
+
+入站 handler 只记录唤醒，不会在接收循环上执行 route 或 Broker I/O。每个 group 都有独立、单飞的 participant，
+因此一个 group 阻塞或失败不会串行阻塞其他 group。失败会在 1 秒后重试，最长 20 秒的周期兜底会修复丢失的通知。
+共享 heartbeat、成员查询和 unregister 操作归 `RemotingConsumerGroupSession` 所有；顺序消费的队列 lock/unlock
+命令归 `RemotingPushQueueLockManager` 所有。
+
+物理 `RemotingClient` 只负责传输，本身没有 group identity。每个活跃的 Push 或 LitePull session 都会在初始和周期
+协调时，经由分配给自己的 Client 发送 heartbeat；LitePull 在拥有订阅或手工分配队列后成为活跃成员。因此共享 Client
+可以保持多个不同 group 的活跃状态，而同组的隔离成员会分别维护自己的 membership。直接 Pull 和 POP 是显式 API，
+有意不创建后台消费组成员关系或 heartbeat 循环；Producer 维护自己的 producer heartbeat 生命周期。
+
+通过 `AssignAsync([])` 清除 LitePull 手工分配会立即结束该活跃成员关系：session 会向已知 Broker 注销，同时保留这些
+端点，以便 shutdown 时可重试一次失败的注销。
+
+Consumer 生命周期就绪与初始位点就绪是两件事。`StartAsync` 会创建生命周期并启动 assignment 收敛，但并发队列接收器的
+初始位点仍会异步解析。对于使用默认末尾位置的新 group，若消息在接收器解析首个 `maxOffset` 前写入，该消息可能位于该
+位置之前，因此有意不属于该 group 的消费范围。这是经典 Java `CONSUME_FROM_LAST_OFFSET` 的行为，不是 Rebalance 或
+typed handler 的故障。需要精确切换边界的应用应选择起始或时间戳位置、保留已提交的 group 位点，或建立显式的就绪握手。
+集成测试不能依赖默认末尾位置来断言跨越此边界的消息送达。
+
+对于顺序 Push，初始 lock 被拒绝或 lock 续期失败都会使本次收敛保持未完成状态，participant 会重试。只有 Broker
+授予队列锁后，Consumer 才会开始分发该队列。
+
+同一 Push group 的成员必须使用完全相同的 topic/filter 订阅、集群或广播模式、顺序消费模式和初始位点；并发度、
+超时与 typed handler 仍属于实例本地配置。这些是 group 范围的规则，但注册层只能对同一进程、同一客户端注册中
+可见的成员做 fail-fast。经典 heartbeat 不携带顺序消费标志，因此其他进程必须由部署配置保证一致。这与官方 Java
+和 Go 客户端的协议行为一致：group membership 对 Broker 可见，而顺序锁定是客户端本地的 Rebalance 决策。
+
+一旦同组的另一成员已在本地注册，单个 Remoting Push 或 LitePull 成员就不能通过 `SubscribeAsync` 或
+`UnsubscribeAsync` 变更订阅。应更新完全一致的 group 范围订阅集合后一起重启本地成员；跨进程成员仍需由部署协调。
+
+Docker IT 同时覆盖一个注册中的两个成员和两个独立操作系统进程。跨进程 case 会分别运行并发与顺序模式，验证
+assignment 互斥且并集完整，再正常停止一个成员，并确认另一个成员在周期兜底运行前由通知触发接管全部队列。另有
+一个并发模式 case 会强制终止成员。顺序模式的强制终止不使用短超时断言，因为恢复边界由 Broker 队列锁 lease 过期
+决定，而不是客户端通知。
+
 #### 并发 Push 分发与位点安全
 
 并发模式下，每个已分配的 Broker 物理队列都有一个客户端侧 `ProcessQueue`。`ProcessQueue` 保存本地已拉取的

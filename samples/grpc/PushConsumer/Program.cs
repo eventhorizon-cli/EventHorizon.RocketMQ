@@ -20,9 +20,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+const string Topic = "eventhorizon-test-topic";
+
 var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
 // Push delivery uses client-initiated long polling.
@@ -32,8 +33,17 @@ builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcPushConsumer<PushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
-        consumerSection.Bind(options);
-        options.Subscribe("eventhorizon-test-topic", new FilterExpression("sample"));
+        options.GroupName = "rocketmq-dotnet-grpc-push-sample";
+        options.MaxConcurrency = 4;
+        options.BatchSize = 16;
+        options.Subscribe(Topic, new FilterExpression("sample"));
+    })
+    .AddGrpcPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
+    {
+        options.GroupName = "rocketmq-dotnet-grpc-push-all-messages";
+        options.MaxConcurrency = 2;
+        options.BatchSize = 8;
+        options.Subscribe(Topic);
     });
 
 await builder.Build().RunAsync();

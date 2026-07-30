@@ -23,8 +23,9 @@ IServiceCollection
   +-- AddRocketMQGrpc(...) or AddRocketMQRemoting(...)
         |
         +-- client registration options
-        +-- one or more protocol-specific roles
-        +-- a role-specific transport graph
+        +-- one Producer (and one Remoting Admin) at most
+        +-- one or more protocol-specific Consumer instances
+        +-- protocol transport infrastructure shared where safe
         +-- hosted start/stop integration
 ```
 
@@ -45,17 +46,95 @@ There is no common `IProducer` or `IConsumer` registration.
 ### Client registrations and roles
 
 Each client registration has its own named options configuration. The registration code validates the connection
-settings and then derives a logical client name for every role. A role is registered only once per client registration; a
-second registration of the same role fails early rather than accidentally sharing a lifecycle.
+settings and then derives a logical client name for every role instance. A Producer can be registered only once per
+client registration; the same is true for Remoting Admin. Consumer extension methods can be called repeatedly on the
+same builder without changing their signatures. Every call creates a separate Consumer options name, logical client
+identity, engine, handler binding, and hosted lifecycle.
 
 The role registration helpers are transport-local:
 
 - [gRPC role registration](../../../src/EventHorizon.RocketMQ.Grpc/GrpcRocketMQRegistration.cs)
 - [Remoting role registration](../../../src/EventHorizon.RocketMQ.Remoting/RemotingRocketMQRegistration.cs)
 
-Transport services are also keyed by the internal role key. A role therefore owns the metadata,
-route client, and transport lifecycle appropriate to its logical client identity. This avoids a
-global client whose state is accidentally shared by an unrelated role.
+Default registrations expose all instances of a Consumer interface through `IEnumerable<TConsumer>`. Keyed client
+registrations expose them through `GetKeyedServices<TConsumer>(registrationName)`. Normal singular resolution follows
+Microsoft DI ordering and returns the last registered Consumer. Code that registers multiple Consumers should therefore
+request the collection unless the last-instance behavior is intentional.
+
+The logical Consumer boundary does not require a separate physical transport for every instance. Within one client
+registration, gRPC Consumers share HTTP/2 channels while retaining distinct logical client IDs and request metadata.
+Remoting roles share NameServer discovery, route state, and Broker connections where classic protocol identity permits
+it. Distinct Remoting consumer groups can share connections, but repeated configured members of the same Push or
+LitePull group use separate Broker connections: the classic Broker's consumer-group table keys membership by connection
+channel, and a heartbeat for another client ID on that same channel replaces the existing entry.
+
+Each physical Remoting client allocated to an active Push or LitePull member owns one internal
+`RemotingRebalanceService`. Distinct groups that share that client also share its single
+`NotifyConsumerIdsChanged` request handler and periodic fallback, while each group has an independent, single-flight
+participant so a blocked or failing group cannot delay another. The Broker callback only coalesces a wakeup signal;
+route refresh, membership queries, and queue reconciliation run outside the inbound request loop. A repeated member of
+the same group uses its isolated physical client and therefore a separate Rebalance service.
+
+Heartbeats belong to a logical group session, not to the physical `RemotingClient`: an active Push or LitePull instance
+sends its own heartbeat through its assigned client during initial and periodic coordination. LitePull begins this
+maintenance when it has subscriptions or manual queue assignments. A shared client can therefore maintain several
+distinct groups, while isolated same-group members maintain their own Broker membership separately. Direct Pull and
+POP are explicit, application-driven APIs; they do not register background consumer-group membership or heartbeat
+loops. Producers maintain their own producer heartbeat lifecycle.
+
+Push and LitePull keep queue-allocation decisions in their own Consumer implementations. Their shared classic group
+protocol operations are owned by `RemotingConsumerGroupSession`; orderly Push queue-lock wire operations are owned by
+`RemotingPushQueueLockManager`. This keeps transport I/O, Rebalance triggering, and Consumer state reconciliation as
+separate responsibilities.
+
+### Consumer-group combinations
+
+For ordinary Push Consumers, every instance in the same consumer group must declare the same topic set and the same
+filter expression for each topic. Registration rejects a same-group mismatch before the host starts. The supported
+combinations are:
+
+| Registration combination | Behavior |
+| --- | --- |
+| Same group and identical subscriptions | Valid clustered replicas; queue assignments are load-balanced across the instances. |
+| Different groups and the same topic | Fan-out; each group receives its own copy of the topic stream. |
+| Different groups and different topics | Independent consumption. |
+| Same group and different topics or filters | Invalid for ordinary Push; use consistent subscriptions or different groups. |
+
+Classic Remoting also requires same-group Push instances to use the same clustering/broadcasting mode, orderly mode,
+and initial position, and same-group LitePull instances to use the same initial offset policy. Push and LitePull cannot
+share a group because they advertise different classic Broker consumption types. Instance-local settings such as
+concurrency, timeouts, and handlers may still differ. These are group-wide configuration rules, but registration can
+only fail fast for members declared in the same process and client registration. Deployments must keep members in
+other processes consistent; the classic Broker heartbeat does not carry every client-side setting, including orderly
+mode.
+
+This ordinary-topic consistency rule does not apply to gRPC LitePush LiteTopic sets. Members of one Lite consumer group
+may own different LiteTopic sets, but they must use the same bind topic. The Proxy remains authoritative for that group
+and bind-topic configuration.
+
+An ordinary gRPC Push member cannot change group-wide subscriptions with `SubscribeAsync` or `UnsubscribeAsync` while
+another member of that group exists in the same client registration. The same local guard applies to Remoting Push and
+LitePull. Configure the new identical subscription set and restart all local members together; members in other
+processes remain a deployment-coordination responsibility. gRPC LitePush LiteTopic changes are separate from this
+ordinary-topic rule.
+
+The existing method signatures configure each instance independently:
+
+```csharp
+var rocketMQ = services.AddRocketMQGrpc(options => options.Endpoint = "proxy:8081");
+
+rocketMQ.AddGrpcPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders");
+});
+
+rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
 
 ### Host lifecycle
 
@@ -81,13 +160,14 @@ The relevant implementations are
 [`GrpcReceiveConsumerEngine`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/GrpcReceiveConsumerEngine.cs)
 and
 [`RemotingConsumerEngine`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/RemotingConsumerEngine.cs).
-This gives each consumer role one coherent lifecycle for its receive loops, subscriptions, and
+This gives each consumer instance one coherent lifecycle for its receive loops, subscriptions, and
 shutdown work.
 
 ### Push-handler lifetimes
 
 The generic Push registration overloads accept a handler type and a `ServiceLifetime`. The factory
-registration is keyed to the internal role key, so handlers cannot cross client-registration boundaries.
+registration is keyed to the internal role-instance key, so handlers cannot cross Consumer-instance or
+client-registration boundaries.
 
 | Handler lifetime | Resolution behavior |
 | --- | --- |
@@ -98,18 +178,18 @@ registration is keyed to the internal role key, so handlers cannot cross client-
 The concrete implementation is visible in the
 [gRPC handler factory](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushMessageHandlerFactory.cs)
 and [Remoting handler factory](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Push/RemotingPushMessageHandlerFactory.cs).
-Use the typed overload when a handler needs DI. The `MessageHandler` option is a direct delegate and
-does not create an application DI scope for the caller. gRPC Push and LitePush invoke their handlers for each
-message. Remoting Push invokes its one `IRemotingPushMessageHandler` API with an
+Automatic dispatch for Push and LitePush requires a typed handler resolved from the application container. Choose
+`Scoped` when the handler depends on scoped application services such as a database context. gRPC Push and LitePush
+invoke their `IGrpcPushMessageHandler` for each message. Remoting Push invokes its one
+`IRemotingPushMessageHandler` API with an
 `IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext` for each batch; its
 `ConsumeMessageBatchSize` defaults to `1`, so existing settings retain singleton delivery unless configured
 otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
-contiguous prefix and retry its tail; `Retry` and `DeadLetter` remain whole-batch outcomes. The direct Remoting
-`MessageHandler` delegate uses the same list-and-context contract.
+contiguous prefix and retry its tail; `Retry` and `DeadLetter` remain whole-batch outcomes.
 
 For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token, stops client-side
 invisibility renewal, and requests retry when the configured limit elapses. The dispatcher ignores a late result and
-releases its worker, but it cannot terminate application code. A timed-out invocation can overlap redelivery and must
+releases its consume-loop slot, but it cannot terminate application code. A timed-out invocation can overlap redelivery and must
 be idempotent. Its typed-handler async scope remains alive until that invocation returns, so scoped dependencies are
 not disposed while handler code is still running. FIFO message groups are excluded to preserve ordering.
 
@@ -120,8 +200,9 @@ orderly delivery remain excluded to preserve ordering guarantees.
 
 ## Trade-offs and Constraints
 
-- A client registration may add each role once. Add another keyed client registration when the application needs a
-  second independent instance of the same role.
+- A client registration may add multiple Consumer instances, but at most one Producer and, for Remoting, one Admin.
+  Add another keyed client registration when the application needs independent connection settings or another
+  Producer/Admin instance.
 - A singleton handler must not capture a scoped dependency. Choose `Scoped` when a message operation
   uses scoped services, and keep the handler's work bounded by the delivery cancellation token.
 - A registration name identifies an application-level keyed client registration, not a RocketMQ Broker feature. It can

@@ -409,6 +409,15 @@ public sealed class RemotingClientTests
             callerCts.Token);
 
         await firstReceived.Task.WaitAsync(OperationTimeout, cancellationToken);
+        var barrierRequest = CreateRequest("write-barrier");
+        var barrierResponse = await client.InvokeAsync(
+            server.EndPoint,
+            barrierRequest,
+            OperationTimeout,
+            cancellationToken);
+
+        Assert.Equal(barrierRequest.Opaque, barrierResponse.Opaque);
+        Assert.Equal("barrier-response", Encoding.UTF8.GetString(barrierResponse.Body!));
         if (callerCancellation)
         {
             callerCts.Cancel();
@@ -433,6 +442,10 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var first = await connection.ReadAsync(server.CancellationToken);
             firstReceived.TrySetResult();
+            var barrier = await connection.ReadAsync(server.CancellationToken);
+            await connection.WriteAsync(
+                CreateResponse(barrier, "barrier-response"),
+                server.CancellationToken);
             var second = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteManyAsync(
                 [CreateResponse(first, "late-response"), CreateResponse(second, "second-response")],
@@ -990,7 +1003,7 @@ public sealed class RemotingClientTests
         const int InitialBrokerOpaque = 8000;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
-        var workersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestLoopsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCount = 0;
         var serverTask = ServeAsync();
         await using var client = CreateClient();
@@ -998,7 +1011,7 @@ public sealed class RemotingClientTests
         {
             if (Interlocked.Increment(ref handlerCount) == 2)
             {
-                workersStarted.TrySetResult();
+                requestLoopsStarted.TrySetResult();
             }
 
             await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken);
@@ -1025,7 +1038,7 @@ public sealed class RemotingClientTests
                     CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + 1)
                 ],
                 server.CancellationToken);
-            await workersStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
+            await requestLoopsStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
 
             await connection.WriteManyAsync(
                 Enumerable.Range(2, 129)

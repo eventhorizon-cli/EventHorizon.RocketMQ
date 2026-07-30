@@ -89,9 +89,30 @@ model.
 
 For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. When it expires, the dispatcher cancels the handler
 token, stops client-side invisibility renewal, and requests retry; a late successful result is ignored. This recovers
-worker capacity even when application code ignores cancellation, but the client cannot forcibly terminate that code.
+consume-loop capacity even when application code ignores cancellation, but the client cannot forcibly terminate that code.
 Retried delivery can overlap an invocation that ignored cancellation, so handlers must be idempotent. FIFO message
 groups are intentionally excluded because detaching a timed-out handler could break their ordering.
+
+#### Multiple Push instances and handler ownership
+
+One `AddRocketMQGrpc` registration may add multiple Simple, Push, or LitePush Consumer instances. Every instance owns
+its options, logical client identity, receive engine, subscriptions, typed handler binding, and hosted lifecycle. The
+instances share HTTP/2 channels through the registration's `GrpcChannelPool`; sharing a channel does not merge their
+consumer groups or runtime state.
+
+Ordinary Push instances in the same consumer group must declare identical topic and filter subscriptions. Instances
+in different groups may consume the same or different topics independently. LitePush members in one group must use
+the same bind topic, while their LiteTopic sets may differ. Registration validates combinations visible in the same
+process, and the Proxy remains authoritative for remote members and server-side group configuration.
+
+When an ordinary Push group has another local member, `SubscribeAsync` and `UnsubscribeAsync` reject individual
+subscription changes. Update every member to the same subscription set and restart them together. This does not
+block LitePush LiteTopic changes, which have separate group semantics under their shared bind topic.
+
+Automatic Push dispatch accepts only a typed `IGrpcPushMessageHandler` registered through the generic Consumer
+method. There is no delegate handler on the options object. A `Scoped` or `Transient` handler is resolved in a fresh
+async DI scope for each handling attempt, allowing normal scoped application dependencies such as database contexts;
+a `Singleton` handler is owned by its Consumer instance and must be safe for concurrent calls.
 
 ### LitePushConsumer
 

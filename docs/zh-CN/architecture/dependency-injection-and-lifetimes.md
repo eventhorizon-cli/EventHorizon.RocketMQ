@@ -37,10 +37,12 @@ services
 
 核心规则如下：
 
-- 每个客户端注册中的同一角色只能注册一次，避免同一身份重复启动后台客户端。
+- 每个客户端注册最多添加一个 Producer，Remoting 还最多添加一个 Admin；同一个 Consumer 扩展方法则可在
+  同一 builder 上重复调用，且不改变现有方法签名。
 - 对外角色接口按协议注册为 singleton；keyed 客户端注册使用 keyed singleton，默认客户端注册使用普通
   singleton。
-- 每个 Consumer 角色在对应 builder 的组合根中创建一个私有 Engine；Engine 不注册为可跨角色共享的
+- 每次 Consumer 注册都会获得独立的 options、逻辑 client ID、Engine、handler 绑定和 hosted 生命周期；
+  Engine 不注册为可跨 Consumer 共享的
   全局服务。
 - 所有已注册的 Producer 和 Consumer 角色都由配套 hosted service 随 Generic Host 启停。Admin 等没有后台循环的
   角色不需要单独的 hosted service。
@@ -62,8 +64,29 @@ gRPC 的实现可从
 与
 [`RemotingRocketMQBuilderExtensions`](../../../src/EventHorizon.RocketMQ.Remoting/RemotingRocketMQBuilderExtensions.cs)。
 
-注册阶段会为每个角色生成一个逻辑 client 名称。这样同一客户端注册中的 Producer 与 Consumer 即使连接同一
-服务端，也有可区分的客户端身份、配置和生命周期。
+注册阶段会为每个角色实例生成一个逻辑 client 名称。这样同一客户端注册中的 Producer 与多个 Consumer 即使
+连接同一服务端，也有可区分的客户端身份、配置和生命周期。
+
+同一客户端注册不等于每个 Consumer 都创建一套物理连接。gRPC Consumer 会共享 HTTP/2 channel，但仍使用
+不同的逻辑 client ID 和请求元数据。Remoting 会在经典协议身份允许时共享 NameServer 发现、路由状态和
+Broker 连接；不同消费组可共享连接，但同一 Push 或 LitePull 消费组下重复配置的成员必须使用不同 Broker
+连接：经典 Broker 的消费组表以连接 channel 作为成员键，同一 channel 上另一 client ID 的 heartbeat 会替换
+已有条目。
+
+分配给活跃 Push 或 LitePull 成员的每个物理 Remoting Client 都拥有一个内部 `RemotingRebalanceService`。共享该
+Client 的不同 group 会共用唯一的 `NotifyConsumerIdsChanged` 请求处理器和周期兜底，但每个 group 都有独立、单飞且
+可合并信号的 participant，因此一个 group 阻塞或失败不会拖住其他 group。Broker 回调只发送唤醒信号；路由刷新、
+成员查询和队列收敛都在入站请求循环之外执行。同一 group 的重复成员使用隔离的物理 Client，因此也分别拥有独立的
+Rebalance service。
+
+heartbeat 属于逻辑 group session，而不属于物理 `RemotingClient`：活跃的 Push 或 LitePull 会在初始和周期协调时，
+经由分配给自己的 Client 发送心跳。LitePull 在拥有订阅或手工分配队列后开始这项维护。因此共享 Client 可以维护多个
+不同 group，而同组的隔离成员会分别维护自己的 Broker membership。直接 Pull 和 POP 是由应用驱动的显式 API，不会注册
+后台消费组成员关系或 heartbeat 循环；Producer 则维护自己的 producer heartbeat 生命周期。
+
+Push 与 LitePull 各自在 Consumer 实现中保留队列分配决策。两者共享的经典消费组协议操作由
+`RemotingConsumerGroupSession` 负责，顺序 Push 的队列锁 wire 操作由 `RemotingPushQueueLockManager` 负责，从而
+把 transport I/O、Rebalance 触发和 Consumer 状态收敛分成独立职责。
 
 ### 2. 角色拥有自己的 Engine
 
@@ -94,9 +117,55 @@ public sealed class OrderPublisher(IGrpcProducer producer)
 在不使用 Generic Host 的独立 `ServiceProvider` 中解析角色时，调用方必须显式调用 `StartAsync` 和
 `StopAsync`；容器本身不会替应用启动后台工作。
 
-### 4. 多客户端配置与 keyed service
+### 4. 多 Consumer 与 keyed service
 
-同一 Host 需要多个同类型角色时，使用 keyed 客户端注册，并在使用方按 `registrationName` 选择对应的 keyed service：
+默认客户端注册中的多个同类型 Consumer 可通过 `IEnumerable<TConsumer>` 解析；keyed 客户端注册则使用
+`GetKeyedServices<TConsumer>(registrationName)` 取得全部实例。Microsoft DI 的普通单实例解析会返回最后注册的
+Consumer，因此除非明确需要该行为，注册多个 Consumer 的代码应依赖集合。
+
+普通 PushConsumer 的同一消费组必须为每个 topic 配置完全一致的订阅和过滤表达式；不一致的注册会在 Host
+启动前被拒绝。组合语义如下：
+
+| 注册组合 | 行为 |
+| --- | --- |
+| 相同 group、相同订阅 | 合法的集群副本，队列分配会在实例间负载均衡。 |
+| 不同 group、相同 topic | 扇出消费，每个 group 都收到该 topic 的完整消息流。 |
+| 不同 group、不同 topic | 相互隔离地消费。 |
+| 相同 group、不同 topic 或 filter | 普通 PushConsumer 的非法组合；应统一订阅或拆分 group。 |
+
+经典 Remoting 还要求同组 Push 实例使用相同的集群/广播模式、顺序消费模式和初始位点，同组 LitePull 实例使用相同的
+初始位点策略。Push 与 LitePull 会向经典 Broker 上报不同的消费类型，因此不能共用 group。并发度、超时和 handler
+等实例本地配置仍可不同。这些是 group 范围的配置规则，但注册层只能对同一进程、同一客户端注册中声明的成员做
+fail-fast。其他进程中的成员仍需由部署配置保证一致；经典 Broker heartbeat 不会携带包括顺序消费模式在内的所有
+客户端本地设置。
+
+该普通 topic 一致性规则不适用于 gRPC LitePush 的 LiteTopic 集合。同一 Lite 消费组的成员可在该组的 bind
+topic 下持有不同 LiteTopic 集合，但必须使用相同的 bind topic；最终仍以 Proxy 对消费组和 bind topic 的校验为准。
+
+当同一客户端注册中已有同组普通 gRPC Push 成员时，单个成员不能通过 `SubscribeAsync` 或 `UnsubscribeAsync`
+变更 group 范围的订阅。Remoting Push 和 LitePull 也有相同的本地保护。应配置新的、完全一致的订阅集合后一起
+重启本地成员；其他进程中的成员仍需由部署协调。gRPC LitePush 的 LiteTopic 变更不属于这条普通 topic 规则。
+
+现有方法签名可以分别配置每个实例：
+
+```csharp
+var rocketMQ = services.AddRocketMQGrpc(options => options.Endpoint = "proxy:8081");
+
+rocketMQ.AddGrpcPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders");
+});
+
+rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
+
+同一 Host 需要不同连接配置或多个 Producer/Admin 实例时，使用 keyed 客户端注册，并在使用方按
+`registrationName` 选择对应的 keyed service：
 
 ```csharp
 public sealed class AuditPublisher(
@@ -111,7 +180,7 @@ keyed service 的 key，用于选择已配置的客户端角色。默认客户�
 
 ### 5. typed handler 的 scope 以“单次处理”为边界
 
-Push 和 LitePush 可接收委托，也可注册实现 `IGrpcPushMessageHandler` 或
+Push 和 LitePush 的自动分发必须注册实现 `IGrpcPushMessageHandler` 或
 `IRemotingPushMessageHandler` 的 typed handler。handler 生命周期由调用方选择：
 
 | handler 生命周期 | 实例与 scope 行为 |
@@ -120,18 +189,17 @@ Push 和 LitePush 可接收委托，也可注册实现 `IGrpcPushMessageHandler`
 | `Scoped` | 每次 handler 调用创建一个异步 DI scope，并从该 scope 解析 handler。 |
 | `Transient` | 同样为每次 handler 调用创建一个异步 DI scope，再取得新的 handler。 |
 
-因此，scoped handler 可以安全地依赖 scoped 服务；但 singleton handler 不能捕获 scoped 依赖。启用
-容器 scope 校验时，后者会在容器构建或解析阶段暴露为生命周期错误，而不是在长轮询运行后才随机失败。
+因此，scoped handler 可以通过构造函数安全地依赖数据库上下文等 scoped 服务；但 singleton handler 不能捕获
+scoped 依赖。启用容器 scope 校验时，后者会在容器构建或解析阶段暴露为生命周期错误，而不是在长轮询运行后才随机失败。
 
 gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通过唯一的
 `IRemotingPushMessageHandler` API，在每次批量回调中传入 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`；其 `ConsumeMessageBatchSize` 默认值为 `1`，因此除非显式配置，否则仍是
 单消息投递。对于并发、非 FIFO 批次，handler 可以返回 `Success` 并设置 `AckIndex`，以确认连续前缀并重试
-尾部；`Retry` 和 `DeadLetter` 仍是整批结果。直接配置的 Remoting `MessageHandler` 委托也使用相同的列表和
-context 合约。
+尾部；`Retry` 和 `DeadLetter` 仍是整批结果。
 
 对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token、停止客户端不可见时间续期，并请求
-重新投递。dispatcher 会忽略延迟返回的结果并释放 worker，但无法终止应用代码。超时调用可能与重新投递重叠，因此必须保持幂等。
+重新投递。dispatcher 会忽略延迟返回的结果并释放消费循环的并发槽位，但无法终止应用代码。超时调用可能与重新投递重叠，因此必须保持幂等。
 对应 typed handler 的异步 scope 会一直存活到该调用返回，因此 handler 代码仍在运行时不会提前释放 scoped 依赖。FIFO message group
 为了保持顺序而不会应用此机制。
 
@@ -149,8 +217,8 @@ FIFO 和顺序投递为保持顺序保证而不会应用此机制。
 **单例角色并不等于单线程。** Consumer 本身是长寿命对象，但可以按 `MaxConcurrency` 并发调用 handler。
 handler 及其依赖必须满足所选生命周期和并发模型。
 
-**一个客户端注册中的一个角色只能有一个实例。** 需要同协议的多个 Producer 或 Consumer 时，应创建不同的
-keyed 客户端注册，而不是重复对一个 builder 调用相同的 `Add...` 方法。
+**一个客户端注册可以包含多个 Consumer。** Producer 仍只能有一个，Remoting Admin 也只能有一个。需要另一套
+连接配置或另一个 Producer/Admin 时，应创建不同的 keyed 客户端注册。
 
 **不要把 ServiceProvider 当作业务依赖。** 注册层使用 provider 只是 composition root 的一部分；业务
 代码应接受接口和普通依赖。运行时再从 `IServiceProvider` 查找 RocketMQ 客户端会隐藏连接目标和生命周期。

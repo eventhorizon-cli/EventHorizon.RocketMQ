@@ -29,6 +29,9 @@ rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
 });
 ```
 
+同一个 `AddRocketMQGrpc` 注册可以添加多个配置彼此独立的 LitePush Consumer，并复用底层 gRPC channel。同一 group
+中的 Consumer 必须使用相同 `BindTopic`，但 LiteTopic 集合可以不同；不同 group 则会独立接收消息。
+
 不要为该角色调用继承的 `ConsumerOptions.Subscribe`。LitePush 通过 `BindTopic` 接收消息，并用 `LiteTopics`、
 `SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 管理逻辑订阅；它不接受普通 topic 过滤条件。
 
@@ -101,7 +104,8 @@ docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/LitePushConsumer
 ```
 
-可运行代码绑定 `eventhorizon-test-lite-parent-topic`，并订阅 `eventhorizon-test-lite-topic`。要观察消息投递，
+`appsettings.json` 只保存 Proxy 连接设置，Consumer 角色参数都直接写在 `Program.cs` 的注册旁。可运行代码绑定
+`eventhorizon-test-lite-parent-topic`，并订阅 `eventhorizon-test-lite-topic`。要观察消息投递，
 需要使用能在该 parent 下发送 Lite message 的 Producer；普通 Producer 示例不会写入 LiteTopic。
 
 完整 API 和部署约束请参阅

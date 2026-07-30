@@ -30,6 +30,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private readonly IGrpcReceiveConsumerEngine _engine;
     private readonly IGrpcRocketMQTelemetry _telemetry;
     private readonly ILogger _logger;
+    private readonly bool _hasLocalGroupPeer;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _fifoGate = new();
     private readonly Dictionary<string, Task> _fifoTails = new(StringComparer.Ordinal);
@@ -44,7 +45,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private CancellationTokenSource? _processingCts;
     private CancellationTokenSource? _fifoRetryCts;
     private Task[] _receivers = Array.Empty<Task>();
-    private Task[] _workers = Array.Empty<Task>();
+    private Task[] _consumeLoopTasks = Array.Empty<Task>();
     private int _started;
     private int _disposed;
 
@@ -52,15 +53,16 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         IOptions<GrpcPushConsumerOptions> options,
         IGrpcReceiveConsumerEngine engine,
         ILogger<GrpcPushConsumer> logger,
-        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>>? messageHandler = null,
+        Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> messageHandler,
+        bool hasLocalGroupPeer,
         IGrpcRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
-        _messageHandler = messageHandler ?? _options.MessageHandler ??
-            throw new ArgumentException("A message handler is required.", nameof(options));
+        _messageHandler = messageHandler ?? throw new ArgumentNullException(nameof(messageHandler));
         _engine = engine;
         _telemetry = telemetry ?? GrpcRocketMQTelemetry.Disabled;
         _logger = logger;
+        _hasLocalGroupPeer = hasLocalGroupPeer;
         _messages = CreateMessageChannel();
         _messageByteCapacity = new ByteCapacityGate(_options.MaxCachedMessageBytes);
     }
@@ -95,8 +97,8 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             try
             {
                 await _engine.StartAsync(cancellationToken).ConfigureAwait(false);
-                _workers = Enumerable.Range(0, _options.MaxConcurrency)
-                    .Select(_ => ProcessMessagesAsync(_processingCts.Token))
+                _consumeLoopTasks = Enumerable.Range(0, _options.MaxConcurrency)
+                    .Select(_ => RunConsumeLoopAsync(_processingCts.Token))
                     .ToArray();
                 _receivers = [CoordinateSubscriptionLoopsAsync(_receivingCts.Token)];
                 Volatile.Write(ref _started, 1);
@@ -147,6 +149,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfRuntimeSubscriptionChangesAreUnsupported();
         await _engine.SubscribeAsync(topic, expression, cancellationToken).ConfigureAwait(false);
         SignalSubscriptionChange();
     }
@@ -154,8 +157,20 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     public async Task UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfRuntimeSubscriptionChangesAreUnsupported();
         await _engine.UnsubscribeAsync(topic, cancellationToken).ConfigureAwait(false);
         SignalSubscriptionChange();
+    }
+
+    private void ThrowIfRuntimeSubscriptionChangesAreUnsupported()
+    {
+        if (_hasLocalGroupPeer)
+        {
+            throw new InvalidOperationException(
+                $"Runtime subscription changes are not supported when multiple gRPC Push consumers in the same " +
+                $"consumer group '{_options.GroupName}' share a client registration. Configure identical " +
+                "subscriptions for all group members and restart them together.");
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -199,7 +214,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         var receivingCts = _receivingCts!;
         var processingCts = _processingCts!;
         var fifoRetryCts = _fifoRetryCts!;
-        var workersDetached = false;
+        var consumeLoopsDetached = false;
         receivingCts.Cancel();
         fifoRetryCts.Cancel();
         try
@@ -213,26 +228,26 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
 
             _messages.Writer.TryComplete();
-            var workers = Task.WhenAll(_workers);
+            var consumeLoops = Task.WhenAll(_consumeLoopTasks);
             try
             {
-                if (!workers.IsCompleted)
+                if (!consumeLoops.IsCompleted)
                 {
-                    var completed = await Task.WhenAny(workers, _fifoBlockedSignal.Task)
+                    var completed = await Task.WhenAny(consumeLoops, _fifoBlockedSignal.Task)
                         .WaitAsync(cancellationToken).ConfigureAwait(false);
-                    if (!ReferenceEquals(completed, workers))
+                    if (!ReferenceEquals(completed, consumeLoops))
                     {
                         processingCts.Cancel();
                     }
                 }
 
-                await workers.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await consumeLoops.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 processingCts.Cancel();
-                ObserveWorkers(workers, processingCts, fifoRetryCts);
-                workersDetached = true;
+                ObserveConsumeLoops(consumeLoops, processingCts, fifoRetryCts);
+                consumeLoopsDetached = true;
                 throw;
             }
             catch (OperationCanceledException) when (processingCts.IsCancellationRequested)
@@ -241,7 +256,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
         finally
         {
-            if (!workersDetached)
+            if (!consumeLoopsDetached)
             {
                 processingCts.Cancel();
             }
@@ -249,11 +264,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             _messages.Writer.TryComplete();
             try
             {
-                if (!workersDetached)
+                if (!consumeLoopsDetached)
                 {
                     try
                     {
-                        await Task.WhenAll(_workers).ConfigureAwait(false);
+                        await Task.WhenAll(_consumeLoopTasks).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (processingCts.IsCancellationRequested)
                     {
@@ -270,7 +285,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 {
                     receivingCts.Dispose();
                     // Detached handlers can still register with these tokens while they unwind.
-                    if (!workersDetached)
+                    if (!consumeLoopsDetached)
                     {
                         processingCts.Dispose();
                         fifoRetryCts.Dispose();
@@ -280,7 +295,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     _processingCts = null;
                     _fifoRetryCts = null;
                     _receivers = Array.Empty<Task>();
-                    _workers = Array.Empty<Task>();
+                    _consumeLoopTasks = Array.Empty<Task>();
                     DrainMessageChannel();
                     lock (_fifoGate)
                     {
@@ -541,7 +556,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
     }
 
-    private async Task ProcessMessagesAsync(CancellationToken cancellationToken)
+    private async Task RunConsumeLoopAsync(CancellationToken cancellationToken)
     {
         var messages = _messages;
         await foreach (var message in messages.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -1015,27 +1030,29 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
     }
 
-    private void ObserveWorkers(
-        Task workers,
+    private void ObserveConsumeLoops(
+        Task consumeLoops,
         CancellationTokenSource processingCts,
         CancellationTokenSource fifoRetryCts) =>
-        _ = ObserveWorkersAsync(workers, processingCts, fifoRetryCts);
+        _ = ObserveConsumeLoopsAsync(consumeLoops, processingCts, fifoRetryCts);
 
-    private async Task ObserveWorkersAsync(
-        Task workers,
+    private async Task ObserveConsumeLoopsAsync(
+        Task consumeLoops,
         CancellationTokenSource processingCts,
         CancellationTokenSource fifoRetryCts)
     {
         try
         {
-            await workers.ConfigureAwait(false);
+            await consumeLoops.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception exception)
         {
-            _logger.LogDebug(exception, "A message worker completed with an exception after consumer shutdown was canceled");
+            _logger.LogDebug(
+                exception,
+                "A message consume loop completed with an exception after consumer shutdown was canceled");
         }
         finally
         {

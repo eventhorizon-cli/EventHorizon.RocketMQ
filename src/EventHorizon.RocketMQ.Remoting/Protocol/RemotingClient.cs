@@ -24,7 +24,7 @@ namespace EventHorizon.RocketMQ.Remoting.Protocol;
 internal class RemotingClient : IRemotingClient
 {
     private const int InboundRequestCapacity = 128;
-    private const int InboundRequestWorkerCount = 2;
+    private const int InboundRequestLoopCount = 2;
 
     private readonly ILogger<RemotingClient> _logger;
     private readonly Dictionary<EndPoint, RemotingConnection> _connections;
@@ -40,7 +40,7 @@ internal class RemotingClient : IRemotingClient
     private readonly Action<EndPoint, System.Net.Security.SslClientAuthenticationOptions>? _configureSslOptions;
     private readonly int _maximumFrameLength;
     private readonly Channel<InboundRequest> _inboundRequests;
-    private readonly Task[] _inboundRequestWorkers;
+    private readonly Task[] _inboundRequestLoopTasks;
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly TaskCompletionSource _operationsDrained =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -76,8 +76,8 @@ internal class RemotingClient : IRemotingClient
             SingleReader = false,
             SingleWriter = false
         });
-        _inboundRequestWorkers = Enumerable.Range(0, InboundRequestWorkerCount)
-            .Select(_ => ProcessInboundRequestsAsync())
+        _inboundRequestLoopTasks = Enumerable.Range(0, InboundRequestLoopCount)
+            .Select(_ => RunInboundRequestLoopAsync())
             .ToArray();
 
     }
@@ -263,7 +263,7 @@ internal class RemotingClient : IRemotingClient
 
         try
         {
-            await Task.WhenAll(_inboundRequestWorkers).ConfigureAwait(false);
+            await Task.WhenAll(_inboundRequestLoopTasks).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -547,7 +547,7 @@ internal class RemotingClient : IRemotingClient
         }
     }
 
-    private async Task ProcessInboundRequestsAsync()
+    private async Task RunInboundRequestLoopAsync()
     {
         try
         {

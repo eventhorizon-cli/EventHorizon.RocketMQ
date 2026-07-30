@@ -71,8 +71,8 @@ app.MapPost("/messages", async (IRemotingProducer producer, CancellationToken ca
 await app.RunAsync();
 ```
 
-默认客户端注册通过常规参数注入或构造函数注入进行解析。同一客户端注册中的同一角色只能注册一次；重复的
-客户端注册与角色组合会在服务注册期间失败。
+默认客户端注册通过常规参数注入或构造函数注入进行解析。每个客户端注册最多分别添加一个 Producer 和 Admin；
+同一个 builder 可重复调用 Consumer 注册方法，并为每个实例配置不同选项。
 
 ## 支持的功能
 
@@ -338,7 +338,8 @@ var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancel
 
 ## PullConsumer
 
-`IRemotingPullConsumer` 将队列分配、消息处理和位点提交时机交给应用程序控制。
+`IRemotingPullConsumer` 将队列分配、消息处理和位点提交时机交给应用程序控制。它是显式请求 API，不会注册后台
+消费组 heartbeat。
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -396,9 +397,9 @@ FilterExpressionType.Sql)`；目标 Broker 必须允许属性过滤。
 
 ## LitePullConsumer
 
-`IRemotingLitePullConsumer` 是经典的面向分配的拉取模型。订阅模式下，它会发送
-`CONSUME_ACTIVELY` 心跳，参与集群消费组分配，并对已分配队列执行长轮询。`PollAsync` 仅推进本地队列
-位点；只有显式调用 `CommitAsync` 才会将该位点写入 Broker。
+`IRemotingLitePullConsumer` 是经典的面向分配的拉取模型。在订阅或手工分配队列处于活跃状态时，它会发送
+`CONSUME_ACTIVELY` 心跳。订阅模式参与集群消费组分配；手工分配保留应用选择的队列。两种模式都对已分配队列
+执行长轮询。`PollAsync` 仅推进本地队列位点；只有显式调用 `CommitAsync` 才会将该位点写入 Broker。
 
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
@@ -434,6 +435,7 @@ public sealed class OrderLitePuller(IRemotingLitePullConsumer consumer)
 订阅和手动分配不能同时使用。手动模式不要配置订阅，通过 `GetMessageQueuesAsync` 发现队列后，将选中的
 队列传给 `AssignAsync`。可使用 `Pause`、`Resume`、`Seek`、`SeekToBeginningAsync` 和
 `SeekToEndAsync` 控制本地拉取位点。
+向 `AssignAsync` 传入空集合会清除手动分配，并立即向已知 Broker 注销该 LitePull 消费组成员。
 
 Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长轮询，而不是协议层面的 Broker Push；当前
 有意不提供广播模式的本地位点存储。
@@ -442,7 +444,7 @@ Lite Pull 当前仅支持集群消费。它仍是客户端发起的 Broker 长�
 
 `IRemotingPopConsumer` 将经典 Broker POP 暴露为显式的 receipt 消费操作。应用选择物理队列、处理返回
 消息，并确认每条 Broker 签发的 receipt。它不执行后台分配或自动分发；未确认的消息会在 receipt 可见期
-到期后由 Broker 重新投递。
+到期后由 Broker 重新投递。它不会注册后台消费组 heartbeat。
 
 经典 Broker 的单次 POP 最多接受 32 条消息；`BatchSize` 和每次调用的 `maxMessages` 参数均受该上限限制。
 
@@ -493,7 +495,7 @@ POP 命令码超出了 RocketMQ 可选二进制 command-header 格式保留的�
 经典 `IRemotingPushConsumer` 由客户端主动拉取和长轮询实现，并非协议层面的 Broker Push；但它还会
 处理经典 Broker 的重平衡和位点重置回调。
 
-Remoting 只有一个 PushConsumer 角色和一套基于列表的 message-handler 合约。增大
+Remoting 对外提供一套 PushConsumer API 和一套基于列表的 message-handler 合约。增大
 `ConsumeMessageBatchSize` 只会改变该合约单次收到的最大消息数，不会选择另一个 Consumer 实现。
 
 ```csharp
@@ -569,10 +571,14 @@ handler 还会收到 `RemotingPushConsumeContext`。默认返回 `Success` 会�
 广播模式没有 Broker 重试或死信流程，因此未确认的批次尾部会被跳过，同时推进本地位点。`MessageGroup` FIFO 与
 `ConsumeOrderly` 路径始终收到单消息列表，不使用部分批量确认。
 
-运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。泛型注册会为当前客户端注册选择
-handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色创建一个 handler，且必须线程安全；`Scoped` 和
-`Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。`MessageHandler` 委托使用相同的
-列表和 context 签名，仍适合简单的无状态回调，但不能与类型化 handler 同时配置。
+运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会更新经典心跳和当前队列接收器。泛型注册会为当前 Consumer 实例选择
+handler 生命周期：`Singleton` 会为每个 Consumer 实例创建一个 handler，且必须线程安全；`Scoped` 和
+`Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
+`IRemotingPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
+
+> **0.2.0 破坏性迁移：** `RemotingPushConsumerOptions.MessageHandler` 和非泛型
+> `AddRemotingPushConsumer` overload 已被移除。请将委托逻辑移入 `IRemotingPushMessageHandler` 实现，并通过
+> `AddRemotingPushConsumer<THandler>` 注册。handler 依赖 scoped 应用服务时应选择 `Scoped`。
 
 ### 队列有序消费
 
@@ -580,13 +586,12 @@ handler 生命周期：`Singleton` 会为每个客户端注册中的每个角色
 `ConsumeMessageBatchSize` 如何配置，它都会传递只包含一条消息的列表：
 
 ```csharp
-rocketMQ.AddRemotingPushConsumer(options =>
+rocketMQ.AddRemotingPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
 {
     options.GroupName = "orders-orderly-consumer";
     options.ConsumeOrderly = true;
     options.MaxConcurrency = 8; // Limits concurrent queues, not a single queue's order.
     options.Subscribe("orders");
-    options.MessageHandler = ProcessOrderAsync;
 });
 ```
 
@@ -612,6 +617,12 @@ options.ConsumeTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
 
 起始位置不会重置已有的消费组位点，重试队列也会保留其恢复位置。
 
+`StartAsync` 会启动 Consumer 生命周期并安排接收器初始化，但不保证每个新分配队列都已完成首个 offset 的查询和持久化，
+也不保证已经发起首个拉取。默认的 `End` 策略下，若消息在 `StartAsync` 返回后、首个 offset 查询完成前写入，它可能位于
+最终解析出的队尾之前，因此会被有意跳过。这与经典 RocketMQ 的 `CONSUME_FROM_LAST_OFFSET` 语义一致。部署切换必须包含
+每条消息时，应使用 `Beginning`、`Timestamp`、已有的消费组已提交位点，或显式的应用就绪握手。并非测试启动时序的测试应
+设置确定性的初始位置，或在发送前建立就绪条件。
+
 广播消费会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点：
 
 ```csharp
@@ -625,9 +636,63 @@ options.LocalOffsetStorePath = Path.Combine(
 如果默认客户端标识在不同启动之间会变化，请使用稳定且特定于实例的路径。广播模式没有消费组拥有的
 重试或死信队列，因此 `Retry` 和 `DeadLetter` 结果会被丢弃，本地位点仍会向前推进。
 
-## 多客户端配置与 keyed service
+## 多 Consumer、keyed 客户端注册与生命周期
 
-同一应用连接多个集群或需要同一角色的多个实例时，请使用 keyed 客户端注册。注册名称即
+现有方法签名可以分别配置每个 Consumer。以下两个 PushConsumer 在同一个 `AddRocketMQRemoting` 注册下使用
+不同的 group 和 topic：
+
+```csharp
+var rocketMQ = builder.Services.AddRocketMQRemoting(options =>
+{
+    options.NamesrvAddr = "nameserver:9876";
+});
+
+rocketMQ.AddRemotingPushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "orders-consumer";
+    options.Subscribe("orders", new FilterExpression("created"));
+});
+
+rocketMQ.AddRemotingPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
+{
+    options.GroupName = "audit-consumer";
+    options.Subscribe("audit");
+});
+```
+
+每个 Consumer 实例都有相互隔离的 options、逻辑 client ID、Engine、handler 绑定和 hosted 生命周期。默认
+客户端注册可注入 `IEnumerable<IRemotingPushConsumer>` 取得全部 Push 实例；keyed 客户端注册则调用
+`GetKeyedServices<IRemotingPushConsumer>(registrationName)`。按照 Microsoft DI 的注册顺序，单实例解析会返回
+最后注册的 Consumer。
+
+普通 Push 订阅组合具有以下语义：
+
+| Consumer 注册组合 | 行为 |
+| --- | --- |
+| 相同 group、相同 topic/filter 订阅 | 合法的集群副本，分配会在实例间负载均衡。 |
+| 不同 group、相同 topic | 扇出消费，每个 group 独立收到该 topic 的消息流。 |
+| 不同 group、不同 topic | 相互隔离地消费。 |
+| 相同 group、不同 topic 或 filter | 非法组合；注册会拒绝不一致的普通 Push 订阅。 |
+
+同组 Push 实例还必须使用相同的集群/广播模式、顺序消费模式和初始位点；同组 LitePull 实例必须使用相同的订阅和
+初始位点策略。Push 与 LitePull 会向经典 Broker 上报不同的消费类型，因此不能共用 group。并发度、超时和 handler
+等实例本地配置仍可不同。注册层只能对当前进程和当前客户端注册内声明的成员做 fail-fast；其他进程中的成员仍需由
+部署配置保证一致，因为经典 Broker heartbeat 不会携带包括顺序消费模式在内的所有客户端本地设置。
+
+同一客户端注册会在经典协议允许时共享 NameServer 发现、路由状态和 Broker 连接。不同消费组的 Consumer
+可以共享连接；同一消费组下重复注册的活跃组成员（Push 或 LitePull）则使用不同 Broker 连接，因为经典
+Broker 以连接 channel 标识消费组成员。这种物理连接隔离不会改变上述集群副本语义。
+
+分配给活跃 Push 或 LitePull 成员的每个物理 Client 都绑定一个内部 `RemotingRebalanceService`，由它持有唯一的 Broker
+`NotifyConsumerIdsChanged` handler 和最长 20 秒的周期兜底。通知只写入可合并的唤醒信号；每个消费组通过自己
+独立、单飞的 participant 完成收敛，因此阻塞的 group 不会占住入站请求循环，也不会串行阻塞无关 group。同一
+group 的重复成员使用不同物理 Client，所以也分别拥有独立的 Rebalance service。
+
+物理 `RemotingClient` 只负责传输，并不单独拥有消费组 identity。每个活跃的 Push 或 LitePull 会在初始和周期协调时，
+经由分配给自己的 Client 发送 heartbeat。共享 Client 因而可以维护多个不同 group；同组的隔离成员则分别维护自己的
+membership。Producer 维护自己的 producer heartbeat 生命周期。
+
+同一应用连接多个集群、使用独立连接配置或添加另一个 Producer/Admin 时，请使用 keyed 客户端注册。注册名称即
 `registrationName`；该 `registrationName` 同时作为 keyed service 的 key。
 
 ```csharp
@@ -648,8 +713,7 @@ public sealed class AuditPublisher(
 }
 ```
 
-每个客户端注册和角色分别拥有独立的传输与生命周期。从独立 `ServiceProvider` 而不是 Generic Host 解析
-客户端时，请显式调用 `StartAsync` 和 `StopAsync`。
+从独立 `ServiceProvider` 而不是 Generic Host 解析客户端时，请显式调用 `StartAsync` 和 `StopAsync`。
 
 ## 兼容性与异常
 

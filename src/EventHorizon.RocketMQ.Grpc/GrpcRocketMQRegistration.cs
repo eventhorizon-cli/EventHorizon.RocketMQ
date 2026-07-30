@@ -21,13 +21,17 @@ namespace EventHorizon.RocketMQ.Grpc;
 
 internal static class GrpcRocketMQRegistration
 {
-    internal static GrpcRocketMQRoleKey RegisterRole(GrpcRocketMQBuilder builder, GrpcRocketMQRole role)
+    internal static GrpcRocketMQRoleRegistration RegisterRole(GrpcRocketMQBuilder builder, GrpcRocketMQRole role)
     {
-        var roleKey = new GrpcRocketMQRoleKey(builder.OptionsName, role);
-        if (builder.Services.Any(descriptor =>
+        var registrations = builder.Services
+            .Where(descriptor =>
                 descriptor.ServiceType == typeof(GrpcRocketMQRoleRegistration) &&
                 descriptor.ImplementationInstance is GrpcRocketMQRoleRegistration registration &&
-                registration.RoleKey == roleKey))
+                registration.RoleKey.OptionsName == builder.OptionsName &&
+                registration.RoleKey.Role == role)
+            .ToArray();
+        var roleKey = new GrpcRocketMQRoleKey(builder.OptionsName, role, registrations.Length);
+        if (registrations.Length > 0 && role == GrpcRocketMQRole.Producer)
         {
             var registrationDescription = builder.RegistrationName is null
                 ? "the default client registration"
@@ -36,14 +40,15 @@ internal static class GrpcRocketMQRegistration
                 $"A {roleKey.DisplayRole} is already registered for {registrationDescription}.");
         }
 
-        builder.Services.AddSingleton(new GrpcRocketMQRoleRegistration(roleKey));
+        var registration = GrpcRocketMQRoleRegistration.Create(roleKey);
+        builder.Services.AddSingleton(registration);
         builder.Services.AddKeyedSingleton<IOptions<GrpcClientOptions>>(roleKey, (provider, _) =>
         {
             var configured = provider.GetRequiredService<IOptionsMonitor<GrpcClientOptions>>()
                 .Get(roleKey.OptionsName);
             return Options.Create(configured);
         });
-        return roleKey;
+        return registration;
     }
 
     internal static IOptions<GrpcClientOptions> GetClientOptions(
@@ -69,6 +74,30 @@ internal static class GrpcRocketMQRegistration
         builder.Services.TryAddKeyedSingleton<TService>(
             builder.RegistrationName,
             (provider, _) => factory(provider));
+    }
+
+    internal static Func<IServiceProvider, TService> AddConsumerSingleton<TService>(
+        GrpcRocketMQBuilder builder,
+        Func<IServiceProvider, TService> factory)
+        where TService : class
+    {
+        if (builder.RegistrationName is null)
+        {
+            var index = builder.Services.Count(descriptor =>
+                descriptor.ServiceType == typeof(TService) && !descriptor.IsKeyedService);
+            builder.Services.AddSingleton(factory);
+            return provider => provider.GetServices<TService>().ElementAt(index);
+        }
+
+        var registrationName = builder.RegistrationName;
+        var keyedIndex = builder.Services.Count(descriptor =>
+            descriptor.ServiceType == typeof(TService) &&
+            descriptor.IsKeyedService &&
+            Equals(descriptor.ServiceKey, registrationName));
+        builder.Services.AddKeyedSingleton<TService>(
+            registrationName,
+            (provider, _) => factory(provider));
+        return provider => provider.GetKeyedServices<TService>(registrationName).ElementAt(keyedIndex);
     }
 
     internal static TService GetRoleService<TService>(IServiceProvider provider, string? registrationName)

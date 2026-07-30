@@ -30,6 +30,10 @@ startup, the SDK resolves the subscriptions, sends active-consumer heartbeats, a
 `Assignment` exposes a snapshot of the queues currently owned by this consumer. When a group has more consumers than
 readable queues, some consumers can legitimately have no assignment.
 
+One `AddRocketMQRemoting` registration may add multiple Lite Pull consumers, each with its own options and lifecycle.
+The registration reuses shared NameServer and route state, while same-group consumers remain distinct active members
+for queue allocation. Different groups may use different topics and filters.
+
 All instances in the same group must use the same topic and filter subscriptions. Allocation uses the group's complete
 consumer-id list for each topic; inconsistent subscriptions can assign a queue to a member that is not consuming that
 topic, while inconsistent filters can make accepted messages depend on the current queue owner.
@@ -78,8 +82,9 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj
 ```
 
-The default NameServer is `localhost:9876`. An external setup must make both the NameServer and its advertised Broker
-addresses reachable, create the normal topic, and grant the group route-query and consume permissions. Use the
-Remoting Producer sample to publish messages.
+Only the NameServer connection settings are externalized in `appsettings.json`; the consumer role values remain
+visible beside its registration in `Program.cs`. The default NameServer is `localhost:9876`. An external setup must
+make both the NameServer and its advertised Broker addresses reachable, create the normal topic, and grant the group
+route-query and consume permissions. Use the Remoting Producer sample to publish messages.
 
 See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

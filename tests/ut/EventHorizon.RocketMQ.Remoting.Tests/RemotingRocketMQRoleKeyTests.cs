@@ -45,4 +45,16 @@ public sealed class RemotingRocketMQRoleKeyTests
         Assert.Equal("999", unknown.DisplayRole);
         Assert.Equal("custom-name-999", unknown.LogicalClientName);
     }
+
+    [Fact]
+    public void RoleKey_UsesDistinctOptionsAndLogicalNamesForAdditionalConsumerInstances()
+    {
+        var first = new RemotingRocketMQRoleKey("east", RemotingRocketMQRole.PushConsumer);
+        var second = new RemotingRocketMQRoleKey("east", RemotingRocketMQRole.PushConsumer, 1);
+
+        Assert.Equal("east", first.RoleOptionsName);
+        Assert.Equal("east:remoting-push-consumer:2", second.RoleOptionsName);
+        Assert.Equal("east-remoting-push-consumer", first.LogicalClientName);
+        Assert.Equal("east-remoting-push-consumer-2", second.LogicalClientName);
+    }
 }

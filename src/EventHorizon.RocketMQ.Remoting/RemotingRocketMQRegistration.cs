@@ -21,15 +21,19 @@ namespace EventHorizon.RocketMQ.Remoting;
 
 internal static class RemotingRocketMQRegistration
 {
-    internal static RemotingRocketMQRoleKey RegisterRole(
+    internal static RemotingRocketMQRoleRegistration RegisterRole(
         RemotingRocketMQBuilder builder,
         RemotingRocketMQRole role)
     {
-        var roleKey = new RemotingRocketMQRoleKey(builder.OptionsName, role);
-        if (builder.Services.Any(descriptor =>
+        var registrations = builder.Services
+            .Where(descriptor =>
                 descriptor.ServiceType == typeof(RemotingRocketMQRoleRegistration) &&
                 descriptor.ImplementationInstance is RemotingRocketMQRoleRegistration registration &&
-                registration.RoleKey == roleKey))
+                registration.RoleKey.OptionsName == builder.OptionsName &&
+                registration.RoleKey.Role == role)
+            .ToArray();
+        var roleKey = new RemotingRocketMQRoleKey(builder.OptionsName, role, registrations.Length);
+        if (registrations.Length > 0 && role is RemotingRocketMQRole.Admin or RemotingRocketMQRole.Producer)
         {
             var registrationDescription = builder.RegistrationName is null
                 ? "the default client registration"
@@ -38,14 +42,18 @@ internal static class RemotingRocketMQRegistration
                 $"A {roleKey.DisplayRole} is already registered for {registrationDescription}.");
         }
 
-        builder.Services.AddSingleton(new RemotingRocketMQRoleRegistration(roleKey));
+        var roleOptionsName = roleKey.InstanceIndex == 0
+            ? roleKey.RoleOptionsName
+            : $"\0EventHorizon.RocketMQ.Remoting:{roleKey.RoleOptionsName}";
+        var registration = new RemotingRocketMQRoleRegistration(roleKey, roleOptionsName);
+        builder.Services.AddSingleton(registration);
         builder.Services.AddKeyedSingleton<IOptions<RemotingClientOptions>>(roleKey, (provider, _) =>
         {
             var configured = provider.GetRequiredService<IOptionsMonitor<RemotingClientOptions>>()
                 .Get(roleKey.OptionsName);
             return Options.Create(configured.ForLogicalClient(roleKey.LogicalClientName));
         });
-        return roleKey;
+        return registration;
     }
 
     internal static IOptions<RemotingClientOptions> GetClientOptions(
@@ -71,6 +79,30 @@ internal static class RemotingRocketMQRegistration
         builder.Services.TryAddKeyedSingleton<TService>(
             builder.RegistrationName,
             (provider, _) => factory(provider));
+    }
+
+    internal static Func<IServiceProvider, TService> AddConsumerSingleton<TService>(
+        RemotingRocketMQBuilder builder,
+        Func<IServiceProvider, TService> factory)
+        where TService : class
+    {
+        if (builder.RegistrationName is null)
+        {
+            var index = builder.Services.Count(descriptor =>
+                descriptor.ServiceType == typeof(TService) && !descriptor.IsKeyedService);
+            builder.Services.AddSingleton(factory);
+            return provider => provider.GetServices<TService>().ElementAt(index);
+        }
+
+        var registrationName = builder.RegistrationName;
+        var keyedIndex = builder.Services.Count(descriptor =>
+            descriptor.ServiceType == typeof(TService) &&
+            descriptor.IsKeyedService &&
+            Equals(descriptor.ServiceKey, registrationName));
+        builder.Services.AddKeyedSingleton<TService>(
+            registrationName,
+            (provider, _) => factory(provider));
+        return provider => provider.GetKeyedServices<TService>(registrationName).ElementAt(keyedIndex);
     }
 
     internal static TService GetRoleService<TService>(IServiceProvider provider, string? registrationName)

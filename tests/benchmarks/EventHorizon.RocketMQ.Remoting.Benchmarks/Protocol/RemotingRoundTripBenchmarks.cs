@@ -17,12 +17,11 @@ using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using BenchmarkDotNet.Attributes;
-using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace EventHorizon.RocketMQ.Benchmarks.Protocols.Remoting;
+namespace EventHorizon.RocketMQ.Remoting.Benchmarks.Protocol;
 
 [MemoryDiagnoser]
 public class RemotingRoundTripBenchmarks

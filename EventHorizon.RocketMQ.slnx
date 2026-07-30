@@ -29,11 +29,12 @@
   </Folder>
   <Folder Name="/tests/" />
   <Folder Name="/tests/benchmarks/">
-    <Project Path="tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj" />
+    <Project Path="tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/tests/it/">
     <Project Path="tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj" />
     <Project Path="tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/EventHorizon.RocketMQ.IntegrationTestInfrastructure.csproj" />
+    <Project Path="tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost.csproj" />
     <Project Path="tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests/EventHorizon.RocketMQ.Remoting.IntegrationTests.csproj" />
   </Folder>
   <Folder Name="/tests/ut/">

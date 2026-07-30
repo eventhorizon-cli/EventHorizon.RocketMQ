@@ -15,10 +15,13 @@
 
 namespace EventHorizon.RocketMQ.Grpc;
 
-internal readonly record struct GrpcRocketMQRoleKey(string OptionsName, GrpcRocketMQRole Role)
+internal readonly record struct GrpcRocketMQRoleKey(
+    string OptionsName,
+    GrpcRocketMQRole Role,
+    int InstanceIndex = 0)
 {
     public string LogicalClientName =>
-        $"{Normalize(string.IsNullOrEmpty(OptionsName) ? "default" : OptionsName)}-{RoleToken}";
+        $"{Normalize(string.IsNullOrEmpty(OptionsName) ? "default" : OptionsName)}-{RoleToken}{InstanceToken}";
 
     public string DisplayRole => Role switch
     {
@@ -37,6 +40,8 @@ internal readonly record struct GrpcRocketMQRoleKey(string OptionsName, GrpcRock
         GrpcRocketMQRole.LitePushConsumer => "grpc-lite-push-consumer",
         _ => Role.ToString().ToLowerInvariant()
     };
+
+    private string InstanceToken => InstanceIndex == 0 ? string.Empty : $"-{InstanceIndex + 1}";
 
     private static string Normalize(string value) =>
         new(value.Select(static character =>

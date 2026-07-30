@@ -21,7 +21,6 @@ using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
 var clientSection = builder.Configuration.GetRequiredSection("RocketMQ:Client");
-var consumerSection = builder.Configuration.GetRequiredSection("RocketMQ:Consumer");
 
 // The endpoint must target a RocketMQ Proxy; this transport does not connect directly to Brokers.
 // Lite Push uses client-initiated long polling.
@@ -31,7 +30,19 @@ builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
     .AddGrpcLitePushConsumer<LitePushConsumerMessageHandler>(
         ServiceLifetime.Scoped,
-        consumerSection.Bind);
+        options =>
+        {
+            options.GroupName = "eventhorizon-test-lite-push-consumer";
+            options.BindTopic = "eventhorizon-test-lite-parent-topic";
+            options.LiteTopics.Add("eventhorizon-test-lite-topic");
+            options.BatchSize = 16;
+            options.MaxConcurrency = 4;
+            options.MaxDeliveryAttempts = 16;
+            options.InvisibleDuration = TimeSpan.FromSeconds(30);
+            options.ConsumeTimeout = TimeSpan.FromMinutes(15);
+            options.LongPollingTimeout = TimeSpan.FromSeconds(15);
+            options.SubscriptionSyncInterval = TimeSpan.FromSeconds(30);
+        });
 // AddGrpcLitePushConsumer registers the lifecycle service; this hosted service only reports the active LiteTopics.
 builder.Services.AddHostedService<LitePushConsumer>();
 

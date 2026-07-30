@@ -17,6 +17,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
@@ -35,6 +36,11 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
 
 public sealed class RemotingPushConsumerTests
 {
+    private static readonly ConditionalWeakTable<
+        RemotingPushConsumerOptions,
+        Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>>
+        MessageHandlers = new();
+
     [Theory]
     [InlineData(ConsumeFromPosition.Beginning, "CONSUME_FROM_FIRST_OFFSET")]
     [InlineData(ConsumeFromPosition.End, "CONSUME_FROM_LAST_OFFSET")]
@@ -118,19 +124,19 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumerIdsChangedNotification_RebalancesMatchingGroupAndUnregistersOnDispose()
+    public async Task RebalanceRegistration_RebalancesAndUnregistersOnDispose()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@notify-test");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
+        var rebalance = new TestRemotingRebalanceService();
         var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
@@ -144,28 +150,20 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance);
+            NullLogger<RemotingPushConsumer>.Instance,
+            rebalanceService: rebalance);
 
         try
         {
-            Assert.Equal(2, remoting.ActiveRequestHandlerRegistrations);
+            Assert.Equal(1, remoting.ActiveRequestHandlerRegistrations);
             await consumer.StartAsync(cancellationToken);
+            Assert.Equal(1, rebalance.ActiveRegistrations);
             var initialCoordinationCount = remoting.Requests.Count(
                 static request => request.Code == RequestCode.GetConsumerListByGroup);
 
-            var ignoredResponse = await remoting.NotifyConsumerIdsChangedAsync(
-                "tenant-a%another-group",
-                cancellationToken);
-            Assert.Null(ignoredResponse);
-            await Task.Delay(100, cancellationToken);
-            Assert.Equal(
-                initialCoordinationCount,
-                remoting.Requests.Count(static request => request.Code == RequestCode.GetConsumerListByGroup));
-
-            var response = await remoting.NotifyConsumerIdsChangedAsync(
+            await rebalance.RebalanceAsync(
                 "tenant-a%legacy-group",
                 cancellationToken);
-            Assert.Null(response);
             await remoting.WaitForRequestCountAsync(
                 RequestCode.GetConsumerListByGroup,
                 initialCoordinationCount + 1,
@@ -177,6 +175,7 @@ public sealed class RemotingPushConsumerTests
         }
 
         Assert.Equal(0, remoting.ActiveRequestHandlerRegistrations);
+        Assert.Equal(0, rebalance.ActiveRegistrations);
     }
 
     [Fact]
@@ -187,15 +186,14 @@ public sealed class RemotingPushConsumerTests
         {
             TrackCommittedOffsets = true
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -218,7 +216,7 @@ public sealed class RemotingPushConsumerTests
 
         try
         {
-            Assert.Equal(2, remoting.ActiveRequestHandlerRegistrations);
+            Assert.Equal(1, remoting.ActiveRequestHandlerRegistrations);
             await consumer.StartAsync(cancellationToken);
             await remoting.WaitForTopicPullsAsync("tenant-a%orders", 1, cancellationToken);
             var originalPullCount = remoting.PullOffsets.Count;
@@ -283,15 +281,14 @@ public sealed class RemotingPushConsumerTests
                 return Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess });
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -356,15 +353,14 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -439,15 +435,14 @@ public sealed class RemotingPushConsumerTests
                 return Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess });
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -659,15 +654,14 @@ public sealed class RemotingPushConsumerTests
         {
             PullHandler = static (_, token) => WaitForCanceledPullAsync(token)
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 3,
             MaxCachedMessages = 9,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -699,14 +693,13 @@ public sealed class RemotingPushConsumerTests
         var remoting = new FakeRemotingClient("127.0.0.1@legacy-test");
         var routeTopics = new ConcurrentQueue<string>();
         var routes = CreateRouteServiceMock(topics: routeTopics);
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders", new FilterExpression("created || paid"));
         var clientOptions = new RemotingClientOptions
         {
@@ -783,7 +776,7 @@ public sealed class RemotingPushConsumerTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var timestamp = new DateTimeOffset(2026, 7, 18, 9, 30, 0, TimeSpan.Zero);
         var remoting = new FakeRemotingClient("127.0.0.1@legacy-test");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = position,
@@ -791,8 +784,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -1114,7 +1106,7 @@ public sealed class RemotingPushConsumerTests
             $"rocketmq-dynamic-subscription-{Guid.NewGuid():N}.json");
         try
         {
-            var options = new RemotingPushConsumerOptions
+            var options = WithMessageHandler(new RemotingPushConsumerOptions
             {
                 GroupName = "broadcast-group",
                 ConsumerMode = ConsumerMode.Broadcasting,
@@ -1123,8 +1115,7 @@ public sealed class RemotingPushConsumerTests
                 MaxConcurrency = 1,
                 MaxCachedMessages = 8,
                 LongPollingTimeout = TimeSpan.FromSeconds(1),
-                MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-            };
+            }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
             var remoting = new FakeRemotingClient("127.0.0.1@dynamic-test");
             await using var consumer = CreateRemotingPushConsumer(
                 options,
@@ -1307,13 +1298,13 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, _, _) =>
+        }, (messages, _, _) =>
             {
                 var message = Assert.Single(messages);
                 if (message.MessageId == "retry-after-crash")
@@ -1322,8 +1313,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -1352,14 +1342,13 @@ public sealed class RemotingPushConsumerTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@legacy-test");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         var clientOptions = new RemotingClientOptions
         {
@@ -1368,17 +1357,20 @@ public sealed class RemotingPushConsumerTests
             PollNameServerInterval = TimeSpan.FromMilliseconds(20),
             HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(20)
         };
+        var rebalance = new TestRemotingRebalanceService();
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(clientOptions),
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance);
+            NullLogger<RemotingPushConsumer>.Instance,
+            rebalanceService: rebalance);
 
         await consumer.StartAsync(cancellationToken);
         await remoting.WaitForPullsAsync(2, cancellationToken);
         remoting.SetConsumerIds("another-client");
+        await rebalance.RebalanceAsync("legacy-group", cancellationToken);
         await remoting.WaitForCanceledPullsAsync(2, cancellationToken);
         var pullCountAfterRevocation = remoting.PullOffsets.Count;
         await Task.Delay(100, cancellationToken);
@@ -1415,7 +1407,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1424,7 +1416,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 5,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, _, _) =>
+        }, (messages, _, _) =>
             {
                 batches.Enqueue(messages.Select(static message => message.MessageId).ToArray());
                 if (batches.Count == 3)
@@ -1433,8 +1425,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1484,7 +1475,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1493,12 +1484,11 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, context, _) =>
+        }, static (_, context, _) =>
             {
                 context.AckIndex = 0;
                 return ValueTask.FromResult(ConsumeResult.Retry);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1538,7 +1528,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1547,14 +1537,13 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 3,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, context, _) =>
+        }, (messages, context, _) =>
             {
                 Assert.Equal(["one", "two", "three"], messages.Select(static message => message.MessageId));
                 context.AckIndex = 0;
                 context.DelayLevelWhenNextConsume = 7;
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1613,7 +1602,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1622,12 +1611,11 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, context, _) =>
+        }, static (_, context, _) =>
             {
                 context.AckIndex = 0;
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1690,7 +1678,7 @@ public sealed class RemotingPushConsumerTests
                     messagesPerBatch);
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1699,7 +1687,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = queueCount,
             MaxCachedMessages = messagesPerBatch,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, _, _) =>
+        }, (messages, _, _) =>
             {
                 Assert.Equal(messagesPerBatch, messages.Count);
                 handledBatches.Enqueue(messages.Select(static message => message.MessageId).ToArray());
@@ -1709,8 +1697,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1761,7 +1748,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1771,7 +1758,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 var message = Assert.Single(messages);
                 if (message.MessageId == "first")
@@ -1791,8 +1778,7 @@ public sealed class RemotingPushConsumerTests
 
                 secondHandled.TrySetResult();
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1845,7 +1831,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1854,14 +1840,13 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (_, _, _) =>
+        }, async (_, _, _) =>
             {
                 handlerStarted.TrySetResult();
                 await releaseHandler.Task;
                 handlerFinished.TrySetResult();
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1915,7 +1900,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1926,7 +1911,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, context, _) =>
+        }, async (messages, context, _) =>
             {
                 Assert.Equal(2, messages.Count);
                 context.DelayLevelWhenNextConsume = -1;
@@ -1934,8 +1919,7 @@ public sealed class RemotingPushConsumerTests
                 await releaseHandler.Task;
                 handlerFinished.TrySetResult();
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -1987,7 +1971,7 @@ public sealed class RemotingPushConsumerTests
                 return await WaitForCanceledPullAsync(token);
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -1996,7 +1980,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 var messageId = Assert.Single(messages).MessageId;
                 handlerCalls.AddOrUpdate(messageId, 1, static (_, count) => count + 1);
@@ -2010,8 +1994,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2066,7 +2049,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2075,7 +2058,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 3,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (_, _, token) =>
+        }, async (_, _, token) =>
             {
                 if (Interlocked.Increment(ref handlerCalls) == 3)
                 {
@@ -2084,8 +2067,7 @@ public sealed class RemotingPushConsumerTests
 
                 await releaseBatches.Task.WaitAsync(token);
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2133,7 +2115,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2141,12 +2123,11 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (_, _, _) =>
+        }, (_, _, _) =>
             {
                 Interlocked.Increment(ref handlerCalls);
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2219,7 +2200,7 @@ public sealed class RemotingPushConsumerTests
                 }
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2228,7 +2209,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 if (Assert.Single(messages).MessageId == "second")
                 {
@@ -2237,8 +2218,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2320,15 +2300,14 @@ public sealed class RemotingPushConsumerTests
                 }
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2421,7 +2400,7 @@ public sealed class RemotingPushConsumerTests
                 return new RemotingCommand { Code = ResponseCodes.ResSuccess };
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2430,7 +2409,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 9,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, _, _) =>
+        }, (messages, _, _) =>
             {
                 if (Assert.Single(messages).MessageId == "broker-b")
                 {
@@ -2438,8 +2417,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2487,7 +2465,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeMessageBatchSize = 2,
@@ -2497,7 +2475,7 @@ public sealed class RemotingPushConsumerTests
             MaxDeliveryAttempts = 3,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, context, token) =>
+        }, async (messages, context, token) =>
             {
                 var message = Assert.Single(messages);
                 if (message.MessageId == "first")
@@ -2516,8 +2494,7 @@ public sealed class RemotingPushConsumerTests
 
                 secondHandled.TrySetResult();
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -2586,7 +2563,7 @@ public sealed class RemotingPushConsumerTests
                 return await WaitForCanceledPullAsync(token);
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2595,7 +2572,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 if (Assert.Single(messages).MessageId == "first")
                 {
@@ -2608,8 +2585,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2667,7 +2643,7 @@ public sealed class RemotingPushConsumerTests
                 return await WaitForCanceledPullAsync(token);
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -2676,7 +2652,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 if (Assert.Single(messages).MessageId == "first")
                 {
@@ -2690,14 +2666,15 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
+        var rebalance = new TestRemotingRebalanceService();
         await using var consumer = CreateRemotingPushConsumer(
             options,
             CreateRouteServiceMock(queueCount: 2).Object,
             remoting,
-            "cross-queue-fifo-drop");
+            "cross-queue-fifo-drop",
+            rebalanceService: rebalance);
 
         await consumer.StartAsync(cancellationToken);
         try
@@ -2706,7 +2683,7 @@ public sealed class RemotingPushConsumerTests
             Assert.False(secondHandled.Task.IsCompleted);
 
             remoting.SetConsumerIds("000-other-client", clientId);
-            await remoting.NotifyConsumerIdsChangedAsync("legacy-group", cancellationToken);
+            await rebalance.RebalanceAsync("legacy-group", cancellationToken);
             await firstCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
             await Task.Delay(100, cancellationToken);
             Assert.False(secondHandled.Task.IsCompleted);
@@ -2769,7 +2746,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = consumeOrderly,
@@ -2777,15 +2754,14 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (_, _, token) =>
+        }, async (_, _, token) =>
             {
                 handlerStarted.TrySetResult();
                 using var registration = token.Register(() => handlerCancellationRequested.TrySetResult());
                 await releaseHandler.Task;
                 handlerFinished.TrySetResult();
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         var consumer = CreateRemotingPushConsumer(
             options,
@@ -2825,23 +2801,18 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void Constructor_DisposesFirstRequestHandlerRegistrationWhenSecondRegistrationFails()
+    public void Constructor_PropagatesResetRequestHandlerRegistrationFailure()
     {
-        var disposed = false;
-        var registration = new Mock<IDisposable>(MockBehavior.Strict);
-        registration.Setup(value => value.Dispose()).Callback(() => { disposed = true; });
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         remoting
-            .SetupSequence(value => value.RegisterRequestHandler(
-                It.IsAny<int>(),
+            .Setup(value => value.RegisterRequestHandler(
+                RequestCode.ResetConsumerOffset,
                 It.IsAny<RemotingRequestHandler>()))
-            .Returns(registration.Object)
             .Throws(new InvalidOperationException("The reset-offset registration failed."));
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
 
         var exception = Assert.Throws<InvalidOperationException>(() => new RemotingPushConsumer(
@@ -2850,12 +2821,12 @@ public sealed class RemotingPushConsumerTests
             new Mock<IRemotingConsumerEngine>(MockBehavior.Strict).Object,
             new Mock<ITopicRouteService>(MockBehavior.Strict).Object,
             remoting.Object,
+            new TestRemotingRebalanceService(),
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance));
+            NullLogger<RemotingPushConsumer>.Instance,
+            GetMessageHandler(options)));
 
         Assert.Equal("The reset-offset registration failed.", exception.Message);
-        Assert.True(disposed);
-        registration.Verify(value => value.Dispose(), Times.Once);
     }
 
     [Fact]
@@ -2863,15 +2834,14 @@ public sealed class RemotingPushConsumerTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@clear-reset-boundary");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -2962,15 +2932,14 @@ public sealed class RemotingPushConsumerTests
             .Returns<string, bool, CancellationToken>((topic, _, _) =>
                 Task.FromResult(topic == "orders" ? route : new TopicRouteData()));
         var remoting = new FakeRemotingClient("127.0.0.1@route-with-invalid-entries");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3002,14 +2971,13 @@ public sealed class RemotingPushConsumerTests
                 Remark = "The broker rejected the unregister request."
             })
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3043,7 +3011,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3051,8 +3019,7 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
             RetryDelay = TimeSpan.FromHours(3),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3107,31 +3074,101 @@ public sealed class RemotingPushConsumerTests
                     })
                 })
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         options.Subscribe("invoices");
+        var rebalance = new TestRemotingRebalanceService();
         await using var consumer = CreateRemotingPushConsumer(
             options,
             routes.Object,
             remoting,
-            "coordination-recovery");
+            "coordination-recovery",
+            rebalanceService: rebalance);
 
         await consumer.StartAsync(cancellationToken);
-        Assert.DoesNotContain(remoting.PullOffsets, static pull => pull.Topic == "invoices");
-
-        await remoting.NotifyConsumerIdsChangedAsync("legacy-group", cancellationToken);
         await remoting.WaitForTopicPullsAsync("invoices", 1, cancellationToken);
 
         Assert.Equal(2, membershipRequests);
         Assert.Contains(remoting.Requests, static request => request.Code == RequestCode.HeartBeat);
+    }
+
+    [Fact]
+    public async Task StartAsync_WakesRebalanceWhenInitialCoordinationIsIncomplete()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var remoting = new FakeRemotingClient("127.0.0.1@initial-coordination-retry");
+        remoting.SetConsumerIds("another-client");
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
+        options.Subscribe("orders");
+        var registration = new Mock<IRemotingRebalanceRegistration>(MockBehavior.Strict);
+        registration.Setup(value => value.Wakeup());
+        registration.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var rebalance = new Mock<IRemotingRebalanceService>(MockBehavior.Strict);
+        rebalance
+            .Setup(value => value.Register(
+                "legacy-group",
+                It.IsAny<Func<CancellationToken, Task<bool>>>()))
+            .Returns(registration.Object);
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "initial-coordination-retry",
+            rebalanceService: rebalance.Object);
+
+        await consumer.StartAsync(cancellationToken);
+
+        Assert.Empty(consumer.Assignment);
+        registration.Verify(value => value.Wakeup(), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunningSubscribe_WakesRebalanceWhenDirectCoordinationIsIncomplete()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var remoting = new FakeRemotingClient("127.0.0.1@subscription-coordination-retry");
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            MaxConcurrency = 1,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1),
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
+        options.Subscribe("orders");
+        var registration = new Mock<IRemotingRebalanceRegistration>(MockBehavior.Strict);
+        registration.Setup(value => value.Wakeup());
+        registration.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        var rebalance = new Mock<IRemotingRebalanceService>(MockBehavior.Strict);
+        rebalance
+            .Setup(value => value.Register(
+                "legacy-group",
+                It.IsAny<Func<CancellationToken, Task<bool>>>()))
+            .Returns(registration.Object);
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "subscription-coordination-retry",
+            rebalanceService: rebalance.Object);
+        await consumer.StartAsync(cancellationToken);
+        remoting.SetConsumerIds("another-client");
+
+        await consumer.SubscribeAsync("payments", cancellationToken: cancellationToken);
+
+        registration.Verify(value => value.Wakeup(), Times.Once);
     }
 
     [Fact]
@@ -3154,15 +3191,14 @@ public sealed class RemotingPushConsumerTests
                     new IOException("The broker did not respond to the initial offset query."))
                 : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResQueryNotFound })
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3218,15 +3254,14 @@ public sealed class RemotingPushConsumerTests
                         ExtFields = new Dictionary<string, object> { ["offset"] = "17" }
                     })
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => throw new InvalidOperationException("The application handler failed.")
-        };
+        }, static (_, _, _) => throw new InvalidOperationException("The application handler failed."));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3277,7 +3312,7 @@ public sealed class RemotingPushConsumerTests
                     new IOException("The broker did not accept the retry acknowledgement."))
                 : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess })
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3285,12 +3320,11 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
             RetryDelay = TimeSpan.FromMilliseconds(10),
-            MessageHandler = (_, _, _) =>
+        }, (_, _, _) =>
             {
                 Interlocked.Increment(ref handlerCalls);
                 return ValueTask.FromResult(ConsumeResult.Retry);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3370,7 +3404,7 @@ public sealed class RemotingPushConsumerTests
                     new IOException("The Broker did not accept the retry acknowledgement."));
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3380,7 +3414,7 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromHours(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 switch (Assert.Single(messages).MessageId)
                 {
@@ -3396,8 +3430,7 @@ public sealed class RemotingPushConsumerTests
                     default:
                         throw new InvalidOperationException("The test received an unexpected message.");
                 }
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3478,7 +3511,7 @@ public sealed class RemotingPushConsumerTests
                     new IOException("The Broker did not accept the dead-letter settlement."));
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3488,7 +3521,7 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromHours(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 switch (Assert.Single(messages).MessageId)
                 {
@@ -3505,8 +3538,7 @@ public sealed class RemotingPushConsumerTests
                     default:
                         throw new InvalidOperationException("The test received an unexpected message.");
                 }
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3591,7 +3623,7 @@ public sealed class RemotingPushConsumerTests
                 return Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess });
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3600,12 +3632,11 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (_, _, _) =>
+        }, (_, _, _) =>
             {
                 Interlocked.Increment(ref handlerCalls);
                 return ValueTask.FromResult(ConsumeResult.Retry);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3662,7 +3693,7 @@ public sealed class RemotingPushConsumerTests
                 return new RemotingCommand { Code = ResponseCodes.ResSuccess };
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
@@ -3671,7 +3702,7 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 2,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, _, _) =>
+        }, (messages, _, _) =>
             {
                 var messageId = Assert.Single(messages).MessageId;
                 handlerCalls.AddOrUpdate(messageId, 1, static (_, count) => count + 1);
@@ -3682,8 +3713,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ValueTask.FromResult(ConsumeResult.DeadLetter);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3727,7 +3757,7 @@ public sealed class RemotingPushConsumerTests
                 return await WaitForCanceledPullAsync(token);
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -3735,8 +3765,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -3763,7 +3792,7 @@ public sealed class RemotingPushConsumerTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@orderly-lock-test");
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -3771,8 +3800,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
@@ -3832,7 +3860,7 @@ public sealed class RemotingPushConsumerTests
                 return Task.FromResult(CreateLockResponse(request, grant));
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -3840,9 +3868,9 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
+        var rebalance = new TestRemotingRebalanceService();
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
@@ -3855,7 +3883,8 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance);
+            NullLogger<RemotingPushConsumer>.Instance,
+            rebalanceService: rebalance);
 
         await consumer.StartAsync(cancellationToken);
         await Task.Delay(100, cancellationToken);
@@ -3863,7 +3892,10 @@ public sealed class RemotingPushConsumerTests
             remoting.PullOffsets,
             static pull => string.Equals(pull.Topic, "orders", StringComparison.Ordinal));
 
+        Assert.False(await rebalance.RebalanceAsync("legacy-group", cancellationToken));
+
         Volatile.Write(ref lockOrders, 1);
+        Assert.True(await rebalance.RebalanceAsync("legacy-group", cancellationToken));
         await remoting.WaitForTopicPullsAsync("orders", 1, cancellationToken);
         await consumer.StopAsync(cancellationToken);
     }
@@ -3900,7 +3932,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -3908,9 +3940,9 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
+        var rebalance = new TestRemotingRebalanceService();
         await using var consumer = CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
@@ -3923,9 +3955,11 @@ public sealed class RemotingPushConsumerTests
             CreateRouteServiceMock().Object,
             remoting,
             TimeProvider.System,
-            NullLogger<RemotingPushConsumer>.Instance);
+            NullLogger<RemotingPushConsumer>.Instance,
+            rebalanceService: rebalance);
 
         await consumer.StartAsync(cancellationToken);
+        Assert.False(await rebalance.RebalanceAsync("legacy-group", cancellationToken));
         await remoting.WaitForTopicPullsAsync("orders", 2, cancellationToken);
         await consumer.StopAsync(cancellationToken);
 
@@ -3958,7 +3992,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -3967,7 +4001,7 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (messages, _, token) =>
+        }, async (messages, _, token) =>
             {
                 var message = Assert.Single(messages);
                 if (message.MessageId == "first")
@@ -3982,8 +4016,7 @@ public sealed class RemotingPushConsumerTests
                 }
 
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -4031,7 +4064,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -4040,8 +4073,7 @@ public sealed class RemotingPushConsumerTests
             MaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-        };
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -4084,7 +4116,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -4094,14 +4126,13 @@ public sealed class RemotingPushConsumerTests
             MaxDeliveryAttempts = 1,
             RetryDelay = TimeSpan.FromMilliseconds(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = (messages, context, _) =>
+        }, (messages, context, _) =>
             {
                 Assert.Single(messages);
                 context.AckIndex = -1;
                 handled.TrySetResult();
                 return ValueTask.FromResult(ConsumeResult.Success);
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -4143,7 +4174,7 @@ public sealed class RemotingPushConsumerTests
                 throw new InvalidOperationException("An infinite pull completed unexpectedly.");
             }
         };
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "legacy-group",
             ConsumeOrderly = true,
@@ -4151,13 +4182,12 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 1,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = async (_, _, _) =>
+        }, async (_, _, _) =>
             {
                 firstStarted.TrySetResult();
                 await releaseFirst.Task;
                 return ConsumeResult.Success;
-            }
-        };
+            });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,
@@ -4449,7 +4479,7 @@ public sealed class RemotingPushConsumerTests
         string offsetPath,
         Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>> handler)
     {
-        var options = new RemotingPushConsumerOptions
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
         {
             GroupName = "broadcast-group",
             ConsumerMode = ConsumerMode.Broadcasting,
@@ -4458,27 +4488,49 @@ public sealed class RemotingPushConsumerTests
             MaxConcurrency = 2,
             MaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-            MessageHandler = handler
-        };
+        }, handler);
         options.Subscribe("orders");
         return options;
     }
 
-    private static RemotingPushConsumerOptions CreateClusteringOptions() => new()
+    private static RemotingPushConsumerOptions CreateClusteringOptions() => WithMessageHandler(
+        new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            MaxConcurrency = 2,
+            MaxCachedMessages = 8,
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        },
+        static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
+
+    private static RemotingPushConsumerOptions WithMessageHandler(
+        RemotingPushConsumerOptions options,
+        Func<
+            IReadOnlyList<RemotingMessageView>,
+            RemotingPushConsumeContext,
+            CancellationToken,
+            ValueTask<ConsumeResult>> messageHandler)
     {
-        GroupName = "legacy-group",
-        MaxConcurrency = 2,
-        MaxCachedMessages = 8,
-        LongPollingTimeout = TimeSpan.FromSeconds(1),
-        MessageHandler = static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success)
-    };
+        MessageHandlers.Add(options, messageHandler);
+        return options;
+    }
+
+    private static Func<
+        IReadOnlyList<RemotingMessageView>,
+        RemotingPushConsumeContext,
+        CancellationToken,
+        ValueTask<ConsumeResult>> GetMessageHandler(RemotingPushConsumerOptions options) =>
+        MessageHandlers.TryGetValue(options, out var messageHandler)
+            ? messageHandler
+            : throw new InvalidOperationException("No test message handler was registered for these options.");
 
     private static RemotingPushConsumer CreateRemotingPushConsumer(
         RemotingPushConsumerOptions options,
         ITopicRouteService routes,
         IRemotingClient remoting,
         string instanceName,
-        IRemotingRocketMQTelemetry? telemetry = null) => CreateRemotingPushConsumer(
+        IRemotingRocketMQTelemetry? telemetry = null,
+        IRemotingRebalanceService? rebalanceService = null) => CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
             {
@@ -4491,7 +4543,8 @@ public sealed class RemotingPushConsumerTests
             remoting,
             TimeProvider.System,
             NullLogger<RemotingPushConsumer>.Instance,
-            telemetry);
+            telemetry,
+            rebalanceService);
 
     private static RemotingPushConsumer CreateRemotingPushConsumer(
         IOptions<RemotingPushConsumerOptions> options,
@@ -4500,7 +4553,8 @@ public sealed class RemotingPushConsumerTests
         IRemotingClient remoting,
         TimeProvider timeProvider,
         ILogger<RemotingPushConsumer> logger,
-        IRemotingRocketMQTelemetry? telemetry = null)
+        IRemotingRocketMQTelemetry? telemetry = null,
+        IRemotingRebalanceService? rebalanceService = null)
     {
         var consumerEngine = CreateRemotingConsumerEngine(
             options.Value,
@@ -4518,9 +4572,11 @@ public sealed class RemotingPushConsumerTests
             consumerEngine,
             routes,
             remoting,
+            rebalanceService ?? new TestRemotingRebalanceService(),
             timeProvider,
             logger,
-            telemetry: telemetry);
+            GetMessageHandler(options.Value),
+            telemetry);
     }
 
     private static RemotingConsumerEngine CreateRemotingConsumerEngine(

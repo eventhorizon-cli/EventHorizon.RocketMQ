@@ -15,7 +15,7 @@ Broker queue 并管理数字 offset，请使用经典 Remoting Pull。
 
 ## SDK 工作流
 
-先通过 `AddRocketMQGrpc` 注册 gRPC 传输，再为该注册添加一个 SimpleConsumer 角色：
+先通过 `AddRocketMQGrpc` 注册 gRPC 传输，再为该注册添加 SimpleConsumer 角色：
 
 ```csharp
 rocketMQ.AddGrpcSimpleConsumer(options =>
@@ -26,6 +26,10 @@ rocketMQ.AddGrpcSimpleConsumer(options =>
     options.Subscribe("orders", new FilterExpression("created"));
 });
 ```
+
+同一个 `AddRocketMQGrpc` 注册可以包含多个 Consumer 角色。每次调用 `AddGrpcSimpleConsumer` 都有独立的 group、
+订阅、options 和生命周期，底层 gRPC channel 则由该注册复用。需要让每个 Consumer 独立观察同一 topic 时，应使用
+不同 group。
 
 Generic Host 集成会启动和停止已注册的角色。不使用 Host 时，需要解析 `IGrpcSimpleConsumer`，并显式调用 `StartAsync` 和
 `StopAsync`。
@@ -75,7 +79,8 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/grpc/SimpleConsumer
 ```
 
-可运行代码订阅 `eventhorizon-test-topic`，并使用 `sample` tag 过滤。可通过
+`appsettings.json` 只保存 Proxy 连接设置；可运行 Consumer 的 group、时间和订阅值都直接写在 `Program.cs` 的注册旁。
+它订阅 `eventhorizon-test-topic`，并使用 `sample` tag 过滤。可通过
 [Producer 示例](../Producer/README.zh-CN.md)或其他兼容 Producer 发送匹配消息。
 
 完整 Consumer API 和 Proxy 约束请参阅

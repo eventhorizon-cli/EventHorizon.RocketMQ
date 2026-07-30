@@ -173,44 +173,6 @@ public sealed class GrpcPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_TypedHandlerRejectsDelegateConfiguration()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
-            .AddGrpcPushConsumer<PushHandler>(ServiceLifetime.Singleton, options =>
-            {
-                ConfigurePushConsumer(options);
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
-            });
-        await using var provider = services.BuildServiceProvider();
-
-        var exception = Assert.Throws<OptionsValidationException>(
-            () => provider.GetRequiredService<IGrpcPushConsumer>());
-
-        Assert.Contains("MessageHandler cannot be configured", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task AddGrpcLitePushConsumer_TypedHandlerRejectsDelegateConfiguration()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081")
-            .AddGrpcLitePushConsumer<LitePushHandler>(ServiceLifetime.Singleton, options =>
-            {
-                ConfigureLitePushConsumer(options);
-                options.MessageHandler = static (_, _) => ValueTask.FromResult(ConsumeResult.Success);
-            });
-        await using var provider = services.BuildServiceProvider();
-
-        var exception = Assert.Throws<OptionsValidationException>(
-            () => provider.GetRequiredService<IGrpcLitePushConsumer>());
-
-        Assert.Contains("MessageHandler cannot be configured", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task KeyedClientRegistrations_IsolateTypedPushHandlersByRoleKey()
     {
         var services = new ServiceCollection();

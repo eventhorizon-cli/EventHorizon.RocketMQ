@@ -81,8 +81,8 @@ dotnet run --project samples/opentelemetry/ProducerWebApi
 ```
 
 应用会直接读取 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`。可通过
-`OpenTelemetry__ServiceName` 与 `OpenTelemetry__OtlpEndpoint` 覆盖；RocketMQ SDK options 仍留在各协议专用的
-`RocketMQ` 配置节。
+`OpenTelemetry__ServiceName` 与 `OpenTelemetry__OtlpEndpoint` 覆盖；RocketMQ 连接配置仍留在各协议专用的
+`RocketMQ` 配置节，固定的角色行为直接写在代码中。
 
 两端工作流分别参阅 [Producer 集成](ProducerWebApi/README.zh-CN.md)和
 [Consumer 集成](ConsumerWebApi/README.zh-CN.md)。仓库提供的 dashboard 可从

@@ -76,13 +76,4 @@ public class GrpcPushConsumerOptions : ConsumerOptions
     /// </summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(10);
 
-    /// <summary>
-    /// Gets or sets the asynchronous handler invoked for each received message.
-    /// </summary>
-    /// <remarks>
-    /// This delegate is invoked directly. Use the generic <c>AddGrpcPushConsumer&lt;TMessageHandler&gt;</c> or
-    /// <c>AddGrpcLitePushConsumer&lt;TMessageHandler&gt;</c> overload to use a dependency-injected handler with an
-    /// explicit lifetime.
-    /// </remarks>
-    public Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>>? MessageHandler { get; set; }
 }

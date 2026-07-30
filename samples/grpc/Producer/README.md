@@ -17,7 +17,8 @@ Register the protocol client first, then add the Producer role to that registrat
 ```csharp
 builder.Services
     .AddRocketMQGrpc(clientSection.Bind)
-    .AddGrpcProducer(producerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 ```
 
 The role is exposed as `IGrpcProducer`. The .NET host starts and stops a DI-registered Producer with the application,
@@ -30,7 +31,8 @@ this when one process must publish through different Proxy endpoints, credential
 ```csharp
 builder.Services
     .AddRocketMQGrpc("audit", auditClientSection.Bind)
-    .AddGrpcProducer(auditProducerSection.Bind);
+    .AddGrpcProducer(static options =>
+        options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
 static Task<GrpcSendReceipt> PublishAsync(
     Message message,
@@ -90,4 +92,5 @@ dotnet run --project samples/grpc/Producer
 
 For an external cluster, point `RocketMQ:Client:Endpoint` at its Proxy and create the topic when automatic resource
 creation is disabled. The runnable project exposes its send operation through Swagger and HTTP; those endpoints are
-only an application shell around the SDK workflow above.
+only an application shell around the SDK workflow above. The sample keeps connection settings in `appsettings.json`
+and declares its fixed Producer behavior next to each registration.

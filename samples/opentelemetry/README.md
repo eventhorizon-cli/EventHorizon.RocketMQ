@@ -88,8 +88,8 @@ dotnet run --project samples/opentelemetry/ProducerWebApi
 ```
 
 The applications read `OpenTelemetry:ServiceName` and `OpenTelemetry:OtlpEndpoint` directly. Override them with
-`OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`; RocketMQ SDK options remain in their protocol-specific
-`RocketMQ` sections.
+`OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`; RocketMQ connection settings remain in their
+protocol-specific `RocketMQ` sections, while fixed role behavior is declared in code.
 
 Use the [Producer integration](ProducerWebApi/README.md) and
 [Consumer integration](ConsumerWebApi/README.md) guides for the two sides of the workflow. The supplied dashboards

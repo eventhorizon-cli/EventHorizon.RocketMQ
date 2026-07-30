@@ -1773,7 +1773,7 @@ internal sealed class RemotingProducer : IRemotingProducer
     {
         private readonly Channel<TransactionCheckWork> _channel;
         private readonly CancellationTokenSource _cancellationTokenSource = new();
-        private readonly Task[] _workers;
+        private readonly Task[] _transactionCheckLoopTasks;
 
         public TransactionCheckDispatcher(
             int concurrency,
@@ -1785,8 +1785,8 @@ internal sealed class RemotingProducer : IRemotingProducer
                 SingleReader = concurrency == 1,
                 SingleWriter = false
             });
-            _workers = Enumerable.Range(0, concurrency)
-                .Select(_ => RunAsync(handler, _cancellationTokenSource.Token))
+            _transactionCheckLoopTasks = Enumerable.Range(0, concurrency)
+                .Select(_ => RunTransactionCheckLoopAsync(handler, _cancellationTokenSource.Token))
                 .ToArray();
         }
 
@@ -1798,7 +1798,7 @@ internal sealed class RemotingProducer : IRemotingProducer
             _cancellationTokenSource.Cancel();
             try
             {
-                await Task.WhenAll(_workers).ConfigureAwait(false);
+                await Task.WhenAll(_transactionCheckLoopTasks).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
             {
@@ -1809,7 +1809,7 @@ internal sealed class RemotingProducer : IRemotingProducer
             }
         }
 
-        private async Task RunAsync(
+        private async Task RunTransactionCheckLoopAsync(
             Func<TransactionCheckWork, CancellationToken, Task> handler,
             CancellationToken cancellationToken)
         {

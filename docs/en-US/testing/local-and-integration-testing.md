@@ -68,17 +68,45 @@ Consumers than queues, and per-queue scheduling and offset isolation in unit tes
 validate the corresponding real NameServer route, Broker persistence, and coordination between client processes,
 including a blocked queue and a retried queue without disrupting successful queues.
 
-The publishable gRPC and Remoting packages target `net8.0` and `net10.0`. The three unit and compatibility
-test projects run on both targets. Docker-backed integration tests remain on `net8.0` so the focused four-job
-integration matrix does not double its container startup cost; the solution build still compiles both package targets.
+Classic Push and LitePull Rebalance integration cases deliberately set route polling and heartbeat intervals to one
+hour, then require assignment changes within ten seconds. The production periodic fallback is capped at twenty
+seconds, so these cases fail if Broker `NotifyConsumerIdsChanged` delivery or its client-side wakeup path is broken.
+They wait for mutually exclusive, complete assignments before publishing messages so ordinary at-least-once delivery
+during the startup convergence window is not confused with an assignment defect.
 
-BenchmarkDotNet measurements remain separate from the test runner in
-[`tests/benchmarks/EventHorizon.RocketMQ.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Benchmarks).
-Run the Remoting Push dispatch benchmark independently in Release mode from the repository root:
+Push Rebalance coverage includes both two consumers under one `AddRocketMQRemoting` registration and two consumers
+running in separate operating-system processes. The cross-process case launches the test-only net10.0 executable
+`EventHorizon.RocketMQ.Remoting.CrossProcessTestHost` twice with distinct client identities, waits for assignment
+snapshots over redirected standard I/O, and then stops one process gracefully. Its test-only command line is parsed
+and validated with the official `System.CommandLine` package. It verifies that the surviving process takes over every
+queue and that messages published before and after the membership change are consumed exactly once.
+The graceful-leave case runs in both concurrent and orderly modes, so the latter also exercises cross-process Broker
+queue locking. A separate concurrent case force-terminates the second child. Orderly forced termination is deliberately
+not asserted with the short Rebalance deadline because Broker queue-lock lease expiry, not the notification path,
+governs that recovery interval.
+The parent test continuously drains both output streams and terminates the exact child process tree on cleanup timeout,
+so a failed assertion cannot leave Consumer processes running in CI.
+
+The publishable gRPC and Remoting packages target `net8.0` and `net10.0`. All unit, compatibility, integration,
+sample, and BenchmarkDotNet projects target `net10.0`; `net8.0` remains only as a supported package target. The
+solution build compiles both package targets while runnable repository projects use the SDK selected by `global.json`.
+CI also executes the gRPC and Remoting unit suites against `net8.0` through a command-line target-framework override.
+The test projects still declare `net10.0`; the override verifies the published `net8.0` library assets without
+expanding the repository's runnable-project target policy.
+
+Remoting BenchmarkDotNet measurements remain separate from the test runner in
+[`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks).
+Benchmarks mirror the production ownership boundary: Push dispatch measurements live under `Consumer/Push`, while
+wire round-trip measurements live under `Protocol`. Run the Push dispatch benchmark independently in Release mode
+from the repository root:
 
 ```shell
-dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Benchmarks/EventHorizon.RocketMQ.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
+dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks.csproj -- --filter '*RemotingPushDispatchBenchmarks*'
 ```
+
+Keep durable environment, command, source-commit, and result records under the benchmark project's
+[`baselines`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks/baselines) directory. Raw
+`BenchmarkDotNet.Artifacts` output remains ignored.
 
 ### Integration tests and Testcontainers
 
@@ -130,8 +158,11 @@ them.
 
 ### CI coverage
 
-GitHub Actions runs formatting and a full build in one job while three protocol/compatibility unit-test jobs run
-in parallel. Each unit-test job restores, builds, tests both target frameworks, and uploads its own coverage report.
+GitHub Actions runs formatting and a full solution build in one job while three protocol/compatibility unit-test jobs
+run in parallel. Each unit-test job restores, builds and tests its `net10.0` project, and uploads its own coverage
+report. Two additional non-coverage jobs install the .NET 8 runtime and run the protocol unit suites with
+`-p:TargetFramework=net8.0`; the solution build and release pack verify both target frameworks of each publishable
+library.
 After both stages complete, Docker-backed gRPC and Remoting integration tests run in four parallel `ubuntu-latest`
 matrix jobs: one single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
 selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores

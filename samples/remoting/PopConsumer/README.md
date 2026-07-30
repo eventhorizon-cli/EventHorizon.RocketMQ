@@ -12,7 +12,7 @@ The SDK does not run background queue assignment, receive dispatch, or automatic
 ## When to use POP Consumer
 
 Choose POP when work should be claimed temporarily and settled per message, especially when processing duration can
-vary and an application benefits from extending a message's invisibility. It is useful for caller-controlled workers
+vary and an application benefits from extending a message's invisibility. It is useful for caller-controlled processing loops
 that want Broker-managed redelivery without managing the next queue offset themselves.
 
 Prefer Push Consumer when the SDK should manage consumer-group assignment, background long polling, handler
@@ -27,6 +27,10 @@ POP, batch acknowledgement, or retry/logical-topic checkpoint handling.
 
 Register the role with `AddRemotingPopConsumer`. Calling `ConsumerOptions.Subscribe` on its options records a default
 filter for that topic; it does **not** start a subscription, create an assignment, or start a receive loop.
+
+One `AddRocketMQRemoting` registration may contain multiple independently configured POP consumers. Each call owns
+its group, default filters, options, and lifecycle while reusing the registration's NameServer, route, and connection
+infrastructure.
 
 The public API keeps the receipt lifecycle visible:
 
@@ -71,8 +75,9 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 dotnet run --project samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj
 ```
 
-The default NameServer is `localhost:9876`. An external setup must expose both the NameServer and every advertised
-Broker address, create the normal topic, and grant the group route-query, POP, acknowledgement, and visibility-change
-permissions.
+Only the NameServer connection settings are externalized in `appsettings.json`; the consumer role values remain
+visible beside its registration in `Program.cs`. The default NameServer is `localhost:9876`. An external setup must
+expose both the NameServer and every advertised Broker address, create the normal topic, and grant the group
+route-query, POP, acknowledgement, and visibility-change permissions.
 
 See the [Remoting guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md) for complete options and API examples.

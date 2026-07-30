@@ -54,7 +54,8 @@ public static class GrpcRocketMQServiceCollectionExtensions
     /// <paramref name="services"/> or <paramref name="configure"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="registrationName"/> is empty or consists only of white-space characters.
+    /// <paramref name="registrationName"/> is empty, consists only of white-space characters, or contains a null
+    /// character.
     /// </exception>
     public static GrpcRocketMQBuilder AddRocketMQGrpc(
         this IServiceCollection services,
@@ -63,6 +64,11 @@ public static class GrpcRocketMQServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(registrationName);
+        if (registrationName.Contains('\0'))
+        {
+            throw new ArgumentException("The registration name cannot contain a null character.", nameof(registrationName));
+        }
+
         ArgumentNullException.ThrowIfNull(configure);
         return AddRocketMQGrpcCore(services, registrationName, registrationName, configure);
     }

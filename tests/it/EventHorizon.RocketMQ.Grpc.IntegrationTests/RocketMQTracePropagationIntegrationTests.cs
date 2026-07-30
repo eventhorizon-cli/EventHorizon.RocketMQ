@@ -39,24 +39,15 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
         var body = $"grpc-trace-propagation-{Guid.NewGuid():N}";
         var received = new TaskCompletionSource<TraceObservation>(TaskCreationOptions.RunContinuationsAsynchronously);
         var services = new ServiceCollection();
+        services.AddSingleton(new TraceMessageObservation(body, received));
         services
             .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
             .AddGrpcProducer()
-            .AddGrpcPushConsumer(options =>
+            .AddGrpcPushConsumer<TraceMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.GroupName = consumerGroup;
                 options.Subscribe(scope.Topic, new FilterExpression(tag));
-                options.MessageHandler = (message, _) =>
-                {
-                    if (Encoding.UTF8.GetString(message.Body) == body)
-                    {
-                        received.TrySetResult(new TraceObservation(
-                            Activity.Current?.Links.Select(static link => link.Context.TraceId).ToArray() ?? []));
-                    }
-
-                    return ValueTask.FromResult(ConsumeResult.Success);
-                };
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -94,4 +85,24 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQContainerFi
     }
 
     private sealed record TraceObservation(IReadOnlyList<ActivityTraceId> LinkedTraceIds);
+
+    private sealed record TraceMessageObservation(
+        string ExpectedBody,
+        TaskCompletionSource<TraceObservation> Received);
+
+    private sealed class TraceMessageHandler(TraceMessageObservation observation) : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken)
+        {
+            if (Encoding.UTF8.GetString(message.Body) == observation.ExpectedBody)
+            {
+                observation.Received.TrySetResult(new TraceObservation(
+                    Activity.Current?.Links.Select(static link => link.Context.TraceId).ToArray() ?? []));
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Success);
+        }
+    }
 }

@@ -16,7 +16,8 @@ Broker 端点。使用 classic RocketMQ 部署，或需要选择物理队列、�
 ```csharp
 builder.Services
     .AddRocketMQRemoting(remotingSection.Bind)
-    .AddRemotingProducer(producerSection.Bind);
+    .AddRemotingProducer(static options =>
+        options.GroupName = "remoting-sample-producer");
 ```
 
 该角色通过 `IRemotingProducer` 对外提供。使用依赖注入注册后，.NET Host 负责 Producer 的生命周期；应用服务通常
@@ -29,7 +30,8 @@ builder.Services
 ```csharp
 builder.Services
     .AddRocketMQRemoting("audit", auditRemotingSection.Bind)
-    .AddRemotingProducer(auditProducerSection.Bind);
+    .AddRemotingProducer(static options =>
+        options.GroupName = "remoting-sample-audit-producer");
 
 static Task<RemotingSendResult> PublishAsync(
     Message message,
@@ -89,4 +91,4 @@ dotnet run --project samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Rem
 
 连接外部集群时，配置 `RocketMQ:Remoting:NamesrvAddr`，确保每个 Broker 公布端点都可访问，并在禁用自动创建资源时
 预先创建 Topic。可运行项目通过 Swagger 和 HTTP 暴露普通发送工作流；传输语义来自 `IRemotingProducer`，而不是
-HTTP。
+HTTP。示例只在 `appsettings.json` 中保留连接配置，固定的 Producer 行为直接写在各自的注册代码旁。

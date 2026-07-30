@@ -17,6 +17,7 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("EventHorizon.RocketMQ.Remoting.Tests")]
 [assembly: InternalsVisibleTo("EventHorizon.RocketMQ.Remoting.IntegrationTests")]
-[assembly: InternalsVisibleTo("EventHorizon.RocketMQ.Benchmarks")]
+[assembly: InternalsVisibleTo("EventHorizon.RocketMQ.Remoting.CrossProcessTestHost")]
+[assembly: InternalsVisibleTo("EventHorizon.RocketMQ.Remoting.Benchmarks")]
 // Allows Moq's Castle DynamicProxy-generated assembly to mock internal types in tests.
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]

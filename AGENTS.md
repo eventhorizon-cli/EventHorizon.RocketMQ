@@ -85,6 +85,8 @@ topology, or manual environment.
   `CS1591` project-wide.
 - Prefer constructor injection and standard Microsoft DI. Add an interface only for a real replacement or testing
   boundary; do not abstract data objects, options, framework types, or internal implementation details by default.
+- Do not use generic `Worker` names for application types, services, variables, or background processes. Name each
+  construct for its concrete responsibility, such as `MessageReceiveLoop` or `OffsetCommitLoop`.
 - Keep each class focused on one cohesive responsibility. When orchestration, scheduling, registration lifetime,
   mutable state management, and protocol I/O start accumulating in one class, extract clearly owned internal
   collaborators instead of continuing to grow the class. Do not split code mechanically when the extracted type

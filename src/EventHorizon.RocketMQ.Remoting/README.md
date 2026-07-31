@@ -353,7 +353,7 @@ var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancel
 ```
 
 For a runnable HTTP and Swagger interface, see the
-[Remoting Admin sample](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/Admin/README.md).
+[Remoting Admin sample](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/GenericHost/Admin/README.md).
 
 ## PullConsumer
 
@@ -768,7 +768,8 @@ public sealed class AuditPublisher(
 ```
 
 When resolving clients from a standalone `ServiceProvider` instead of a Generic Host, call `StartAsync` and
-`StopAsync` explicitly.
+`StopAsync` explicitly. Do not call those methods from application code after a Generic Host has started the
+registered roles.
 
 ## Compatibility and errors
 

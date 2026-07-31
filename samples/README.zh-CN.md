@@ -15,14 +15,25 @@
 
 示例不会用传输无关的包装层隐藏这些差异。应先根据部署实际公开的协议进行选择。
 
+## 托管模型
+
+示例树按生命周期分为两种形态：
+
+- **GenericHost** 项目运行在 .NET Generic Host 或 `WebApplication` 中。SDK 注册的 `IHostedService` 会启动和停止每个
+  受生命周期管理的角色；应用代码不能再手动调用该角色的 `StartAsync` 或 `StopAsync`。
+- **NonHost** 项目只构造普通 `ServiceProvider`。它们在 `try`/`finally` 中显式调用 `StartAsync` 和 `StopAsync`，因为
+  `BuildServiceProvider()` 不会运行已注册的 hosted service。
+
 ## gRPC 角色
 
 | 模式 | 公共 API | 适用场景 |
 | --- | --- | --- |
-| [Producer](grpc/Producer/README.zh-CN.md) | `IGrpcProducer` | 应用通过 RocketMQ 5 Proxy 发布消息。 |
-| [SimpleConsumer](grpc/SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 应用代码需要主动接收、延长不可见期、确认或转发死信。 |
-| [PushConsumer](grpc/PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | SDK 应负责分配轮询、接收循环、handler 并发、不可见期续期和结算。 |
-| [LitePushConsumer](grpc/LitePushConsumer/README.zh-CN.md) | `IGrpcLitePushConsumer` | 启用 LITE 的部署在同一个 bind topic 下使用服务端管理的 LiteTopic。 |
+| [GenericHost：Producer](grpc/GenericHost/Producer/README.zh-CN.md) | `IGrpcProducer` | 应用通过 RocketMQ 5 Proxy 发布消息。 |
+| [GenericHost：LiteProducer](grpc/GenericHost/LiteProducer/README.zh-CN.md) | `IGrpcProducer` | 启用 LITE 的部署需要在一个 parent topic 和逻辑 LiteTopic 下发布消息。 |
+| [GenericHost：SimpleConsumer](grpc/GenericHost/SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 应用代码需要主动接收、延长不可见期、确认或转发死信。 |
+| [GenericHost：PushConsumer](grpc/GenericHost/PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | SDK 应负责分配轮询、接收循环、handler 并发、不可见期续期和结算。 |
+| [GenericHost：LitePushConsumer](grpc/GenericHost/LitePushConsumer/README.zh-CN.md) | `IGrpcLitePushConsumer` | 启用 LITE 的部署在同一个 bind topic 下使用服务端管理的 LiteTopic。 |
+| [NonHost 集合](grpc/NonHost/README.zh-CN.md) | 全部四种角色 | 未运行 Generic Host 的进程显式启动和停止选定的 gRPC 角色。 |
 
 gRPC Push 仍由客户端发起长轮询，不是 Broker 主动建立的网络 Push 连接。
 
@@ -30,19 +41,20 @@ gRPC Push 仍由客户端发起长轮询，不是 Broker 主动建立的网络 P
 
 | 模式 | 公共 API | 适用场景 |
 | --- | --- | --- |
-| [Producer](remoting/Producer/README.zh-CN.md) | `IRemotingProducer` | 应用通过 NameServer/Broker Remoting 发布，或需要 classic 的选队列、批量、单向、事务、撤回和请求/响应操作。 |
-| [Admin](remoting/Admin/README.zh-CN.md) | `IRemotingAdmin` | 只读工具需要检查物理队列、位点边界、已提交位置或存储消息。 |
-| [Pull Consumer](remoting/PullConsumer/README.zh-CN.md) | `IRemotingPullConsumer` | 应用负责选择物理队列、请求位点、处理和提交。 |
-| [Lite Pull Consumer](remoting/LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | SDK 负责队列分配，但应用代码负责轮询和提交。 |
-| [POP Consumer](remoting/PopConsumer/README.zh-CN.md) | `IRemotingPopConsumer` | 工作通过逐消息 receipt 和不可见期结算，而不是提交队列位点。 |
-| [Push Consumer](remoting/PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | SDK 负责队列分配、长轮询、公平并发分发、重试结算和位点持久化。 |
+| [GenericHost：Producer](remoting/GenericHost/Producer/README.zh-CN.md) | `IRemotingProducer` | 应用通过 NameServer/Broker Remoting 发布，或需要 classic 的选队列、批量、单向、事务、撤回和请求/响应操作。 |
+| [GenericHost：Admin](remoting/GenericHost/Admin/README.zh-CN.md) | `IRemotingAdmin` | 只读工具需要检查物理队列、位点边界、已提交位置或存储消息。 |
+| [GenericHost：Pull Consumer](remoting/GenericHost/PullConsumer/README.zh-CN.md) | `IRemotingPullConsumer` | 应用负责选择物理队列、请求位点、处理和提交。 |
+| [GenericHost：Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | SDK 负责队列分配，但应用代码负责轮询和提交。 |
+| [GenericHost：POP Consumer](remoting/GenericHost/PopConsumer/README.zh-CN.md) | `IRemotingPopConsumer` | 工作通过逐消息 receipt 和不可见期结算，而不是提交队列位点。 |
+| [GenericHost：Push Consumer](remoting/GenericHost/PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | SDK 负责队列分配、长轮询、公平并发分发、重试结算和位点持久化。 |
+| [NonHost 集合](remoting/NonHost/README.zh-CN.md) | 所有受生命周期管理的角色 | 未运行 Generic Host 的进程显式启动和停止选定的 Remoting 角色。 |
 
 Remoting Push 同样使用客户端发起的长轮询。同一个集群 group 内的 Consumer 会分摊 Broker 物理队列；不同 group 会
 独立消费。
 
 ## OpenTelemetry 集成
 
-[OpenTelemetry 示例](opentelemetry/README.zh-CN.md)说明应用如何订阅两个客户端分别产生的 ActivitySource 和 Meter。
+[使用 GenericHost 的 OpenTelemetry 示例](opentelemetry/GenericHost/README.zh-CN.md)说明应用如何订阅两个客户端分别产生的 ActivitySource 和 Meter。
 OpenTelemetry provider、resource、采样、view、processor 和 exporter 都由应用负责。
 
 ## 本地运行
@@ -52,17 +64,20 @@ Remoting 角色。环境会在启动完成前创建 `eventhorizon-test-topic`：
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-dotnet run --project samples/grpc/SimpleConsumer
+dotnet run --project samples/grpc/GenericHost/SimpleConsumer
 ```
 
 将项目路径替换为任一普通示例即可。每个项目 README 会说明额外资源、权限、服务端能力和完整命令。
 
-LitePush 需要 LITE parent topic、绑定的 consumer group、Broker LMQ 能力，以及实现 `SyncLiteSubscription` 的
-cluster-mode Proxy。应使用专用环境，而不是通用 stack：
+LiteProducer 和 LitePushConsumer 工作流需要 LITE parent topic、绑定的 consumer group、Broker LMQ 能力，以及实现
+`SyncLiteSubscription` 的 cluster-mode Proxy。应使用专用环境，而不是通用 stack。先启动 Consumer，再在第二个终端启动
+LiteProducer：
 
 ```shell
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
-dotnet run --project samples/grpc/LitePushConsumer
+dotnet run --project samples/grpc/GenericHost/LitePushConsumer
+# 在另一个终端：
+dotnet run --project samples/grpc/GenericHost/LiteProducer
 ```
 
 可观测性工作流需要同时运行通用 RocketMQ 环境和 `test-environments/otel-lgtm/compose.yaml`，然后启动 OpenTelemetry

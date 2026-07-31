@@ -69,13 +69,13 @@ In one terminal, start the Consumer Web API at `http://localhost:5242`; its gRPC
 separate consumer groups:
 
 ```shell
-dotnet run --project samples/opentelemetry/ConsumerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ConsumerWebApi
 ```
 
 In a second terminal, start the Producer Web API at `http://localhost:5241`:
 
 ```shell
-dotnet run --project samples/opentelemetry/ProducerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ProducerWebApi
 ```
 
 Use the Producer's gRPC and Remoting send routes to publish a request such as `{"message":"Hello from Grafana."}`.
@@ -83,8 +83,8 @@ The producer fixes the shared topic and tag, so the request model does not accep
 RocketMQ client telemetry to this Compose environment's OTLP/gRPC endpoint with distinct service names:
 `eventhorizon-rocketmq-otel-producer` and `eventhorizon-rocketmq-otel-consumer`. Use the Producer dashboard for send
 telemetry and the Consumer dashboard for receive, processing, and settlement telemetry. The [OpenTelemetry sample overview](../../samples/opentelemetry/README.md)
-describes the shared SDK and Grafana setup; the [Producer Web API guide](../../samples/opentelemetry/ProducerWebApi/README.md)
-and [Consumer Web API guide](../../samples/opentelemetry/ConsumerWebApi/README.md) document the two hosts.
+describes the shared SDK and Grafana setup; the [Producer Web API guide](../../samples/opentelemetry/GenericHost/ProducerWebApi/README.md)
+and [Consumer Web API guide](../../samples/opentelemetry/GenericHost/ConsumerWebApi/README.md) document the two hosts.
 
 ## Connect a manual client test
 

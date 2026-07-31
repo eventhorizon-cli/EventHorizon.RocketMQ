@@ -25,6 +25,10 @@ public interface IRemotingPullConsumer : IAsyncDisposable
     /// </summary>
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A value task that represents the asynchronous start operation.</returns>
+    /// <remarks>
+    /// A .NET Generic Host invokes this method through the hosted service registered by <c>AddRocketMQRemoting</c>.
+    /// Call it explicitly only when resolving the role from a standalone <see cref="IServiceProvider"/>.
+    /// </remarks>
     ValueTask StartAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -32,6 +36,10 @@ public interface IRemotingPullConsumer : IAsyncDisposable
     /// </summary>
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A value task that represents the asynchronous stop operation.</returns>
+    /// <remarks>
+    /// A .NET Generic Host invokes this method through the hosted service registered by <c>AddRocketMQRemoting</c>.
+    /// Call it explicitly only when manually managing a role resolved from a standalone <see cref="IServiceProvider"/>.
+    /// </remarks>
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

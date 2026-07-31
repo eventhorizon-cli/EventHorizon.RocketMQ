@@ -128,7 +128,7 @@ LitePush requires more than a reachable Proxy:
 - The target Proxy must implement `SyncLiteSubscription`.
 
 The local Compose environment starts a cluster-mode Proxy specifically for this path. Its detailed
-requirements are documented in the [LitePush sample](../../../samples/grpc/LitePushConsumer/README.md)
+requirements are documented in the [LitePush sample](../../../samples/grpc/GenericHost/LitePushConsumer/README.md)
 and [local environment guide](../../../test-environments/rocketmq/README.md).
 
 ## Trade-offs and Constraints
@@ -149,7 +149,7 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
 ## Related Reading
 
 - [gRPC project guide](../../../src/EventHorizon.RocketMQ.Grpc/README.md)
-- [gRPC SimpleConsumer sample](../../../samples/grpc/SimpleConsumer/README.md)
-- [gRPC PushConsumer sample](../../../samples/grpc/PushConsumer/README.md)
+- [gRPC SimpleConsumer sample](../../../samples/grpc/GenericHost/SimpleConsumer/README.md)
+- [gRPC PushConsumer sample](../../../samples/grpc/GenericHost/PushConsumer/README.md)
 - [Protocol Boundaries and Type Ownership](../architecture/protocol-boundaries.md)
 - [Dependency-injection client registrations and lifetimes](../architecture/dependency-injection-and-lifetimes.md)

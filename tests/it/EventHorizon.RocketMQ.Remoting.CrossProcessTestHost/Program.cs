@@ -16,6 +16,8 @@
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace EventHorizon.RocketMQ.Remoting.CrossProcessTestHost;
 
@@ -32,7 +34,7 @@ internal static class Program
         {
             cancellationToken.ThrowIfCancellationRequested();
             eventWriter = new CrossProcessHostEventWriter(options.Member);
-            return await RunAsync(options, eventWriter).ConfigureAwait(false);
+            return await RunAsync(options, eventWriter, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -58,11 +60,16 @@ internal static class Program
 
     private static async Task<int> RunAsync(
         CrossProcessHostOptions hostOptions,
-        CrossProcessHostEventWriter eventWriter)
+        CrossProcessHostEventWriter eventWriter,
+        CancellationToken cancellationToken)
     {
-        var services = new ServiceCollection();
-        services.AddSingleton(eventWriter);
-        services.AddRocketMQRemoting(options =>
+        var builder = Host.CreateApplicationBuilder();
+        // Standard output is the parent-process event protocol, so host logging must remain silent.
+        builder.Logging.ClearProviders();
+        builder.ConfigureContainer(
+            new DefaultServiceProviderFactory(new ServiceProviderOptions { ValidateOnBuild = true }));
+        builder.Services.AddSingleton(eventWriter);
+        builder.Services.AddRocketMQRemoting(options =>
         {
             options.NamesrvAddr = hostOptions.NameServerAddress;
             options.InstanceName = hostOptions.InstanceName;
@@ -81,10 +88,9 @@ internal static class Program
             options.Subscribe(hostOptions.Topic, new FilterExpression(hostOptions.Tag));
         });
 
-        await using var provider = services.BuildServiceProvider(
-            new ServiceProviderOptions { ValidateOnBuild = true });
-        var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
-        await consumer.StartAsync().ConfigureAwait(false);
+        using var host = builder.Build();
+        var consumer = host.Services.GetRequiredService<IRemotingPushConsumer>();
+        await host.StartAsync(cancellationToken).ConfigureAwait(false);
         using var assignmentStopping = new CancellationTokenSource();
         var assignmentTask = ReportAssignmentsAsync(
             (RemotingPushConsumer)consumer,
@@ -104,7 +110,7 @@ internal static class Program
         {
             try
             {
-                await consumer.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await host.StopAsync(CancellationToken.None).ConfigureAwait(false);
             }
             finally
             {

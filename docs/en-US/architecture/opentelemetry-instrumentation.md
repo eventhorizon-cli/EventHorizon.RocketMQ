@@ -48,8 +48,8 @@ messaging path can be inspected across service boundaries:
 
 | Project | Endpoint | Default `service.name` | Responsibility |
 | --- | --- | --- | --- |
-| [Producer Web API](../../../samples/opentelemetry/ProducerWebApi/README.md) | `http://localhost:5241` | `eventhorizon-rocketmq-otel-producer` | Sends through explicit gRPC and classic Remoting routes. |
-| [Consumer Web API](../../../samples/opentelemetry/ConsumerWebApi/README.md) | `http://localhost:5242` | `eventhorizon-rocketmq-otel-consumer` | Runs gRPC and classic Remoting Push consumers with independent consumer groups. |
+| [Producer Web API](../../../samples/opentelemetry/GenericHost/ProducerWebApi/README.md) | `http://localhost:5241` | `eventhorizon-rocketmq-otel-producer` | Sends through explicit gRPC and classic Remoting routes. |
+| [Consumer Web API](../../../samples/opentelemetry/GenericHost/ConsumerWebApi/README.md) | `http://localhost:5242` | `eventhorizon-rocketmq-otel-consumer` | Runs gRPC and classic Remoting Push consumers with independent consumer groups. |
 
 The supplied `rocketmq` environment creates the shared `eventhorizon-test-topic` before startup completes. The
 Producer request model accepts only a `message`; its topic and tag are fixed for the sample. Each web host exports to

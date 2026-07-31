@@ -65,10 +65,11 @@ await app.RunAsync();
 ```
 
 ASP.NET Core Host 会随应用启动和停止已注册的 Producer。完整应用可参考
-[Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/Producer/README.zh-CN.md)、
-[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/SimpleConsumer/README.zh-CN.md)、
-[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/PushConsumer/README.zh-CN.md) 和
-[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/LitePushConsumer/README.zh-CN.md)
+[Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/Producer/README.zh-CN.md)、
+[LiteProducer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/LiteProducer/README.zh-CN.md)、
+[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/SimpleConsumer/README.zh-CN.md)、
+[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/PushConsumer/README.zh-CN.md) 和
+[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/LitePushConsumer/README.zh-CN.md)
 示例目录。
 
 ## 支持的功能
@@ -163,7 +164,7 @@ rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
 | 相同 group、不同 topic 或 filter | 非法组合；注册会拒绝不一致的普通 Push 订阅。 |
 
 默认客户端注册使用常规构造函数注入。当从独立的 `ServiceProvider` 而非 Generic Host 解析客户端时，请显式
-调用其 `StartAsync` 和 `StopAsync`。
+调用其 `StartAsync` 和 `StopAsync`。Generic Host 已启动已注册角色后，应用代码不应再次调用这些方法。
 
 ## OpenTelemetry
 

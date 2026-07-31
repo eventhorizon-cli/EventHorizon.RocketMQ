@@ -200,7 +200,7 @@ the Java data path.
 inspect min/max/timestamp offsets, query a consumer offset, and view a physical message. The API is
 documented in
 [`IRemotingAdmin`](../../../src/EventHorizon.RocketMQ.Remoting/Admin/IRemotingAdmin.cs), and the
-[Admin sample](../../../samples/remoting/Admin/README.md) exposes it through a small Swagger UI.
+[Admin sample](../../../samples/remoting/GenericHost/Admin/README.md) exposes it through a small Swagger UI.
 
 `ViewMessageAsync` expects `RemotingSendResult.OffsetMessageId`, not the producer-assigned
 `MessageId`. The physical offset ID encodes a Broker endpoint and commit-log offset. The internal
@@ -228,7 +228,7 @@ network can be valid syntactically and still be unusable from the current networ
 ## Related Reading
 
 - [classic Remoting project guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md)
-- [Remoting Admin sample](../../../samples/remoting/Admin/README.md)
-- [Remoting PullConsumer sample](../../../samples/remoting/PullConsumer/README.md)
+- [Remoting Admin sample](../../../samples/remoting/GenericHost/Admin/README.md)
+- [Remoting PullConsumer sample](../../../samples/remoting/GenericHost/PullConsumer/README.md)
 - [Protocol Boundaries and Type Ownership](../architecture/protocol-boundaries.md)
 - [Local and integration testing](../testing/local-and-integration-testing.md)

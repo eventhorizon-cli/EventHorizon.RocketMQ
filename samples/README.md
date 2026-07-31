@@ -19,14 +19,26 @@ The two clients are independent and have different connection and feature models
 Samples do not hide these differences behind a transport-neutral wrapper. Start with the protocol actually exposed
 by the deployment.
 
+## Hosting model
+
+The sample tree has two lifecycle shapes:
+
+- **GenericHost** projects run in a .NET Generic Host or `WebApplication`. The SDK registered `IHostedService` starts
+  and stops each lifecycle-managed role; application code must not manually call that role's `StartAsync` or
+  `StopAsync`.
+- **NonHost** projects build a plain `ServiceProvider`. They explicitly call `StartAsync` and `StopAsync` in
+  `try`/`finally`, because `BuildServiceProvider()` does not run registered hosted services.
+
 ## gRPC roles
 
 | Mode | Public API | Choose it when |
 | --- | --- | --- |
-| [Producer](grpc/Producer/README.md) | `IGrpcProducer` | The application publishes through a RocketMQ 5 Proxy. |
-| [SimpleConsumer](grpc/SimpleConsumer/README.md) | `IGrpcSimpleConsumer` | Application code must drive receive, invisibility changes, acknowledgement, and dead-letter forwarding. |
-| [PushConsumer](grpc/PushConsumer/README.md) | `IGrpcPushConsumer` | The SDK should own assignment polling, receive loops, handler concurrency, invisibility renewal, and settlement. |
-| [LitePushConsumer](grpc/LitePushConsumer/README.md) | `IGrpcLitePushConsumer` | A LITE-enabled deployment uses service-managed LiteTopics beneath one bind topic. |
+| [GenericHost: Producer](grpc/GenericHost/Producer/README.md) | `IGrpcProducer` | The application publishes through a RocketMQ 5 Proxy. |
+| [GenericHost: LiteProducer](grpc/GenericHost/LiteProducer/README.md) | `IGrpcProducer` | A LITE-enabled deployment needs messages under one parent topic and logical LiteTopic. |
+| [GenericHost: SimpleConsumer](grpc/GenericHost/SimpleConsumer/README.md) | `IGrpcSimpleConsumer` | Application code must drive receive, invisibility changes, acknowledgement, and dead-letter forwarding. |
+| [GenericHost: PushConsumer](grpc/GenericHost/PushConsumer/README.md) | `IGrpcPushConsumer` | The SDK should own assignment polling, receive loops, handler concurrency, invisibility renewal, and settlement. |
+| [GenericHost: LitePushConsumer](grpc/GenericHost/LitePushConsumer/README.md) | `IGrpcLitePushConsumer` | A LITE-enabled deployment uses service-managed LiteTopics beneath one bind topic. |
+| [NonHost collection](grpc/NonHost/README.md) | All four roles | A process without Generic Host explicitly starts and stops the selected gRPC role. |
 
 gRPC Push is client-initiated long polling; it is not a Broker-opened network push connection.
 
@@ -34,19 +46,20 @@ gRPC Push is client-initiated long polling; it is not a Broker-opened network pu
 
 | Mode | Public API | Choose it when |
 | --- | --- | --- |
-| [Producer](remoting/Producer/README.md) | `IRemotingProducer` | The application publishes through NameServer/Broker Remoting or needs classic queue, batch, one-way, transaction, recall, or request-reply operations. |
-| [Admin](remoting/Admin/README.md) | `IRemotingAdmin` | A read-only tool must inspect physical queues, offset bounds, committed positions, or stored messages. |
-| [Pull Consumer](remoting/PullConsumer/README.md) | `IRemotingPullConsumer` | The application owns physical queue selection, request offsets, processing, and commits. |
-| [Lite Pull Consumer](remoting/LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | The SDK should allocate queues while application code owns polling and commits. |
-| [POP Consumer](remoting/PopConsumer/README.md) | `IRemotingPopConsumer` | Work uses per-message receipts and invisibility instead of queue-offset commits. |
-| [Push Consumer](remoting/PushConsumer/README.md) | `IRemotingPushConsumer` | The SDK should own queue allocation, long polling, fair concurrent dispatch, retry settlement, and offset persistence. |
+| [GenericHost: Producer](remoting/GenericHost/Producer/README.md) | `IRemotingProducer` | The application publishes through NameServer/Broker Remoting or needs classic queue, batch, one-way, transaction, recall, or request-reply operations. |
+| [GenericHost: Admin](remoting/GenericHost/Admin/README.md) | `IRemotingAdmin` | A read-only tool must inspect physical queues, offset bounds, committed positions, or stored messages. |
+| [GenericHost: Pull Consumer](remoting/GenericHost/PullConsumer/README.md) | `IRemotingPullConsumer` | The application owns physical queue selection, request offsets, processing, and commits. |
+| [GenericHost: Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | The SDK should allocate queues while application code owns polling and commits. |
+| [GenericHost: POP Consumer](remoting/GenericHost/PopConsumer/README.md) | `IRemotingPopConsumer` | Work uses per-message receipts and invisibility instead of queue-offset commits. |
+| [GenericHost: Push Consumer](remoting/GenericHost/PushConsumer/README.md) | `IRemotingPushConsumer` | The SDK should own queue allocation, long polling, fair concurrent dispatch, retry settlement, and offset persistence. |
+| [NonHost collection](remoting/NonHost/README.md) | All lifecycle-managed roles | A process without Generic Host explicitly starts and stops the selected Remoting role. |
 
 Remoting Push also uses client-initiated long polling. Consumers in one clustered group divide the Broker physical
 queues; consumers in different groups consume independently.
 
 ## OpenTelemetry integration
 
-The [OpenTelemetry samples](opentelemetry/README.md) show how an application subscribes to the protocol-specific
+The [OpenTelemetry GenericHost samples](opentelemetry/GenericHost/README.md) show how an application subscribes to the protocol-specific
 ActivitySource and Meter emitted by both clients. The application owns the OpenTelemetry provider, resource,
 sampling, views, processors, and exporters.
 
@@ -58,18 +71,21 @@ completes:
 
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
-dotnet run --project samples/grpc/SimpleConsumer
+dotnet run --project samples/grpc/GenericHost/SimpleConsumer
 ```
 
 Replace the project path with any ordinary sample. Each project README states its additional resources, permissions,
 server capabilities, and complete command.
 
-LitePush requires a LITE parent topic, a bound consumer group, Broker LMQ support, and a cluster-mode Proxy that
-implements `SyncLiteSubscription`. Use its dedicated environment instead of the normal stack:
+The LiteProducer and LitePushConsumer workflow requires a LITE parent topic, a bound consumer group, Broker LMQ
+support, and a cluster-mode Proxy that implements `SyncLiteSubscription`. Use its dedicated environment instead of
+the normal stack. Start the Consumer first, then start LiteProducer in a second terminal:
 
 ```shell
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
-dotnet run --project samples/grpc/LitePushConsumer
+dotnet run --project samples/grpc/GenericHost/LitePushConsumer
+# In another terminal:
+dotnet run --project samples/grpc/GenericHost/LiteProducer
 ```
 
 For the observability workflow, run the normal RocketMQ environment together with

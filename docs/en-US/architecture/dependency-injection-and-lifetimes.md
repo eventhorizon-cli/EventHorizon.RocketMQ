@@ -139,7 +139,7 @@ rocketMQ.AddGrpcPushConsumer<AuditHandler>(ServiceLifetime.Scoped, options =>
 ### Host lifecycle
 
 Public roles are registered as singletons. Their companion hosted services start and stop the role
-with the .NET Generic Host, so applications do not need to build a provider or manually coordinate
+with the .NET Generic Host, so Generic Host applications do not need to manually coordinate
 background tasks. The role extension methods are the composition root:
 
 - [gRPC role registrations](../../../src/EventHorizon.RocketMQ.Grpc/GrpcRocketMQBuilderExtensions.cs)
@@ -147,6 +147,10 @@ background tasks. The role extension methods are the composition root:
 
 This applies to Producers as well as Consumers. It lets the producer initialize its protocol state
 and ensures orderly teardown when the host stops.
+
+Resolving a role from a standalone `ServiceProvider` does not start its registered `IHostedService`.
+That caller must invoke `StartAsync` and `StopAsync` explicitly. Application code running under an
+already-started Generic Host must not invoke those role lifecycle methods a second time.
 
 ### Consumer engines
 

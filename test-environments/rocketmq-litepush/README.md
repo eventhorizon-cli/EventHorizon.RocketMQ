@@ -3,7 +3,8 @@
 [All test environments](../README.md) | [Simplified Chinese](README.zh-CN.md)
 
 This environment is a self-contained Apache RocketMQ 5.5.0 stack for the repository's gRPC
-[`LitePushConsumer` sample](../../samples/grpc/LitePushConsumer/README.md).
+[`LiteProducer`](../../samples/grpc/GenericHost/LiteProducer/README.md) and
+[`LitePushConsumer`](../../samples/grpc/GenericHost/LitePushConsumer/README.md) samples.
 
 Run `docker compose up -d --wait` once. The stack starts a cluster-mode Proxy and automatically prepares the
 resources required by the sample; no `mqadmin` command is needed from the developer.
@@ -36,7 +37,8 @@ The Broker enables `enableLmq=true` and `enableMultiDispatch=true`. The Proxy st
 ```mermaid
 flowchart TB
     Host[Developer host]
-    Sample[LitePushConsumer sample\nEndpoint: localhost:8081]
+    Producer[LiteProducer sample\nHTTP: localhost:5232]
+    Consumer[LitePushConsumer sample\ngRPC endpoint: localhost:8081]
     DashboardUi[Browser\nhttp://localhost:8082]
 
     subgraph Environment[test-environments/rocketmq-litepush]
@@ -49,9 +51,11 @@ flowchart TB
         Volumes[(Docker named volumes\nlogs and Broker store)]
     end
 
-    Host --> Sample
+    Host --> Producer
+    Host --> Consumer
     Host --> DashboardUi
-    Sample -->|gRPC :8081| Proxy
+    Producer -->|gRPC :8081| Proxy
+    Consumer -->|gRPC :8081| Proxy
     DashboardUi -->|Dashboard :8082| Dashboard
     Host -->|diagnostics :19876| NameServer
     VolumeInit --> Volumes
@@ -95,21 +99,33 @@ To inspect the automatic setup without issuing any administration commands, read
 docker compose logs --no-color resource-init
 ```
 
-Run the sample from the repository root without changing its default `appsettings.json`:
+Run the two cooperating samples from the repository root without changing their default `appsettings.json` files.
+Start the Consumer in one terminal:
 
 ```shell
-dotnet run --project samples/grpc/LitePushConsumer
+dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-The Consumer synchronizes `eventhorizon-test-lite-topic` at startup. To receive a message, a compatible gRPC
-Producer must send a Lite message under `eventhorizon-test-lite-parent-topic` with that LiteTopic; the standard Producer
-sample sends ordinary messages and therefore does not populate the LiteTopic.
+Then start LiteProducer in a second terminal and post a message to its HTTP API:
+
+```shell
+dotnet run --project samples/grpc/GenericHost/LiteProducer
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"message":"hello Lite"}'
+```
+
+The Consumer synchronizes `eventhorizon-test-lite-topic` at startup. LiteProducer sends a Lite message under
+`eventhorizon-test-lite-parent-topic` with that LiteTopic, so it becomes eligible for that subscription. The standard
+Producer sample sends ordinary messages and therefore does not populate the LiteTopic. Both Lite samples run in a
+Generic Host, which owns their Producer or Consumer `StartAsync` and `StopAsync` lifecycle.
 
 ## Endpoints and limits
 
 | Purpose | Host endpoint | Notes |
 | --- | --- | --- |
-| gRPC LitePush sample | `localhost:8081` | The default `RocketMQ:Client:Endpoint`. |
+| gRPC Lite samples | `localhost:8081` | The default `RocketMQ:Client:Endpoint`. |
+| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON such as `{"message":"hello Lite"}`. |
 | NameServer diagnostics | `localhost:19876` | Optional inspection endpoint, not the gRPC client endpoint. |
 | RocketMQ Dashboard | `http://localhost:8082` | Local management interface for the cluster. |
 | Broker | Not published | Reachable only as `broker:10911` inside the Compose network. |

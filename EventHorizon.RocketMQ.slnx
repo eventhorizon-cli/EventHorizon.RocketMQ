@@ -6,22 +6,42 @@
   </Configurations>
   <Folder Name="/samples/" />
   <Folder Name="/samples/grpc/">
-    <Project Path="samples/grpc/LitePushConsumer/EventHorizon.RocketMQ.Samples.Grpc.LitePushConsumer.csproj" />
-    <Project Path="samples/grpc/Producer/EventHorizon.RocketMQ.Samples.Grpc.Producer.csproj" />
-    <Project Path="samples/grpc/PushConsumer/EventHorizon.RocketMQ.Samples.Grpc.PushConsumer.csproj" />
-    <Project Path="samples/grpc/SimpleConsumer/EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer.csproj" />
+  </Folder>
+  <Folder Name="/samples/grpc/GenericHost/">
+    <Project Path="samples/grpc/GenericHost/LiteProducer/EventHorizon.RocketMQ.Samples.Grpc.LiteProducer.csproj" />
+    <Project Path="samples/grpc/GenericHost/LitePushConsumer/EventHorizon.RocketMQ.Samples.Grpc.LitePushConsumer.csproj" />
+    <Project Path="samples/grpc/GenericHost/Producer/EventHorizon.RocketMQ.Samples.Grpc.Producer.csproj" />
+    <Project Path="samples/grpc/GenericHost/PushConsumer/EventHorizon.RocketMQ.Samples.Grpc.PushConsumer.csproj" />
+    <Project Path="samples/grpc/GenericHost/SimpleConsumer/EventHorizon.RocketMQ.Samples.Grpc.SimpleConsumer.csproj" />
+  </Folder>
+  <Folder Name="/samples/grpc/NonHost/">
+    <Project Path="samples/grpc/NonHost/LitePushConsumer/EventHorizon.RocketMQ.Samples.Grpc.NonHost.LitePushConsumer.csproj" />
+    <Project Path="samples/grpc/NonHost/Producer/EventHorizon.RocketMQ.Samples.Grpc.NonHost.Producer.csproj" />
+    <Project Path="samples/grpc/NonHost/PushConsumer/EventHorizon.RocketMQ.Samples.Grpc.NonHost.PushConsumer.csproj" />
+    <Project Path="samples/grpc/NonHost/SimpleConsumer/EventHorizon.RocketMQ.Samples.Grpc.NonHost.SimpleConsumer.csproj" />
   </Folder>
   <Folder Name="/samples/opentelemetry/">
-    <Project Path="samples/opentelemetry/ConsumerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi.csproj" />
-    <Project Path="samples/opentelemetry/ProducerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi.csproj" />
+  </Folder>
+  <Folder Name="/samples/opentelemetry/GenericHost/">
+    <Project Path="samples/opentelemetry/GenericHost/ConsumerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ConsumerWebApi.csproj" />
+    <Project Path="samples/opentelemetry/GenericHost/ProducerWebApi/EventHorizon.RocketMQ.Samples.OpenTelemetry.ProducerWebApi.csproj" />
   </Folder>
   <Folder Name="/samples/remoting/">
-    <Project Path="samples/remoting/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj" />
-    <Project Path="samples/remoting/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj" />
-    <Project Path="samples/remoting/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj" />
-    <Project Path="samples/remoting/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj" />
-    <Project Path="samples/remoting/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj" />
-    <Project Path="samples/remoting/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj" />
+  </Folder>
+  <Folder Name="/samples/remoting/GenericHost/">
+    <Project Path="samples/remoting/GenericHost/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj" />
+    <Project Path="samples/remoting/GenericHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj" />
+    <Project Path="samples/remoting/GenericHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj" />
+    <Project Path="samples/remoting/GenericHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj" />
+    <Project Path="samples/remoting/GenericHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj" />
+    <Project Path="samples/remoting/GenericHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj" />
+  </Folder>
+  <Folder Name="/samples/remoting/NonHost/">
+    <Project Path="samples/remoting/NonHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.LitePullConsumer.csproj" />
+    <Project Path="samples/remoting/NonHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PopConsumer.csproj" />
+    <Project Path="samples/remoting/NonHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.Producer.csproj" />
+    <Project Path="samples/remoting/NonHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PullConsumer.csproj" />
+    <Project Path="samples/remoting/NonHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PushConsumer.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj" />

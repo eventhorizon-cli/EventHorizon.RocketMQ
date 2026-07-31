@@ -334,7 +334,7 @@ var sent = await producer.SendAsync(new Message("orders", "receipt"u8.ToArray())
 var stored = await admin.ViewMessageAsync("orders", sent.OffsetMessageId, cancellationToken);
 ```
 
-可运行的 HTTP 和 Swagger 接口请参阅[Remoting Admin 示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/Admin/README.zh-CN.md)。
+可运行的 HTTP 和 Swagger 接口请参阅[Remoting Admin 示例](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/remoting/GenericHost/Admin/README.zh-CN.md)。
 
 ## PullConsumer
 
@@ -713,7 +713,8 @@ public sealed class AuditPublisher(
 }
 ```
 
-从独立 `ServiceProvider` 而不是 Generic Host 解析客户端时，请显式调用 `StartAsync` 和 `StopAsync`。
+从独立 `ServiceProvider` 而不是 Generic Host 解析客户端时，请显式调用 `StartAsync` 和 `StopAsync`。Generic Host
+已启动已注册角色后，应用代码不应再次调用这些方法。
 
 ## 兼容性与异常
 

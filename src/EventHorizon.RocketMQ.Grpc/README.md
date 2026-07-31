@@ -67,10 +67,11 @@ await app.RunAsync();
 ```
 
 The ASP.NET Core host starts and stops the registered Producer with the application. Complete applications are
-available in the [Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/Producer/README.md),
-[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/SimpleConsumer/README.md),
-[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/PushConsumer/README.md), and
-[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/LitePushConsumer/README.md)
+available in the [Producer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/Producer/README.md),
+[LiteProducer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/LiteProducer/README.md),
+[SimpleConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/SimpleConsumer/README.md),
+[PushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/PushConsumer/README.md), and
+[LitePushConsumer](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/samples/grpc/GenericHost/LitePushConsumer/README.md)
 sample directories.
 
 ## Supported features
@@ -168,7 +169,8 @@ Ordinary Push subscription combinations have the following semantics:
 | Same group and different topics or filters | Invalid; registration rejects the inconsistent ordinary Push subscriptions. |
 
 The default client registration uses ordinary constructor injection. When clients are resolved from a standalone
-`ServiceProvider` instead of a Generic Host, call their `StartAsync` and `StopAsync` methods explicitly.
+`ServiceProvider` instead of a Generic Host, call their `StartAsync` and `StopAsync` methods explicitly. Do not call
+those methods from application code after a Generic Host has started the registered roles.
 
 ## OpenTelemetry
 

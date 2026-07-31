@@ -167,7 +167,7 @@ LitePush 的服务端前提包括：
 `mqproxy -pm cluster` 或部署兼容的新版 Proxy。独立的 cluster-mode Proxy 可以与 Broker 共用容器或 Compose service，
 不要求单独部署一套 Compose 环境。这个限制不会影响标准 gRPC Producer、SimpleConsumer 或
 PushConsumer，但会使 LitePush 启动或运行时 Lite 订阅变更失败。可执行的配置示例见
-[LitePush sample](../../../samples/grpc/LitePushConsumer/README.zh-CN.md)。
+[LitePush sample](../../../samples/grpc/GenericHost/LitePushConsumer/README.zh-CN.md)。
 
 ## 本仓库的 Compose 环境
 

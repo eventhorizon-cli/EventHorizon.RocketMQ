@@ -63,27 +63,44 @@ Histogram view、基数限制、采样、保留和 exporter 应由应用的可�
 两个 Web API 项目把 gRPC 与 Remoting 角色分别放在 Producer 和 Consumer 进程中，因此可以沿 HTTP、发送、接收、处理和
 结算观察同一条消息。默认会通过 OTLP/gRPC 导出到仓库提供的 Grafana OTEL LGTM 环境。
 
+以下命令应从仓库根目录运行。RocketMQ 环境报告就绪前会创建 `eventhorizon-test-topic`，因此无需手动创建 topic。
+
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 ```
 
-在一个终端中启动 Consumer host：
+在一个终端中启动 Generic Host Consumer：
 
 ```shell
-dotnet run --project samples/opentelemetry/ConsumerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ConsumerWebApi
 ```
 
-再在另一个终端中启动 Producer host：
+再在另一个终端中启动 Generic Host Producer：
 
 ```shell
-dotnet run --project samples/opentelemetry/ProducerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ProducerWebApi
 ```
+
+两个 host 都运行后，可打开 Producer 的 Swagger 页面 `http://localhost:5241/swagger`，或直接通过两种协议各发送一条消息：
+
+```shell
+curl --fail --request POST http://localhost:5241/messages/grpc \
+  --header 'content-type: application/json' \
+  --data '{"message":"Hello from the OpenTelemetry sample."}'
+
+curl --fail --request POST http://localhost:5241/messages/remoting \
+  --header 'content-type: application/json' \
+  --data '{"message":"Hello from the OpenTelemetry sample."}'
+```
+
+每个请求都会返回 HTTP `200` 发送回执。Consumer host 会记录 gRPC 和 Remoting Consumer Group 的处理日志：两个 group
+独立订阅同一 topic，因此两种 Producer 路由发送的消息都可以被两个 Consumer 观察到。打开
+`http://127.0.0.1:3000` 的 Grafana，使用 Producer 和 Consumer dashboard 查看对应的 HTTP、发送、接收、处理和结算 telemetry。
 
 应用会直接读取 `OpenTelemetry:ServiceName` 和 `OpenTelemetry:OtlpEndpoint`。可通过
 `OpenTelemetry__ServiceName` 与 `OpenTelemetry__OtlpEndpoint` 覆盖；RocketMQ 连接配置仍留在各协议专用的
 `RocketMQ` 配置节，固定的角色行为直接写在代码中。
 
-两端工作流分别参阅 [Producer 集成](ProducerWebApi/README.zh-CN.md)和
-[Consumer 集成](ConsumerWebApi/README.zh-CN.md)。仓库提供的 dashboard 可从
-`http://127.0.0.1:3000` 的 Grafana 打开。
+两端工作流分别参阅 [Generic Host Producer 集成](GenericHost/ProducerWebApi/README.zh-CN.md)和
+[Generic Host Consumer 集成](GenericHost/ConsumerWebApi/README.zh-CN.md)。

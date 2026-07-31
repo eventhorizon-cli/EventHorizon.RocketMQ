@@ -66,13 +66,13 @@ docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 Consumer Group：
 
 ```shell
-dotnet run --project samples/opentelemetry/ConsumerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ConsumerWebApi
 ```
 
 在第二个终端启动 Producer Web API（`http://localhost:5241`）：
 
 ```shell
-dotnet run --project samples/opentelemetry/ProducerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ProducerWebApi
 ```
 
 通过 Producer 的 gRPC 和 Remoting 发送路由发布类似 `{"message":"Hello from Grafana."}` 的请求。Producer 会固定共享 Topic 和
@@ -80,8 +80,8 @@ tag，因此请求模型不接受这两个字段。两个 host 会将 HTTP 和 R
 使用不同的服务名：`eventhorizon-rocketmq-otel-producer` 和 `eventhorizon-rocketmq-otel-consumer`。发送遥测请使用 Producer dashboard，
 接收、处理和确认遥测请使用 Consumer dashboard。共享 SDK 和 Grafana 设置请参阅
 [OpenTelemetry 示例总览](../../samples/opentelemetry/README.zh-CN.md)；两个 host 的接口说明请参阅
-[Producer Web API 说明](../../samples/opentelemetry/ProducerWebApi/README.zh-CN.md) 和
-[Consumer Web API 说明](../../samples/opentelemetry/ConsumerWebApi/README.zh-CN.md)。
+[Producer Web API 说明](../../samples/opentelemetry/GenericHost/ProducerWebApi/README.zh-CN.md) 和
+[Consumer Web API 说明](../../samples/opentelemetry/GenericHost/ConsumerWebApi/README.zh-CN.md)。
 
 ## 连接手动客户端测试
 

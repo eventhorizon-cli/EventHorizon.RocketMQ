@@ -25,6 +25,10 @@ public interface IGrpcSimpleConsumer : IAsyncDisposable
     /// </summary>
     /// <param name="cancellationToken">A token that cancels the start operation.</param>
     /// <returns>A task-like value that represents the asynchronous operation.</returns>
+    /// <remarks>
+    /// A .NET Generic Host invokes this method through the hosted service registered by <c>AddRocketMQGrpc</c>.
+    /// Call it explicitly only when resolving the role from a standalone <see cref="IServiceProvider"/>.
+    /// </remarks>
     ValueTask StartAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -32,6 +36,10 @@ public interface IGrpcSimpleConsumer : IAsyncDisposable
     /// </summary>
     /// <param name="cancellationToken">A token that cancels the stop operation.</param>
     /// <returns>A task-like value that represents the asynchronous operation.</returns>
+    /// <remarks>
+    /// A .NET Generic Host invokes this method through the hosted service registered by <c>AddRocketMQGrpc</c>.
+    /// Call it explicitly only when manually managing a role resolved from a standalone <see cref="IServiceProvider"/>.
+    /// </remarks>
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

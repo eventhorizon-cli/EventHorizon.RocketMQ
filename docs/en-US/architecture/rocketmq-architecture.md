@@ -179,7 +179,7 @@ LitePush requires all of the following server-side preparation:
 In RocketMQ 5.5.0, the local Broker-integrated Proxy started with `mqbroker --enable-proxy` does
 not implement this RPC. Use `mqproxy -pm cluster` or a compatible newer Proxy. This limitation does
 not affect the standard gRPC Producer, SimpleConsumer, or PushConsumer, but it prevents LitePush
-startup and runtime Lite subscription changes. The [LitePush sample](../../../samples/grpc/LitePushConsumer/README.md)
+startup and runtime Lite subscription changes. The [LitePush sample](../../../samples/grpc/GenericHost/LitePushConsumer/README.md)
 has the executable configuration steps.
 
 ## Local Compose Environments

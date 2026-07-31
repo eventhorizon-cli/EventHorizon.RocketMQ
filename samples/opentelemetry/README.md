@@ -70,27 +70,47 @@ The two Web API projects place gRPC and Remoting roles in separate producer and 
 be followed across HTTP, send, receive, process, and settlement telemetry. They export OTLP/gRPC to the supplied
 Grafana OTEL LGTM environment by default.
 
+Run the following commands from the repository root. The RocketMQ environment creates
+`eventhorizon-test-topic` before it reports ready, so no manual topic setup is required.
+
 ```shell
 docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 docker compose -f test-environments/otel-lgtm/compose.yaml up -d --wait
 ```
 
-Start the Consumer host in one terminal:
+Start the Generic Host Consumer in one terminal:
 
 ```shell
-dotnet run --project samples/opentelemetry/ConsumerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ConsumerWebApi
 ```
 
-Then start the Producer host in another terminal:
+Then start the Generic Host Producer in another terminal:
 
 ```shell
-dotnet run --project samples/opentelemetry/ProducerWebApi
+dotnet run --project samples/opentelemetry/GenericHost/ProducerWebApi
 ```
+
+With both hosts running, use the Producer Swagger page at `http://localhost:5241/swagger`, or publish one message
+through each protocol directly:
+
+```shell
+curl --fail --request POST http://localhost:5241/messages/grpc \
+  --header 'content-type: application/json' \
+  --data '{"message":"Hello from the OpenTelemetry sample."}'
+
+curl --fail --request POST http://localhost:5241/messages/remoting \
+  --header 'content-type: application/json' \
+  --data '{"message":"Hello from the OpenTelemetry sample."}'
+```
+
+Each request returns an HTTP `200` send receipt. The Consumer host logs processing from both the gRPC and Remoting
+consumer groups: the groups are independent subscriptions to the same topic, so either producer route can be
+observed by both consumers. Open Grafana at `http://127.0.0.1:3000` and use the Producer and Consumer dashboards to
+inspect the corresponding HTTP, send, receive, process, and settlement telemetry.
 
 The applications read `OpenTelemetry:ServiceName` and `OpenTelemetry:OtlpEndpoint` directly. Override them with
 `OpenTelemetry__ServiceName` and `OpenTelemetry__OtlpEndpoint`; RocketMQ connection settings remain in their
 protocol-specific `RocketMQ` sections, while fixed role behavior is declared in code.
 
-Use the [Producer integration](ProducerWebApi/README.md) and
-[Consumer integration](ConsumerWebApi/README.md) guides for the two sides of the workflow. The supplied dashboards
-are available from Grafana at `http://127.0.0.1:3000`.
+Use the [Generic Host Producer integration](GenericHost/ProducerWebApi/README.md) and
+[Generic Host Consumer integration](GenericHost/ConsumerWebApi/README.md) guides for the two sides of the workflow.

@@ -115,7 +115,8 @@ public sealed class OrderPublisher(IGrpcProducer producer)
 ```
 
 在不使用 Generic Host 的独立 `ServiceProvider` 中解析角色时，调用方必须显式调用 `StartAsync` 和
-`StopAsync`；容器本身不会替应用启动后台工作。
+`StopAsync`；容器本身不会替应用启动后台工作。已经启动的 Generic Host 中，应用代码不应再次调用角色的这些
+生命周期方法。
 
 ### 4. 多 Consumer 与 keyed service
 

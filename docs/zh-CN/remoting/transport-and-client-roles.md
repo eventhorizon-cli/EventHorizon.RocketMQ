@@ -185,7 +185,7 @@ assignment 互斥且并集完整，再正常停止一个成员，并确认另一
 `IRemotingAdmin` 保持只读边界：它用于发现队列、查询 offset/时间，并按 `OffsetMessageId` 查看物理消息。
 这是一项适合运维、诊断和审计工具的 API；它不是 topic、group 或 ACL 的写管理面，也不应与业务 Producer
 职责混在一起。可执行的配置与查询示例见
-[Remoting Admin sample](../../../samples/remoting/Admin/README.zh-CN.md)。
+[Remoting Admin sample](../../../samples/remoting/GenericHost/Admin/README.zh-CN.md)。
 
 ## 取舍与约束
 

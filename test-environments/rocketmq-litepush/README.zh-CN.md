@@ -3,7 +3,8 @@
 [全部测试环境](../README.zh-CN.md) | [English](README.md)
 
 这套环境专门用于运行仓库中的 gRPC
-[`LitePushConsumer` 示例](../../samples/grpc/LitePushConsumer/README.zh-CN.md)。它使用 Apache RocketMQ 5.5.0。
+[`LiteProducer`](../../samples/grpc/GenericHost/LiteProducer/README.zh-CN.md) 和
+[`LitePushConsumer` 示例](../../samples/grpc/GenericHost/LitePushConsumer/README.zh-CN.md)。它使用 Apache RocketMQ 5.5.0。
 
 只需执行一次 `docker compose up -d --wait`。环境会启动 cluster-mode Proxy，并自动准备示例所需的资源；开发者不需要
 手动执行 `mqadmin` 命令。
@@ -34,7 +35,8 @@ RocketMQ 5.5.0 的 Broker-integrated Proxy 不支持 `SyncLiteSubscription` RPC�
 ```mermaid
 flowchart TB
     Host[开发者宿主机]
-    Sample[LitePushConsumer 示例\nEndpoint: localhost:8081]
+    Producer[LiteProducer 示例\nHTTP: localhost:5232]
+    Consumer[LitePushConsumer 示例\ngRPC endpoint: localhost:8081]
     DashboardUi[浏览器\nhttp://localhost:8082]
 
     subgraph Environment[test-environments/rocketmq-litepush]
@@ -47,9 +49,11 @@ flowchart TB
         Volumes[(Docker 命名卷\n日志和 Broker 存储)]
     end
 
-    Host --> Sample
+    Host --> Producer
+    Host --> Consumer
     Host --> DashboardUi
-    Sample -->|gRPC :8081| Proxy
+    Producer -->|gRPC :8081| Proxy
+    Consumer -->|gRPC :8081| Proxy
     DashboardUi -->|Dashboard :8082| Dashboard
     Host -->|诊断 :19876| NameServer
     VolumeInit --> Volumes
@@ -92,21 +96,32 @@ Consumer Group，因此只应将它用作本地开发工具。
 docker compose logs --no-color resource-init
 ```
 
-随后在仓库根目录运行示例即可，默认的 `appsettings.json` 不需要修改：
+随后在仓库根目录运行两个协作示例即可，默认的 `appsettings.json` 不需要修改。先在一个终端启动 Consumer：
 
 ```shell
-dotnet run --project samples/grpc/LitePushConsumer
+dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-Consumer 启动时会同步 `eventhorizon-test-lite-topic`。要收到消息，需要使用支持 Lite message 的 gRPC Producer 向
-`eventhorizon-test-lite-parent-topic` 发送 Lite message，并指定该 LiteTopic；标准 Producer 示例发送的是普通消息，不会
-写入 LiteTopic。
+再在第二个终端启动 LiteProducer，并向其 HTTP API 提交消息：
+
+```shell
+dotnet run --project samples/grpc/GenericHost/LiteProducer
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"message":"hello Lite"}'
+```
+
+Consumer 启动时会同步 `eventhorizon-test-lite-topic`。LiteProducer 会在
+`eventhorizon-test-lite-parent-topic` 下向该 LiteTopic 发送 Lite message，因此消息可由此订阅接收。标准 Producer 示例发送的是
+普通消息，不会写入 LiteTopic。两个 Lite 示例都运行在 Generic Host 中，由 Host 负责 Producer 或 Consumer 的
+`StartAsync` 和 `StopAsync` 生命周期。
 
 ## 端点与限制
 
 | 用途 | 宿主机端点 | 说明 |
 | --- | --- | --- |
-| gRPC LitePush 示例 | `localhost:8081` | 默认的 `RocketMQ:Client:Endpoint`。 |
+| gRPC Lite 示例 | `localhost:8081` | 默认的 `RocketMQ:Client:Endpoint`。 |
+| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON，例如 `{"message":"hello Lite"}`。 |
 | NameServer 诊断 | `localhost:19876` | 可选的检查端点，不是 gRPC 客户端端点。 |
 | RocketMQ Dashboard | `http://localhost:8082` | 集群的本地管理界面。 |
 | Broker | 不公开 | 仅能在 Compose 网络内通过 `broker:10911` 访问。 |

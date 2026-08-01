@@ -9,6 +9,10 @@ Project 和 NuGet Package，并集成 Microsoft 依赖注入、Options、日志�
 客户端先连接 RocketMQ NameServer，再根据路由信息发现 Broker 并直接建立连接。应用需要使用经典协议时，
 请使用该 Package；需要通过 Proxy 使用 RocketMQ 5 protobuf/gRPC API 时，请改用 `EventHorizon.RocketMQ.Grpc`。
 
+> **需要强类型集成事件？**
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus) 通过
+> `EventHorizon.RocketMQ.Remoting.EventBus` 包，基于当前客户端提供更简便的应用层 EventBus 服务。
+
 客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer 和 Broker 链路。
 
 > **请先阅读[仓库总览](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/README.zh-CN.md)和
@@ -576,7 +580,7 @@ handler 生命周期：`Singleton` 会为每个 Consumer 实例创建一个 hand
 `Transient` 会在每次批量处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
 `IRemotingPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
 
-> **0.2.0 破坏性迁移：** `RemotingPushConsumerOptions.MessageHandler` 和非泛型
+> **0.2.0：** `RemotingPushConsumerOptions.MessageHandler` 和非泛型
 > `AddRemotingPushConsumer` overload 已被移除。请将委托逻辑移入 `IRemotingPushMessageHandler` 实现，并通过
 > `AddRemotingPushConsumer<THandler>` 注册。handler 依赖 scoped 应用服务时应选择 `Scoped`。
 

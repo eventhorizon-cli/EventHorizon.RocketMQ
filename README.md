@@ -16,6 +16,10 @@ Consumer, and Admin APIs as well as transactional, timed/delay, FIFO, and priori
 It ships `net8.0` and `net10.0` targets, integrates with **Microsoft dependency injection**, Generic Host, options,
 and logging, and provides a **modern, strongly typed API experience**.
 
+> **Building an application-level event bus?** See
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus) for an
+> easier-to-use application-level EventBus across both protocol clients.
+
 Client behavior is backed by high-coverage unit tests and Docker-backed integration tests that exercise real
 NameServer, Broker, and Proxy paths.
 

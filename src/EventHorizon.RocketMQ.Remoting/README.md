@@ -11,6 +11,10 @@ The client connects to RocketMQ NameServer, then uses route data to discover Bro
 the selected Brokers. Use this package when an application needs the classic protocol. For the RocketMQ 5
 protobuf/gRPC API through a Proxy, use `EventHorizon.RocketMQ.Grpc` instead.
 
+> **Need strongly typed integration events?**
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus) provides the
+> `EventHorizon.RocketMQ.Remoting.EventBus` package for an easier-to-use application-level EventBus based on this client.
+
 Client behavior is covered by high-coverage unit tests and Docker-backed integration tests against real
 NameServer and Broker paths.
 
@@ -616,7 +620,7 @@ async service scope for each batch handling attempt. Automatic dispatch requires
 `IRemotingPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped
 dependencies such as a database context.
 
-> **0.2.0 breaking migration:** `RemotingPushConsumerOptions.MessageHandler` and the non-generic
+> **0.2.0:** `RemotingPushConsumerOptions.MessageHandler` and the non-generic
 > `AddRemotingPushConsumer` overload have been removed. Move delegate logic into an
 > `IRemotingPushMessageHandler` implementation and register it through `AddRemotingPushConsumer<THandler>`. Choose
 > `Scoped` when the handler depends on scoped application services.

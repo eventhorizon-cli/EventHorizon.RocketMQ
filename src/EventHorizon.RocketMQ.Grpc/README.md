@@ -7,6 +7,10 @@
 NuGet package targeting `net8.0` and `net10.0`. It connects only to a RocketMQ Proxy through `Endpoint`; it does not
 connect directly to a NameServer or Broker.
 
+> **Need strongly typed integration events?**
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus) provides the
+> `EventHorizon.RocketMQ.Grpc.EventBus` package for an easier-to-use application-level EventBus based on this client.
+
 Client behavior is covered by high-coverage unit tests and Docker-backed integration tests against real
 NameServer, Broker, and Proxy paths.
 
@@ -372,7 +376,7 @@ resolve a handler in a new async service scope for each handling attempt. Automa
 `IGrpcPushMessageHandler` resolved from the application container; choose `Scoped` when it uses scoped dependencies
 such as a database context.
 
-> **0.2.0 breaking migration:** `MessageHandler` on Push and LitePush options, together with the non-generic
+> **0.2.0:** `MessageHandler` on Push and LitePush options, together with the non-generic
 > registration overloads, has been removed. Move delegate logic into an `IGrpcPushMessageHandler` implementation and
 > register it through `AddGrpcPushConsumer<THandler>` or `AddGrpcLitePushConsumer<THandler>`. Choose `Scoped` when
 > the handler depends on scoped application services.

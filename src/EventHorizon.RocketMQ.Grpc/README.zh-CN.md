@@ -7,6 +7,10 @@
 protobuf/gRPC Project 和 NuGet Package。它只通过 `Endpoint` 连接 RocketMQ Proxy，不会直接连接 NameServer 或
 Broker。
 
+> **需要强类型集成事件？**
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus) 通过
+> `EventHorizon.RocketMQ.Grpc.EventBus` 包，基于当前客户端提供更简便的应用层 EventBus 服务。
+
 客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy
 链路。
 
@@ -356,7 +360,7 @@ public sealed class OrderMessageHandler : IGrpcPushMessageHandler
 `Transient` 会在每次处理尝试中创建新的异步 DI scope，再从其中解析 handler。自动分发必须使用由应用容器解析的
 `IGrpcPushMessageHandler` typed handler；handler 需要数据库上下文等 scoped 依赖时应选择 `Scoped`。
 
-> **0.2.0 破坏性迁移：** Push 和 LitePush options 上的 `MessageHandler`，以及非泛型注册 overload，已被移除。
+> **0.2.0：** Push 和 LitePush options 上的 `MessageHandler`，以及非泛型注册 overload，已被移除。
 > 请将委托逻辑移入 `IGrpcPushMessageHandler` 实现，并通过 `AddGrpcPushConsumer<THandler>` 或
 > `AddGrpcLitePushConsumer<THandler>` 注册。handler 依赖 scoped 应用服务时应选择 `Scoped`。
 

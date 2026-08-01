@@ -16,6 +16,10 @@ Consumer 和 Admin API，以及事务消息、定时/延迟消息、FIFO 消息�
 当前版本提供 `net8.0` 和 `net10.0` 目标，原生集成 **Microsoft DI**，可直接接入 Generic Host、Options 和日志体系，
 提供**现代化、强类型的 API 编程体验**。
 
+> **需要应用层 EventBus？** 请查看
+> [EventHorizon.RocketMQ.EventBus](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ.EventBus)，它基于两个
+> 协议客户端提供更简便的应用层 EventBus 服务。
+
 客户端行为由高覆盖率单元测试保障，并通过 Docker 驱动的集成测试验证真实的 NameServer、Broker 和 Proxy
 链路。
 

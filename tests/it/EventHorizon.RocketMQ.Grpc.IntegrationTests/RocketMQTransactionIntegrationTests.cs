@@ -24,7 +24,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
-public sealed class RocketMQTransactionIntegrationTests(RocketMQContainerFixtureRegistry registry)
+public sealed class RocketMQTransactionIntegrationTests(RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
 
     [Fact]

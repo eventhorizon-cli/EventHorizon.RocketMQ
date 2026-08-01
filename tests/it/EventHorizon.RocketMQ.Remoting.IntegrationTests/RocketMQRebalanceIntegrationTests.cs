@@ -27,10 +27,10 @@ using Xunit;
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
 public sealed class RocketMQRebalanceIntegrationTests(
-    RocketMQContainerFixtureRegistry registry) : IAsyncLifetime
+    RocketMQSingleBrokerContainerFixtureRegistry registry) : IAsyncLifetime
 {
     private static readonly TimeSpan RebalanceTimeout = TimeSpan.FromSeconds(10);
-    private RocketMQContainerFixture _fixture = null!;
+    private RocketMQSingleBrokerContainerFixture _fixture = null!;
 
     public async ValueTask InitializeAsync()
     {

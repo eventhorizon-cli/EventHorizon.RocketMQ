@@ -21,7 +21,15 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 
-public sealed class RocketMQContainerFixture : IAsyncLifetime
+/// <summary>
+/// Provides the shared single-Broker baseline topology for protocol-specific integration tests.
+/// </summary>
+/// <remarks>
+/// The Broker and Proxy run in the same container so a loopback Broker route is reachable from both a host Remoting
+/// client through the matching port binding and the co-located Proxy process. Each integration-test assembly owns an
+/// independent runtime instance through <see cref="RocketMQSingleBrokerContainerFixtureRegistry"/>.
+/// </remarks>
+public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";
     private const int NameServerPort = 9876;
@@ -60,7 +68,10 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
     private readonly int _brokerPort;
     private readonly int _grpcPort;
 
-    public RocketMQContainerFixture()
+    /// <summary>
+    /// Initializes the container definitions and reserves their host ports without starting Docker resources.
+    /// </summary>
+    public RocketMQSingleBrokerContainerFixture()
     {
         _portReservation = RocketMQHostPortReservation.Reserve(3, minimumPortDistance: 10);
         _nameServerHostPort = _portReservation[0];
@@ -95,6 +106,7 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
             "  \"useEndpointPortFromRequest\": true\n" +
             "}\n");
 
+        // Co-location makes the advertised 127.0.0.1 Broker route valid for both host Remoting and Proxy traffic.
         _broker = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithPortBinding(_brokerPort, _brokerPort)
@@ -120,10 +132,19 @@ public sealed class RocketMQContainerFixture : IAsyncLifetime
             .Build();
     }
 
+    /// <summary>
+    /// Gets the host-reachable NameServer address for classic Remoting clients.
+    /// </summary>
     public string NameServerAddress => $"{_nameServer.Hostname}:{_nameServer.GetMappedPublicPort(NameServerPort)}";
 
+    /// <summary>
+    /// Gets the host-reachable address of the single classic Remoting Broker.
+    /// </summary>
     public string BrokerAddress => $"{_broker.Hostname}:{_broker.GetMappedPublicPort(_brokerPort)}";
 
+    /// <summary>
+    /// Gets the host-reachable gRPC endpoint of the co-located cluster-mode Proxy.
+    /// </summary>
     public string GrpcEndpoint => $"{_broker.Hostname}:{_broker.GetMappedPublicPort(_grpcPort)}";
 
     /// <summary>

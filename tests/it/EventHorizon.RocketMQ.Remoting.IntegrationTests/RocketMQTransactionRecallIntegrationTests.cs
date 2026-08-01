@@ -24,7 +24,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQContainerFixtureRegistry registry)
+public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
     [Fact]
     [Trait("Category", "Integration")]

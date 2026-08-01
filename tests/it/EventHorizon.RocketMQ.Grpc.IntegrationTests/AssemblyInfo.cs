@@ -16,4 +16,5 @@
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using Xunit;
 
-[assembly: AssemblyFixture(typeof(RocketMQContainerFixtureRegistry))]
+// The registry defers the single-Broker topology so multi-Broker-only filtered runs do not start it.
+[assembly: AssemblyFixture(typeof(RocketMQSingleBrokerContainerFixtureRegistry))]

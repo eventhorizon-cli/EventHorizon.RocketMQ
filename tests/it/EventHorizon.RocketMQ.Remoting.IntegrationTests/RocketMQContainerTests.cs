@@ -33,9 +33,9 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry registry) : IAsyncLifetime
+public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureRegistry registry) : IAsyncLifetime
 {
-    private RocketMQContainerFixture _fixture = null!;
+    private RocketMQSingleBrokerContainerFixture _fixture = null!;
 
     public async ValueTask InitializeAsync()
     {
@@ -68,7 +68,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
         var nameServer = provider.GetRequiredKeyedService<INameServer>(Options.DefaultName);
         var route = await nameServer.GetTopicRouteInfoAsync(
-            RocketMQContainerFixture.TestTopic,
+            RocketMQSingleBrokerContainerFixture.TestTopic,
             TimeSpan.FromSeconds(10),
             cancellationToken: cancellationToken);
         Assert.NotEmpty(route.BrokerDatas);
@@ -78,15 +78,15 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var result = await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 "hello from dotnet"u8.ToArray()), cancellationToken);
             Assert.Equal(RemotingSendStatus.SendOk, result.Status);
             Assert.NotEmpty(result.MessageId);
             Assert.NotEmpty(result.OffsetMessageId);
-            Assert.Equal(RocketMQContainerFixture.TestTopic, result.MessageQueue.Topic);
+            Assert.Equal(RocketMQSingleBrokerContainerFixture.TestTopic, result.MessageQueue.Topic);
 
             await producer.SendOnewayAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 "one way"u8.ToArray()), cancellationToken);
         }
         finally
@@ -111,7 +111,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             {
                 options.GroupName = "remoting-pull-consumer-it";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("remoting-pull"));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression("remoting-pull"));
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -122,7 +122,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var queues = await consumer.GetMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 cancellationToken);
             var endOffsets = new Dictionary<(string Broker, int QueueId), long>();
             foreach (var candidate in queues)
@@ -135,7 +135,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             }
 
             var body = $"remoting-pull-{Guid.NewGuid():N}";
-            var sent = await producer.SendAsync(new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body))
+            var sent = await producer.SendAsync(new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body))
             {
                 Tag = "remoting-pull"
             }, cancellationToken);
@@ -184,7 +184,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             {
                 options.GroupName = $"legacy-lite-pull-consumer-{suffix}";
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("remoting-lite-pull"));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression("remoting-lite-pull"));
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -196,7 +196,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         {
             Assert.NotEmpty(consumer.Assignment);
             var body = $"remoting-lite-pull-{suffix}";
-            await producer.SendAsync(new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body))
+            await producer.SendAsync(new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body))
             {
                 Tag = "remoting-lite-pull"
             }, cancellationToken);
@@ -253,10 +253,10 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var queues = await consumer.GetMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 cancellationToken);
             var sent = await producer.SendAsync(
-                new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
+                new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
                 cancellationToken);
             var queue = queues.Single(value =>
                 value.QueueId == sent.MessageQueue.QueueId && value.BrokerName == sent.MessageQueue.BrokerName);
@@ -321,7 +321,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression("legacy-push"));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression("legacy-push"));
             }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -343,7 +343,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         await consumer.StartAsync(cancellationToken);
         try
         {
-            var sent = await producer.SendAsync(new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(expected))
+            var sent = await producer.SendAsync(new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(expected))
             {
                 Tag = "legacy-push"
             }, cancellationToken);
@@ -368,7 +368,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             Assert.True(delivery.DeliveryAttempt >= 2);
             var commit = await _fixture.WaitForConsumerCommitAsync(
                 "legacy-push-consumer-it",
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 sent.MessageQueue.BrokerName,
                 sent.MessageQueue.QueueId,
                 TimeSpan.FromSeconds(10),
@@ -679,7 +679,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.BatchSize = messageCount;
                 options.ConsumeMessageBatchSize = messageCount;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
             }, (messages, _, _) =>
                 {
                     var bodies = messages.Select(message => Encoding.UTF8.GetString(message.Body)).ToArray();
@@ -698,11 +698,11 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var queue = (await producer.GetPublishMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 cancellationToken)).First();
             var sent = await producer.SendAsync(
                 expectedBodies.Select(body => new Message(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 Encoding.UTF8.GetBytes(body))
                 {
                     Tag = tag
@@ -717,7 +717,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
             var commit = await _fixture.WaitForConsumerCommitAsync(
                 group,
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 queue.BrokerName,
                 queue.QueueId,
                 TimeSpan.FromSeconds(10),
@@ -766,7 +766,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.MaxCachedMessages = messageCount;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
             }, (messages, context, _) =>
                 {
                     var deliveries = messages
@@ -804,11 +804,11 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var queue = (await producer.GetPublishMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 cancellationToken)).First();
             var sent = await producer.SendAsync(
                 expectedBodies.Select(body => new Message(
-                    RocketMQContainerFixture.TestTopic,
+                    RocketMQSingleBrokerContainerFixture.TestTopic,
                     Encoding.UTF8.GetBytes(body))
                 {
                     Tag = tag
@@ -841,7 +841,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
             var commit = await _fixture.WaitForConsumerCommitAsync(
                 group,
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 queue.BrokerName,
                 queue.QueueId,
                 TimeSpan.FromSeconds(10),
@@ -882,7 +882,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.ConsumeOrderly = true;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
             }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -907,7 +907,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             var queue = (await producer.GetPublishMessageQueuesAsync(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 cancellationToken)).First();
             lockBody = Encoding.UTF8.GetBytes(new
             {
@@ -952,7 +952,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
 
             lockHeld = true;
             await consumer.StartAsync(cancellationToken);
-            await producer.SendAsync(new Message(RocketMQContainerFixture.TestTopic, Encoding.UTF8.GetBytes(expected))
+            await producer.SendAsync(new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(expected))
             {
                 Tag = tag
             }, queue, cancellationToken);
@@ -1028,7 +1028,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                     options.GroupName = "legacy-push-cluster-it";
                     options.MaxConcurrency = 4;
                     options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                    options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                    options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
                 }, (messages, _, _) =>
                     {
                         foreach (var message in messages)
@@ -1078,7 +1078,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
             foreach (var body in expectedBodies)
             {
                 await producer.SendAsync(new Message(
-                    RocketMQContainerFixture.TestTopic,
+                    RocketMQSingleBrokerContainerFixture.TestTopic,
                     Encoding.UTF8.GetBytes(body))
                 {
                     Tag = tag
@@ -1125,7 +1125,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                 options.GroupName = $"legacy-backlog-consumer-{suffix}";
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
             }, (messages, _, _) =>
                 {
                     var message = Assert.Single(messages);
@@ -1145,7 +1145,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         try
         {
             await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 Encoding.UTF8.GetBytes(expectedBody))
             {
                 Tag = tag
@@ -1206,7 +1206,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
                     options.LocalOffsetStorePath = offsetPath;
                     options.InitialPosition = ConsumeFromPosition.Beginning;
                     options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                    options.Subscribe(RocketMQContainerFixture.TestTopic, new FilterExpression(tag));
+                    options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
                 }, (messages, _, _) =>
                     {
                         var message = Assert.Single(messages);
@@ -1245,7 +1245,7 @@ public sealed class RocketMQContainerTests(RocketMQContainerFixtureRegistry regi
         {
             await producer.StartAsync(cancellationToken);
             await producer.SendAsync(new Message(
-                RocketMQContainerFixture.TestTopic,
+                RocketMQSingleBrokerContainerFixture.TestTopic,
                 Encoding.UTF8.GetBytes(expectedBody))
             {
                 Tag = tag

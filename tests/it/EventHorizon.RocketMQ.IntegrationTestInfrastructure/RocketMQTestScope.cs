@@ -18,12 +18,16 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// <summary>
 /// Provides test-specific Broker resource names for one integration test.
 /// </summary>
+/// <remarks>
+/// A scope does not own Broker resources and therefore has no disposal lifecycle. Its topics and groups remain until
+/// the owning <see cref="RocketMQSingleBrokerContainerFixture"/> is disposed.
+/// </remarks>
 public sealed class RocketMQTestScope
 {
-    private readonly RocketMQContainerFixture _fixture;
+    private readonly RocketMQSingleBrokerContainerFixture _fixture;
     private readonly string _suffix;
 
-    internal RocketMQTestScope(RocketMQContainerFixture fixture, string topic, string suffix)
+    internal RocketMQTestScope(RocketMQSingleBrokerContainerFixture fixture, string topic, string suffix)
     {
         _fixture = fixture;
         Topic = topic;

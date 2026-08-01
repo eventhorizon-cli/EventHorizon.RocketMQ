@@ -24,6 +24,12 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// <summary>
 /// Provides a NameServer and three host-reachable classic Remoting Brokers for integration tests.
 /// </summary>
+/// <remarks>
+/// Each Broker advertises loopback with a distinct dynamically allocated host port. A separate Proxy container would
+/// resolve loopback to itself rather than to these three Brokers, so this topology remains separate from
+/// <see cref="RocketMQMultiBrokerGrpcContainerFixture"/>. xUnit owns this type directly as a collection fixture; an
+/// additional lazy registry would not extend its lifecycle.
+/// </remarks>
 public sealed class RocketMQMultiBrokerRemotingContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";

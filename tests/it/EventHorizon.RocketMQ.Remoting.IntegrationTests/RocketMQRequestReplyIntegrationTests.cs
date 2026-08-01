@@ -23,7 +23,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
-public sealed class RocketMQRequestReplyIntegrationTests(RocketMQContainerFixtureRegistry registry)
+public sealed class RocketMQRequestReplyIntegrationTests(RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
     [Fact]
     [Trait("Category", "Integration")]

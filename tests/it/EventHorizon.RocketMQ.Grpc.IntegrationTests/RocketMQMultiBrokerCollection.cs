@@ -18,6 +18,13 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 
+/// <summary>
+/// Defines the test collection that directly owns the gRPC multi-Broker topology.
+/// </summary>
+/// <remarks>
+/// Direct collection ownership lets xUnit create the topology only when selected tests run, so no registry wrapper is
+/// required.
+/// </remarks>
 [CollectionDefinition(Name)]
 public sealed class RocketMQMultiBrokerCollection : ICollectionFixture<RocketMQMultiBrokerGrpcContainerFixture>
 {

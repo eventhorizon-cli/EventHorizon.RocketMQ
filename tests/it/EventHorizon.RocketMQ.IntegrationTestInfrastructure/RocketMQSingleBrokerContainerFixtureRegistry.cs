@@ -20,10 +20,15 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// <summary>
 /// Lazily creates one single-Broker fixture for an integration-test assembly.
 /// </summary>
-public sealed class RocketMQContainerFixtureRegistry : IAsyncLifetime
+/// <remarks>
+/// Registering this holder instead of the container fixture keeps xUnit assembly initialization inexpensive and avoids
+/// starting the baseline topology for a multi-Broker-only filtered run. Multi-Broker collection fixtures do not need
+/// this indirection because xUnit already creates them only when their collection runs.
+/// </remarks>
+public sealed class RocketMQSingleBrokerContainerFixtureRegistry : IAsyncLifetime
 {
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
-    private RocketMQContainerFixture? _fixture;
+    private RocketMQSingleBrokerContainerFixture? _fixture;
 
     /// <inheritdoc />
     public ValueTask InitializeAsync()
@@ -36,7 +41,7 @@ public sealed class RocketMQContainerFixtureRegistry : IAsyncLifetime
     /// </summary>
     /// <param name="cancellationToken">The token used to cancel waiting for fixture initialization.</param>
     /// <returns>The initialized fixture.</returns>
-    public async Task<RocketMQContainerFixture> GetFixtureAsync(CancellationToken cancellationToken = default)
+    public async Task<RocketMQSingleBrokerContainerFixture> GetFixtureAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _fixture) is { } fixture)
         {
@@ -51,7 +56,7 @@ public sealed class RocketMQContainerFixtureRegistry : IAsyncLifetime
                 return existingFixture;
             }
 
-            var createdFixture = new RocketMQContainerFixture();
+            var createdFixture = new RocketMQSingleBrokerContainerFixture();
             try
             {
                 await createdFixture.InitializeAsync().ConfigureAwait(false);

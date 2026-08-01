@@ -23,7 +23,7 @@ using Xunit;
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
 public sealed class RocketMQCrossProcessRebalanceIntegrationTests(
-    RocketMQContainerFixtureRegistry registry)
+    RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
     private static readonly TimeSpan ProcessStartupTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan RebalanceTimeout = TimeSpan.FromSeconds(10);
@@ -207,7 +207,7 @@ public sealed class RocketMQCrossProcessRebalanceIntegrationTests(
     }
 
     private static async Task WaitForCommitsAsync(
-        RocketMQContainerFixture fixture,
+        RocketMQSingleBrokerContainerFixture fixture,
         string group,
         IReadOnlyList<RemotingMessageQueue> queues,
         TimeSpan timeout,

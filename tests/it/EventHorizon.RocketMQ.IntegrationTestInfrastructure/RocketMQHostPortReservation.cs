@@ -18,6 +18,13 @@ using System.Net.Sockets;
 
 namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 
+/// <summary>
+/// Coordinates dynamic host-port choices between container fixtures in the current test process.
+/// </summary>
+/// <remarks>
+/// The probe listener closes after selecting a candidate, so this type records a process-local logical reservation; it
+/// does not retain an operating-system socket lock.
+/// </remarks>
 internal sealed class RocketMQHostPortReservation : IDisposable
 {
     private static readonly object SyncRoot = new();

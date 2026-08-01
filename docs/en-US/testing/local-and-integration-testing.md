@@ -110,7 +110,7 @@ Keep durable environment, command, source-commit, and result records under the b
 
 ### Integration tests and Testcontainers
 
-[`RocketMQContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
+[`RocketMQSingleBrokerContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQSingleBrokerContainerFixture.cs)
 creates an isolated Docker network, starts an Apache RocketMQ 5.5.0 NameServer and Broker, then
 starts a cluster-mode Proxy after the Broker registers. A lazy xUnit v3 assembly-fixture registry
 owns one baseline fixture per integration-test assembly, so independent test classes can share the
@@ -213,6 +213,7 @@ Broker or Proxy requirements.
 
 ## Related Reading
 
+- [Integration-test projects](../../../tests/it/README.md)
 - [Test-environment index](../../../test-environments/README.md)
 - [Runnable samples](../../../samples/README.md)
 - [gRPC consumer model](../grpc/consumer-model.md)

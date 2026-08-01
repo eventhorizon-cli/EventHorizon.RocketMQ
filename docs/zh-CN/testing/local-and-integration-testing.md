@@ -95,7 +95,7 @@ test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
 ### 2. Integration fixture 启动受控的 RocketMQ 集群
 
 共享
-[`RocketMQContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQContainerFixture.cs)
+[`RocketMQSingleBrokerContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQSingleBrokerContainerFixture.cs)
 使用 Testcontainers 和 `apache/rocketmq:5.5.0`：
 
 ```text
@@ -210,6 +210,7 @@ Proxy/Broker 配置下覆盖；已移除的 gRPC PullConsumer 没有 sample 或 
 
 ## 延伸阅读
 
+- [集成测试项目](../../../tests/it/README.zh-CN.md)
 - [协议边界](../architecture/protocol-boundaries.md)
 - [依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)

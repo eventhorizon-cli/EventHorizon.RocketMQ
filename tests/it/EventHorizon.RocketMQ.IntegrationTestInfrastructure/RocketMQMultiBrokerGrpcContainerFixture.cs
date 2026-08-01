@@ -25,6 +25,12 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// <summary>
 /// Provides a cluster-mode Proxy and three network-addressable Brokers for gRPC integration tests.
 /// </summary>
+/// <remarks>
+/// The Brokers advertise Docker network aliases at a fixed internal port so the separate Proxy container can reach
+/// them. Those routes are not resolvable by a host Remoting client, so this topology remains separate from
+/// <see cref="RocketMQMultiBrokerRemotingContainerFixture"/>. xUnit owns this type directly as a collection fixture;
+/// an additional lazy registry would not extend its lifecycle.
+/// </remarks>
 public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";

@@ -64,7 +64,7 @@ public sealed class RocketMQBrokerAssignedPopIntegrationTests(
         {
             options.GroupName = consumerGroup;
             options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Broker;
-            options.InitialPosition = ConsumeFromPosition.End;
+            options.InitialPosition = ConsumeFromPosition.Beginning;
             options.MaxConcurrency = 2;
             options.PullBatchSize = 1;
             options.PopBatchSize = 1;

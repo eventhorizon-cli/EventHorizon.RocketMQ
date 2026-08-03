@@ -443,14 +443,28 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         bool useSuggestedBroker,
         CancellationToken cancellationToken)
     {
-        var route = await _routes.GetAsync(
-            GetWireTopic(queue.Topic),
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        var broker = route.BrokerDatas.FirstOrDefault(value =>
-            string.Equals(value.BrokerName, queue.BrokerName, StringComparison.Ordinal));
-        var brokerAddresses = broker is { BrokerAddrs.Count: > 0 }
-            ? broker.BrokerAddrs
-            : queue.BrokerAddresses;
+        IReadOnlyDictionary<long, string> brokerAddresses;
+        try
+        {
+            var route = await _routes.GetAsync(
+                GetWireTopic(queue.Topic),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var broker = route.BrokerDatas.FirstOrDefault(value =>
+                string.Equals(value.BrokerName, queue.BrokerName, StringComparison.Ordinal));
+            brokerAddresses = broker is { BrokerAddrs.Count: > 0 }
+                ? broker.BrokerAddrs
+                : queue.BrokerAddresses;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception) when (queue.BrokerAddresses.Count > 0)
+        {
+            // Queue assignments retain the last resolved addresses so data-plane work can outlive route refreshes.
+            brokerAddresses = queue.BrokerAddresses;
+        }
+
         if (brokerAddresses.Count == 0)
         {
             throw new InvalidOperationException(

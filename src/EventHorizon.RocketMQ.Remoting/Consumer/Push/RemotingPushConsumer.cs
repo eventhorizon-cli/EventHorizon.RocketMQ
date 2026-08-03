@@ -530,6 +530,11 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
             {
                 if (topic == retryTopic)
                 {
+                    if (run.RetryTopicRequired)
+                    {
+                        balanced = false;
+                    }
+
                     _logger.LogDebug(exception, "Legacy retry topic {RetryTopic} is not available yet", retryTopic);
                 }
                 else
@@ -543,7 +548,8 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         await SendHeartbeatsAsync(run, run.KnownBrokers.Values, cancellationToken).ConfigureAwait(false);
         if (UsesBrokerAssignment)
         {
-            return await CoordinateBrokerAssignmentsAsync(run, snapshots, cancellationToken).ConfigureAwait(false);
+            balanced &= await CoordinateBrokerAssignmentsAsync(run, snapshots, cancellationToken).ConfigureAwait(false);
+            return balanced;
         }
 
         if (UsesBrokerQueueLocks)
@@ -1598,6 +1604,11 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
                         deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
                         _options.MaxDeliveryAttempts,
                         cancellationToken).ConfigureAwait(false);
+                    if (!deadLetter)
+                    {
+                        run.RequireRetryTopic();
+                    }
+
                     completed[index] = true;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2158,6 +2169,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         }
 
         public long SubscriptionVersion => Interlocked.Read(ref _subscriptionVersion);
+        public bool RetryTopicRequired => Volatile.Read(ref _retryTopicRequired) != 0;
         public CancellationTokenSource Stopping { get; } = new();
         public SemaphoreSlim CoordinationGate { get; } = new(1, 1);
         public SemaphoreSlim OrderlyConcurrency { get; }
@@ -2172,9 +2184,12 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         private object FifoGate { get; } = new();
         private Dictionary<string, Task> FifoTails { get; } = new(StringComparer.Ordinal);
         private int _abandonHandlerResults;
+        private int _retryTopicRequired;
         private long _subscriptionVersion;
 
         public void BumpSubscriptionVersion() => Interlocked.Increment(ref _subscriptionVersion);
+
+        public void RequireRetryTopic() => Interlocked.Exchange(ref _retryTopicRequired, 1);
 
         public bool ShouldAbandonHandlerResults => Volatile.Read(ref _abandonHandlerResults) != 0;
 

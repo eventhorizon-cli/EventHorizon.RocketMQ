@@ -21,8 +21,10 @@ using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
 using EventHorizon.RocketMQ.Remoting.Protocol;
+using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
@@ -251,6 +253,59 @@ public sealed partial class RemotingPushConsumerTests
     }
 
     [Fact]
+    public async Task BrokerAssignment_RetryRouteMissingAfterSendBack_RemainsUnbalanced()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                It.IsAny<string>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<string, bool, CancellationToken>((topic, _, _) =>
+                string.Equals(topic, BrokerAssignmentRetryTopic, StringComparison.Ordinal)
+                    ? Task.FromException<TopicRouteData>(
+                        new IOException("The retry topic route is not available yet."))
+                    : Task.FromResult(Route(1)));
+        var orderPulls = 0;
+        var remoting = new FakeRemotingClient(BrokerAssignmentClientId)
+        {
+            QueryAssignmentHandler = static (request, _) => Task.FromResult(
+                AssignmentQueryTopic(request) == "orders"
+                    ? AssignmentResponse("orders", 0, "PULL")
+                    : EmptyAssignmentResponse()),
+            PullHandler = (request, token) =>
+                Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                Interlocked.Increment(ref orderPulls) == 1
+                    ? Task.FromResult(PullSuccess(
+                        CreateMessageRecord("orders", "retry-route", null, 0, 1_000),
+                        nextOffset: 1))
+                    : WaitForCanceledBrokerRequestAsync(token)
+        };
+        var options = CreateBrokerAssignmentOptions(
+            static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
+        var rebalance = new TestRemotingRebalanceService();
+        await using var consumer = CreateBrokerAssignmentConsumer(
+            options,
+            remoting,
+            rebalance,
+            routes.Object);
+
+        await consumer.StartAsync(cancellationToken);
+        await remoting.WaitForRequestCountAsync(
+            RequestCode.ConsumerSendMsgBack,
+            1,
+            cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update =>
+                   update.Topic == BrokerAssignmentRetryTopic && update.Offset == 17))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        Assert.False(await rebalance.RebalanceAsync(BrokerAssignmentGroup, cancellationToken));
+    }
+
+    [Fact]
     public async Task BrokerAssignedPop_HandlerSucceeds_AcknowledgesPhysicalReceiptQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -437,11 +492,12 @@ public sealed partial class RemotingPushConsumerTests
     private static RemotingPushConsumer CreateBrokerAssignmentConsumer(
         RemotingPushConsumerOptions options,
         FakeRemotingClient remoting,
-        IRemotingRebalanceService? rebalance = null) =>
+        IRemotingRebalanceService? rebalance = null,
+        ITopicRouteService? routes = null) =>
         CreateRemotingPushConsumer(
             Options.Create(options),
             Options.Create(CreateBrokerAssignmentClientOptions()),
-            CreateRouteServiceMock(queueCount: 4).Object,
+            routes ?? CreateRouteServiceMock(queueCount: 4).Object,
             remoting,
             new BrokerAssignmentTimeProvider(
                 DateTimeOffset.FromUnixTimeMilliseconds(PopTimeMilliseconds)),

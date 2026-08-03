@@ -237,6 +237,44 @@ public sealed class RemotingConsumerEngineTests
         Assert.Equal(10911, Port(Assert.IsAssignableFrom<EndPoint>(endpoint)));
     }
 
+    [Fact]
+    public async Task GetOffsetAsync_RouteLookupFails_UsesLastResolvedBroker()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .SetupSequence(value => value.GetAsync(
+                "orders",
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Route())
+            .ThrowsAsync(new RocketMQClientException("The NameServer route lookup failed."));
+        EndPoint? endpoint = null;
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request => request.Code == RequestCode.QueryConsumerOffset),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<EndPoint, RemotingCommand, TimeSpan, CancellationToken>((value, _, _, _) => endpoint = value)
+            .ReturnsAsync(new RemotingCommand { Code = ResponseCodes.ResQueryNotFound });
+        await using var consumer = CreateConsumer(
+            new Dictionary<string, FilterExpression> { ["orders"] = FilterExpression.All },
+            TimeSpan.FromMilliseconds(10),
+            Options.Create(new RemotingClientOptions()),
+            routes.Object,
+            remoting.Object,
+            TimeProvider.System);
+        await consumer.StartAsync(cancellationToken);
+        var queue = Assert.Single(await consumer.GetMessageQueuesAsync("orders", cancellationToken));
+
+        var offset = await consumer.GetOffsetAsync(queue, cancellationToken);
+
+        Assert.Equal(-1, offset);
+        Assert.Equal(10911, Port(Assert.IsAssignableFrom<EndPoint>(endpoint)));
+    }
+
     private static RemotingConsumerEngine CreateConsumer(
         IReadOnlyDictionary<string, FilterExpression> subscriptions,
         TimeSpan longPollingTimeout,

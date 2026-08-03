@@ -22,7 +22,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class RemotingConnectionTests
 {
     [Fact]
-    public void Constructor_RejectsFrameSizeWithoutMessageBudget()
+    public void Constructor_FrameSizeWithoutMessageBudget_Rejects()
     {
         var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
             new RemotingConnection(
@@ -34,7 +34,7 @@ public sealed class RemotingConnectionTests
     }
 
     [Fact]
-    public async Task SerializerValidationFailure_DoesNotFaultConnectionBeforePipeMutation()
+    public async Task SerializerValidationFailure_BeforePipeMutation_DoesNotFaultConnection()
     {
         const int maximumFrameLength = 128 * 1024;
         var stream = new MemoryStream();
@@ -53,7 +53,7 @@ public sealed class RemotingConnectionTests
     }
 
     [Fact]
-    public async Task WriterFailureDuringSerialization_FaultsConnection()
+    public async Task WriterFailureDuringSerialization_Connection_Faults()
     {
         var serializer = new RemoteCommandSerializer();
         var connection = new RemotingConnection(
@@ -73,7 +73,7 @@ public sealed class RemotingConnectionTests
     }
 
     [Fact]
-    public async Task ConcurrentTransportFault_DoesNotOverrideACompletedFlush()
+    public async Task ConcurrentTransportFault_CompletedFlush_DoesNotOverride()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var stream = new BlockingWriteStream();
@@ -97,7 +97,7 @@ public sealed class RemotingConnectionTests
     }
 
     [Fact]
-    public async Task CallerCancellationDuringWrite_FaultsConnectionAndRejectsSubsequentFrames()
+    public async Task CallerCancellationDuringWrite_ConnectionAndSubsequentFrames_FaultsAndRejects()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var callerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -125,7 +125,7 @@ public sealed class RemotingConnectionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task SendFailureAfterWriting_FaultsConnectionAndDiscardsBufferedFrame(bool cancellation)
+    public async Task SendFailureAfterWriting_ConnectionAndDiscardsBufferedFrame_Faults(bool cancellation)
     {
         Exception failure = cancellation
             ? new OperationCanceledException(new CancellationToken(canceled: true))

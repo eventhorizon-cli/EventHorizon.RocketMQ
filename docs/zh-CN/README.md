@@ -17,7 +17,8 @@
 | 架构 | [依赖注入与生命周期](architecture/dependency-injection-and-lifetimes.md) | 默认客户端注册、keyed 客户端注册、keyed service、Consumer Engine 和 handler 如何组成一个 Host？ |
 | 架构 | [OpenTelemetry 埋点](architecture/opentelemetry-instrumentation.md) | tracing、metrics、上下文传播与应用负责的 exporter 如何分工？ |
 | gRPC | [消费模型](grpc/consumer-model.md) | Simple、Push 与 LitePush 分别适用于什么场景？为什么没有 gRPC PullConsumer？ |
-| Remoting | [传输与客户端角色](remoting/transport-and-client-roles.md) | NameServer 路由、Socket 传输和各类经典 Consumer 有什么边界？ |
+| Remoting | [Consumer 模型](remoting/consumer-model.md) | LitePull 与 Push 的公开边界、Broker-assigned PULL/POP、receipt 结算和队列路由如何归属？ |
+| Remoting | [传输与客户端角色](remoting/transport-and-client-roles.md) | NameServer 路由、Socket 传输，以及 LitePull、Push 与 Admin 角色有什么边界？ |
 | 测试 | [本地与集成测试](testing/local-and-integration-testing.md) | 哪些测试不需要 Docker，哪些测试会启动完整 RocketMQ 环境？ |
 
 ## 快速定位

@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class MessagePropertyCodecTests
 {
     [Fact]
-    public void Serialize_UsesRocketMQSeparatorsAndStableOrdering()
+    public void Serialize_RocketMQSeparatorsAndStableOrdering_UsesCanonicalFormat()
     {
         var properties = new Dictionary<string, string>
         {
@@ -35,7 +35,7 @@ public sealed class MessagePropertyCodecTests
     }
 
     [Fact]
-    public void Serialize_RejectsProtocolSeparators()
+    public void Serialize_ProtocolSeparators_Rejects()
     {
         var properties = new Dictionary<string, string> { ["bad\u0001key"] = "value" };
 

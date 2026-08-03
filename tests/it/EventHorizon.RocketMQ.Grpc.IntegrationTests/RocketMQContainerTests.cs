@@ -31,7 +31,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcProducerAndSimpleConsumerRoundTrip()
+    public async Task GrpcProducerAndSimpleConsumer_MessageRoundTrip_Completes()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -88,7 +88,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task MultipleGrpcSimpleConsumersWithIndependentTopicsReceiveTheirOwnMessages()
+    public async Task GrpcSimpleConsumers_IndependentTopics_ReceiveOwnMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -169,7 +169,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcTransactionCommitMakesMessageVisible()
+    public async Task GrpcTransaction_CommitMessage_BecomesVisible()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -230,7 +230,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcPushConsumerDispatchesAndAcknowledgesMessage()
+    public async Task GrpcPushConsumer_Message_DispatchesAndAcknowledges()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -275,7 +275,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task MultipleGrpcPushConsumersDispatchOnlyTheirOwnTopics()
+    public async Task GrpcPushConsumers_IndependentTopics_DispatchOwnMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -396,7 +396,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task MultipleGrpcPushConsumersWithSameGroupShareMessagesWithoutDuplicates()
+    public async Task GrpcPushConsumers_SameGroup_ShareMessagesWithoutDuplicates()
     {
         const int messagesPerRound = 16;
         const int maximumRounds = 3;

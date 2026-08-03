@@ -24,7 +24,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Producer;
 public sealed class RemotingMessageBatchCodecTests
 {
     [Fact]
-    public void Encode_UsesClassicMiniMessageRecords()
+    public void Encode_ClassicMiniMessage_UsesAndRecords()
     {
         var first = new Message("orders", "first"u8.ToArray());
         first.Properties["UNIQ_KEY"] = "first-id";

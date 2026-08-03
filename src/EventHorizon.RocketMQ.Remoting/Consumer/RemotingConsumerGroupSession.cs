@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging;
@@ -83,7 +82,7 @@ internal sealed class RemotingConsumerGroupSession
     }
 
     public async Task<IReadOnlyList<string>> GetConsumerIdsAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(queue);

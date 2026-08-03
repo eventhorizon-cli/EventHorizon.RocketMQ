@@ -24,12 +24,12 @@ namespace EventHorizon.RocketMQ.Remoting.Admin;
 public interface IRemotingAdmin
 {
     /// <summary>
-    /// Gets the writable message queues currently published for a topic.
+    /// Gets the readable message queues currently available for a topic.
     /// </summary>
     /// <param name="topic">The topic whose queues to retrieve.</param>
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A task whose result contains the message queues ordered by broker and queue identifier.</returns>
-    Task<IReadOnlyList<RemotingMessageQueue>> GetMessageQueuesAsync(
+    Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default);
 
@@ -62,7 +62,7 @@ public interface IRemotingAdmin
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A task whose result is the earliest available offset.</returns>
     Task<long> GetMinOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -75,7 +75,7 @@ public interface IRemotingAdmin
     /// reports that the queue has no available message.
     /// </returns>
     Task<DateTimeOffset?> GetEarliestMessageStoreTimeAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -89,7 +89,7 @@ public interface IRemotingAdmin
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A task whose result is the maximum offset.</returns>
     Task<long> GetMaxOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         bool committed = true,
         CancellationToken cancellationToken = default);
 
@@ -102,7 +102,7 @@ public interface IRemotingAdmin
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A task whose result is the matching queue offset.</returns>
     Task<long> SearchOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         DateTimeOffset timestamp,
         RemotingOffsetBoundary boundary = RemotingOffsetBoundary.Lower,
         CancellationToken cancellationToken = default);
@@ -119,6 +119,6 @@ public interface IRemotingAdmin
     /// </returns>
     Task<long?> GetConsumerOffsetAsync(
         string consumerGroup,
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default);
 }

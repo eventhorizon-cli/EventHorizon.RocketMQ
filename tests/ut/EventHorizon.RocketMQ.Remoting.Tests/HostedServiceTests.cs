@@ -13,9 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Moq;
 using Xunit;
@@ -25,7 +23,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests;
 public sealed class HostedServiceTests
 {
     [Fact]
-    public async Task RemotingProducerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task RemotingProducerHostedService_LifecycleCancellationTokens_ForwardsLifecycleCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();
@@ -43,25 +41,7 @@ public sealed class HostedServiceTests
     }
 
     [Fact]
-    public async Task RemotingPullConsumerHostedService_ForwardsLifecycleCancellationTokens()
-    {
-        using var start = new CancellationTokenSource();
-        using var stop = new CancellationTokenSource();
-        var consumer = new Mock<IRemotingPullConsumer>(MockBehavior.Strict);
-        consumer.Setup(value => value.StartAsync(start.Token)).Returns(ValueTask.CompletedTask);
-        consumer.Setup(value => value.StopAsync(stop.Token)).Returns(ValueTask.CompletedTask);
-        var hostedService = new RemotingPullConsumerHostedService(consumer.Object);
-
-        await hostedService.StartAsync(start.Token);
-        await hostedService.StopAsync(stop.Token);
-
-        consumer.Verify(value => value.StartAsync(start.Token), Times.Once);
-        consumer.Verify(value => value.StopAsync(stop.Token), Times.Once);
-        consumer.VerifyNoOtherCalls();
-    }
-
-    [Fact]
-    public async Task RemotingPushConsumerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task RemotingPushConsumerHostedService_LifecycleCancellationTokens_ForwardsLifecycleCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();
@@ -78,21 +58,4 @@ public sealed class HostedServiceTests
         consumer.VerifyNoOtherCalls();
     }
 
-    [Fact]
-    public async Task RemotingPopConsumerHostedService_ForwardsLifecycleCancellationTokens()
-    {
-        using var start = new CancellationTokenSource();
-        using var stop = new CancellationTokenSource();
-        var consumer = new Mock<IRemotingPopConsumer>(MockBehavior.Strict);
-        consumer.Setup(value => value.StartAsync(start.Token)).Returns(ValueTask.CompletedTask);
-        consumer.Setup(value => value.StopAsync(stop.Token)).Returns(ValueTask.CompletedTask);
-        var hostedService = new RemotingPopConsumerHostedService(consumer.Object);
-
-        await hostedService.StartAsync(start.Token);
-        await hostedService.StopAsync(stop.Token);
-
-        consumer.Verify(value => value.StartAsync(start.Token), Times.Once);
-        consumer.Verify(value => value.StopAsync(stop.Token), Times.Once);
-        consumer.VerifyNoOtherCalls();
-    }
 }

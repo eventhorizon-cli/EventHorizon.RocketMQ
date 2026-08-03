@@ -25,8 +25,9 @@ gRPC Project 公开以下 Consumer 角色：
 | `IGrpcLitePushConsumer` | 客户端后台循环与 Lite 订阅同步 | 使用 LiteTopic，且部署已配置 bind topic 和 Lite 能力。 |
 
 不提供 `IGrpcPullConsumer`。这不是尚未完成的示例，也不是配置开关；该公开客户端角色已从仓库移除。
-需要显式队列和位点 Pull 语义时，使用经典
-[`IRemotingPullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/IRemotingPullConsumer.cs)。
+需要显式队列和位点工作流时，使用经典
+[`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/Lite/IRemotingLitePullConsumer.cs)
+的手工分配、seek 和显式 commit。
 如果连接目标必须是 Proxy，则应根据工作流选择 Simple 或 Push，而不是假定 gRPC Pull 可以由客户端单独
 补齐。
 
@@ -154,7 +155,8 @@ RocketMQ 5.5.0 应使用独立运行的 cluster-mode Proxy（`mqproxy -pm cluste
 错误策略。
 
 **不存在无条件可用的 gRPC Pull 开关。** 缺失的是服务端 Proxy 路径，不是一个可以通过 SDK 重试、超时或
-序列化配置修复的客户端细节。对显式 queue/offset 工作流，classic Remoting Pull 是当前明确的协议选择。
+序列化配置修复的客户端细节。对显式 queue/offset 工作流，classic Remoting LitePull 的手工分配、seek 和
+显式 commit 是当前明确的协议选择。
 
 **Server capability 是部署前提。** Lite、死信、过滤、FIFO、事务和最小长轮询参数均可能依赖 Broker/Proxy
 版本与配置。请以部署环境和[gRPC Project 指南](../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)为准，并从

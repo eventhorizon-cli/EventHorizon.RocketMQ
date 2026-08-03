@@ -2,9 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`IRemotingLitePullConsumer` 把调用方驱动的轮询与客户端管理的队列分配结合起来。在订阅模式下，SDK 参与 classic
-集群 consumer group 分配，并长轮询分配给当前 Consumer 的队列；应用仍然决定何时调用 `PollAsync`、如何处理每次
-结果，以及何时提交。
+`IRemotingLitePullConsumer` 把调用方驱动的轮询与 SDK 管理的接收循环结合起来。在订阅模式下，SDK 参与 classic
+集群 consumer group 分配，在后台长轮询每个已分配队列，并把消息放入有界本地缓冲；应用决定何时调用
+`PollAsync`、如何处理返回消息，以及何时提交已投递位置。
 
 这是 classic Remoting Lite Pull 模式，与 RocketMQ 5 gRPC LitePush 协议无关，也不是协议层面的 Broker Push。
 
@@ -13,9 +13,9 @@
 如果应用希望使用 polling API 并控制处理节奏，但不想自行实现集群队列分配，适合选择 Lite Pull。它适用于批处理
 流水线、受控的摄取循环，以及需要暂停、恢复或 seek 已分配队列的应用。
 
-如果外部系统负责物理队列分配或需要精确控制每次请求的位点，应选择更底层的 Pull Consumer。如果希望 SDK 进一步负责
-接收循环、并发分发和重试结算，应选择 Push Consumer。Lite Pull 当前只支持集群模式；如果每个实例都必须消费每个队列，
-应使用 Push Consumer 的广播模式。
+如果外部系统负责物理队列分配或需要精确控制位置，应使用手工分配、`Seek` 和显式提交。如果希望 SDK 进一步负责业务
+分发、重试和结算，应选择 Push Consumer。Lite Pull 当前只支持集群模式；如果每个实例都必须消费每个队列，应使用
+Push Consumer 的广播模式。
 
 订阅模式和手动分配模式互斥。普通 consumer group 负载均衡应使用订阅模式。只有应用明确选择队列，并愿意承担其归属
 责任时，才使用手动模式。
@@ -35,21 +35,22 @@ SDK 会解析订阅、发送主动消费心跳，并持续维护集群分配。`
 
 订阅模式的处理循环为：
 
-1. 调用 `PollAsync`，长轮询下一个处于活跃状态的已分配队列。
-2. 处理 `RemotingPullResult.Messages`。
+1. 由 SDK 后台接收器为已分配队列填充有界本地缓冲。
+2. 调用 `PollAsync` 并处理返回的 `IReadOnlyList<RemotingMessageView>`。
 3. 调用 `CommitAsync()` 持久化所有当前本地位置，或以 `CommitAsync(queue)` 提交一个已分配队列。
 
 运行时调用 `SubscribeAsync` 和 `UnsubscribeAsync` 会修改订阅并触发分配协调。使用手动模式时不要配置订阅，应通过
 `GetMessageQueuesAsync` 发现队列，再把选中的集合传给 `AssignAsync`。`Pause`、`Resume`、`Seek`、
-`SeekToBeginningAsync` 和 `SeekToEndAsync` 用于控制本地轮询位置。
+`SeekToBeginningAsync`、`SeekToEndAsync` 和 `SeekToTimestampAsync` 用于控制本地轮询位置。
 
-`InitialOffset` 仅在已分配队列没有 group 已提交位置时使用。修改它不会重置已有的已提交位点。
+`InitialPosition` 仅在已分配队列没有 group 已提交位置时使用，修改它不会重置已有位点。`PullBatchSize` 控制每个
+Broker 后台请求；`MaxCachedMessages` 和 `MaxCachedMessageBytes` 限制共享本地缓冲。缓冲为空时，`PollTimeout`
+只控制 `PollAsync` 的本地等待时间，与 Broker 的 `LongPollingTimeout` 相互独立。
 
 ## 位置、失败与并发
 
-`PollAsync` 会在返回前把所选队列的**本地**位置推进到 `NextOffset`，但不会更新 Broker 位点。因此业务处理失败时，
-应用必须保留并重试此次结果，或者在继续轮询前以 `Seek` 回退该队列。仅仅不调用 `CommitAsync`，不会回退当前进程内的
-位置。
+`PollAsync` 会在返回前推进已投递消息的**本地**位置，但不会更新 Broker 位点。因此业务处理失败时，应用必须保留并
+重试这些消息，或者在继续轮询前以 `Seek` 回退受影响队列。仅仅不调用 `CommitAsync`，不会回退当前进程内的位置。
 
 只应在业务处理完成后提交。进程重启或队列重新分配后，另一个 Consumer 会从 Broker 最后提交的位置继续，因此该位置
 之后已经处理的工作可能再次投递。业务处理必须幂等。
@@ -57,8 +58,9 @@ SDK 会解析订阅、发送主动消费心跳，并持续维护集群分配。`
 并行处理需要按队列维护完成规则。同一队列中较早的结果尚未完成时，不能提交当前本地位置。`CommitAsync()` 会提交所有
 已分配队列的当前位置，因此只有这些位置之前的工作都已完成时才能调用；否则应协调按队列提交，并避免轮询越过未完成空洞。
 
-SDK 负责分配和长轮询，但业务重试以及是否提交仍由应用决定。轮询或分配失败不会自动重试已经返回的业务 batch，也不会
-自动把它路由到死信队列。
+本示例关闭 `EnableAutoCommit`，因为应用循环只在记录完返回消息后提交。启用自动提交时，SDK 会按配置间隔持久化已投递
+位置，但仍不会提交只完成预取、尚未由 `PollAsync` 返回的消息。两种模式下业务重试都由应用负责，失败不会自动把已返回
+batch 路由到死信队列。
 
 ## 运行示例
 

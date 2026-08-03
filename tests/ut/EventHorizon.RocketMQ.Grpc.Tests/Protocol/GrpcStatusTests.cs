@@ -23,19 +23,19 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol;
 public sealed class GrpcStatusTests
 {
     [Fact]
-    public void MultipleResultsIsAValidAggregateStatus()
+    public void MultipleResults_AggregateStatus_IsValid()
     {
         GrpcStatus.EnsureSuccess(new Proto.Status { Code = Proto.Code.MultipleResults });
     }
 
     [Fact]
-    public void ReceiveTreatsMessageNotFoundAsAnEmptyPoll()
+    public void Receive_MessageNotFound_TreatsAsEmptyPoll()
     {
         GrpcStatus.EnsureReceiveSuccess(new Proto.Status { Code = Proto.Code.MessageNotFound });
     }
 
     [Fact]
-    public void MessageNotFoundIsNotGenerallySuccessful()
+    public void MessageNotFound_GeneralSuccess_IsNotSuccessful()
     {
         var exception = Assert.Throws<GrpcServiceException>(() =>
             GrpcStatus.EnsureSuccess(new Proto.Status { Code = Proto.Code.MessageNotFound }));
@@ -44,19 +44,19 @@ public sealed class GrpcStatusTests
     }
 
     [Fact]
-    public void ReceiveRejectsMissingStatus()
+    public void Receive_MissingStatus_Rejects()
     {
         Assert.Throws<InvalidDataException>(() => GrpcStatus.EnsureReceiveSuccess(null));
     }
 
     [Fact]
-    public void GeneralResponseRejectsMissingStatus()
+    public void GeneralResponse_MissingStatus_Rejects()
     {
         Assert.Throws<InvalidDataException>(() => GrpcStatus.EnsureSuccess(null));
     }
 
     [Fact]
-    public void ReceiveDoesNotHideIllegalPollingTime()
+    public void Receive_IllegalPollingTime_DoesNotHideError()
     {
         var exception = Assert.Throws<GrpcServiceException>(() =>
             GrpcStatus.EnsureReceiveSuccess(new Proto.Status { Code = Proto.Code.IllegalPollingTime }));

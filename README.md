@@ -70,22 +70,22 @@ See the [Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md) and
 | Selected queues, queue selectors, batch sends, and one-way sends | ✅ | Classic Producer APIs. |
 | Transactional messages, delayed-message recall, and request-reply | ✅ | Require the corresponding classic Broker capability. |
 | Read-only Admin API | ✅ | `IRemotingAdmin` queries queues, messages, and offsets. |
-| PullConsumer | ✅ | Explicit queues and offsets with tag or SQL filtering. |
-| LitePullConsumer | ✅ | Client-side polling, assignment, seek, pause/resume, and commit; clustered consumption only. |
-| POPConsumer | ✅ | Explicit queue selection, receipt acknowledgement, and invisibility renewal; normal topics only. |
-| PushConsumer | ✅ | Clustering or broadcasting, concurrent batch callbacks with partial prefix acknowledgement or singleton FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
+| LitePullConsumer | ✅ | Application polling over SDK-managed background receives, subscription or manual assignment, seek, pause/resume, and commit; clustered consumption only. |
+| PushConsumer | ✅ | Client-assigned clustering or broadcasting, optional Broker-assigned concurrent clustered PULL/POP, concurrent batch callbacks with partial prefix acknowledgement or singleton FIFO dispatch, runtime subscriptions, retry, and DLQ handling. |
 | Dependency injection, options, logging, Generic Host lifecycle, and default or keyed client registrations | ✅ | Register with `AddRocketMQRemoting`. |
 | OpenTelemetry tracing and metrics | ✅ | Register with `AddRocketMQRemotingInstrumentation`; the application selects SDK processors and exporters. |
 
-Classic Push is also client-initiated long polling. SQL filtering requires Broker configuration, and POP requires a
-Broker that supports POP. Each protocol package provides its own `RocketMQClientException` base type.
+Classic Push is also client-initiated long polling. Its `QueueAssignmentMode` defaults to `Client`, which uses PULL;
+the optional `Broker` value can return PULL or POP per assignment and requires compatible operator-managed Broker
+configuration. POP is an internal Push receive mode, not a separate public Consumer. SQL filtering also requires
+Broker configuration. Each protocol package provides its own `RocketMQClientException` base type.
 
 ## Packages
 
 | Package | Connection | Main APIs | Documentation |
 | --- | --- | --- | --- |
 | `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, `IGrpcLitePushConsumer` | [gRPC guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
-| `EventHorizon.RocketMQ.Remoting` | NameServer and Brokers | `IRemotingProducer`, `IRemotingAdmin`, `IRemotingPullConsumer`, `IRemotingLitePullConsumer`, `IRemotingPopConsumer`, `IRemotingPushConsumer` | [Remoting guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
+| `EventHorizon.RocketMQ.Remoting` | NameServer and Brokers | `IRemotingProducer`, `IRemotingAdmin`, `IRemotingLitePullConsumer`, `IRemotingPushConsumer` | [Remoting guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
 
 Install only the protocol package used by the application. Each protocol package is self-contained at the client API
 boundary: it owns its public models in its own assembly and has no dependency on another EventHorizon.RocketMQ

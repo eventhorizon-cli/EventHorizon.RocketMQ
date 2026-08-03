@@ -16,13 +16,11 @@
 using System.Reflection;
 using Xunit;
 using GrpcConsumeResult = EventHorizon.RocketMQ.Grpc.Consumer.ConsumeResult;
-using GrpcConsumerOptions = EventHorizon.RocketMQ.Grpc.Consumer.ConsumerOptions;
 using GrpcFilterExpression = EventHorizon.RocketMQ.Grpc.Consumer.FilterExpression;
 using GrpcFilterExpressionType = EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType;
 using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
 using GrpcRocketMQClientException = EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException;
 using RemotingConsumeResult = EventHorizon.RocketMQ.Remoting.Consumer.ConsumeResult;
-using RemotingConsumerOptions = EventHorizon.RocketMQ.Remoting.Consumer.ConsumerOptions;
 using RemotingFilterExpression = EventHorizon.RocketMQ.Remoting.Consumer.FilterExpression;
 using RemotingFilterExpressionType = EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType;
 using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
@@ -33,11 +31,10 @@ namespace EventHorizon.RocketMQ.Compatibility.Tests;
 public sealed class ProtocolModelParityTests
 {
     [Fact]
-    public void ProtocolNeutralModelCopies_HaveEquivalentPublicApis()
+    public void ProtocolNeutralModelCopies_PublicApiParity_Matches()
     {
         AssertEquivalentPublicApi(typeof(GrpcMessage), typeof(RemotingMessage));
         AssertEquivalentPublicApi(typeof(GrpcConsumeResult), typeof(RemotingConsumeResult));
-        AssertEquivalentPublicApi(typeof(GrpcConsumerOptions), typeof(RemotingConsumerOptions));
         AssertEquivalentPublicApi(typeof(GrpcFilterExpression), typeof(RemotingFilterExpression));
         AssertEquivalentPublicApi(typeof(GrpcFilterExpressionType), typeof(RemotingFilterExpressionType));
         AssertEquivalentPublicApi(typeof(GrpcRocketMQClientException), typeof(RemotingRocketMQClientException));
@@ -47,21 +44,21 @@ public sealed class ProtocolModelParityTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData(" ")]
-    public void Message_ConstructorsRejectInvalidTopics(string? topic)
+    public void Message_ConstructorsInvalidTopics_Reject(string? topic)
     {
         Assert.ThrowsAny<ArgumentException>(() => new GrpcMessage(topic!, []));
         Assert.ThrowsAny<ArgumentException>(() => new RemotingMessage(topic!, []));
     }
 
     [Fact]
-    public void Message_ConstructorsRejectNullBodies()
+    public void Message_ConstructorsNullBodies_Reject()
     {
         Assert.Throws<ArgumentNullException>(() => new GrpcMessage("orders", null!));
         Assert.Throws<ArgumentNullException>(() => new RemotingMessage("orders", null!));
     }
 
     [Fact]
-    public void ExceptionConstructors_PreserveMessageAndInnerException()
+    public void ExceptionConstructors_MessageAndInnerException_Preserve()
     {
         var innerException = new InvalidOperationException("inner");
         var grpcException = new GrpcRocketMQClientException("failure", innerException);

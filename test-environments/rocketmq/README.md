@@ -86,7 +86,7 @@ docker compose exec broker sh mqadmin updateTopic \
   -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
 docker compose exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-pull
+  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-lite-pull
 
 docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-push
@@ -94,6 +94,12 @@ docker compose exec broker sh mqadmin updateSubGroup \
 docker compose exec broker sh mqadmin topicRoute \
   -n nameserver:9876 -t eventhorizon-test-topic
 ```
+
+The environment keeps the normal Broker request mode at PULL. The Remoting LitePull sample and Push with either the
+default `QueueAssignmentMode` value `Client` or the sample's `Broker` value therefore run without POP configuration; Broker
+assignment returns PULL by default. To exercise POP, an operator must configure POP request mode for the target
+topic/group. The runtime Consumer never sends `SET_MESSAGE_REQUEST_MODE`. Use the isolated Remoting integration tests
+for a reproducible local POP exercise rather than changing this shared sample environment's default.
 
 For manual gRPC LitePush experiments in this general environment, create a dedicated LITE parent topic and configure
 the consumer group's bind topic. This is not required for the bundled LitePush sample when it uses
@@ -116,7 +122,7 @@ Use these client endpoints:
 
 | Client path | Endpoint |
 | --- | --- |
-| Legacy remoting producer/consumer | NameServer `localhost:9876` |
+| Classic Remoting producer, LitePull, or Push | NameServer `localhost:9876` |
 | RocketMQ 5 gRPC producer/consumer | Proxy `localhost:8081` |
 | RocketMQ Dashboard | Browser `http://localhost:8082` |
 

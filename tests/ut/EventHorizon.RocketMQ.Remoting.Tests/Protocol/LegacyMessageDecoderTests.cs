@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class LegacyMessageDecoderTests
 {
     [Fact]
-    public void DecodesRocketMqV1Message()
+    public void LegacyMessageDecoder_RocketMqV1Message_DecodesMessage()
     {
         const string topic = "tenant-a%orders";
         var body = "legacy pull"u8.ToArray();
@@ -77,7 +77,7 @@ public sealed class LegacyMessageDecoderTests
     }
 
     [Fact]
-    public void RejectsTruncatedMessage()
+    public void LegacyMessageDecoder_TruncatedMessage_Rejects()
     {
         Assert.Throws<InvalidDataException>(() => LegacyMessageDecoder.Decode([0, 0, 0, 20], "broker-a"));
     }
@@ -87,7 +87,7 @@ public sealed class LegacyMessageDecoderTests
     [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
-    public void DecodesRocketMqCompressionTypes(int compressionType)
+    public void LegacyMessageDecoder_RocketMqCompressionTypes_DecodesCompressionTypes(int compressionType)
     {
         var body = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("RocketMQ compression ", 128)));
         var storedBody = Compress(body, compressionType);
@@ -98,7 +98,7 @@ public sealed class LegacyMessageDecoderTests
     }
 
     [Fact]
-    public void RejectsUnknownRocketMqCompressionType()
+    public void LegacyMessageDecoder_UnknownCompressionType_Rejects()
     {
         var record = CreateRecord([1, 2, 3], MessageSysFlag.CompressedFlag | (7 << 8));
         var exception = Assert.Throws<InvalidDataException>(() => LegacyMessageDecoder.Decode(record, "broker-a"));

@@ -17,6 +17,8 @@ using System.Reflection;
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting;
+using EventHorizon.RocketMQ.Remoting.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using Xunit;
 
@@ -25,17 +27,32 @@ namespace EventHorizon.RocketMQ.Compatibility.Tests;
 public sealed class PushConsumerApiTests
 {
     [Fact]
-    public void PushConsumerOptions_DoNotExposeDelegateHandlers()
+    public void PushConsumerOptions_DelegateHandlers_AreNotExposed()
     {
         Assert.Null(typeof(GrpcPushConsumerOptions).GetProperty("MessageHandler"));
         Assert.Null(typeof(RemotingPushConsumerOptions).GetProperty("MessageHandler"));
+    }
+
+    [Fact]
+    public void RemotingPushConsumerOptions_QueueAssignmentContract_ExposesOnlyExplicitQueueNames()
+    {
+        var property = Assert.IsAssignableFrom<PropertyInfo>(
+            typeof(RemotingPushConsumerOptions).GetProperty("QueueAssignmentMode"));
+
+        Assert.Equal(typeof(RemotingPushQueueAssignmentMode), property.PropertyType);
+        Assert.Equal(
+            RemotingPushQueueAssignmentMode.Client,
+            new RemotingPushConsumerOptions().QueueAssignmentMode);
+        Assert.Null(typeof(RemotingPushConsumerOptions).GetProperty("AssignmentMode"));
+        Assert.Null(typeof(IRemotingPushConsumer).Assembly.GetType(
+            "EventHorizon.RocketMQ.Remoting.Consumer.Push.RemotingPushAssignmentMode"));
     }
 
     [Theory]
     [InlineData(typeof(GrpcRocketMQBuilderExtensions), "AddGrpcPushConsumer")]
     [InlineData(typeof(GrpcRocketMQBuilderExtensions), "AddGrpcLitePushConsumer")]
     [InlineData(typeof(RemotingRocketMQBuilderExtensions), "AddRemotingPushConsumer")]
-    public void PushConsumerRegistrations_ExposeOnlyTypedHandlerOverloads(
+    public void PushConsumerRegistrations_TypedHandlerOverloads_ExposeOnly(
         Type extensionType,
         string methodName)
     {
@@ -45,5 +62,39 @@ public sealed class PushConsumerApiTests
 
         Assert.NotEmpty(methods);
         Assert.All(methods, static method => Assert.True(method.IsGenericMethodDefinition));
+    }
+
+    [Fact]
+    public void RemotingConsumerSurface_PublicApi_ExportsLitePullAndPushRoles()
+    {
+        var assembly = typeof(IRemotingPushConsumer).Assembly;
+        var exportedTypeNames = assembly.GetExportedTypes()
+            .Select(static type => type.FullName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Contains(typeof(IRemotingLitePullConsumer).FullName, exportedTypeNames);
+        Assert.Contains(typeof(IRemotingPushConsumer).FullName, exportedTypeNames);
+        Assert.Contains(typeof(RemotingConsumerQueue).FullName, exportedTypeNames);
+        Assert.DoesNotContain("EventHorizon.RocketMQ.Remoting.Consumer.Pull.IRemotingPullConsumer", exportedTypeNames);
+        Assert.DoesNotContain("EventHorizon.RocketMQ.Remoting.Consumer.Pull.RemotingPullConsumerOptions", exportedTypeNames);
+        Assert.DoesNotContain("EventHorizon.RocketMQ.Remoting.Consumer.Pull.RemotingPullResult", exportedTypeNames);
+        Assert.DoesNotContain(
+            "EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.IRemotingPopConsumer",
+            exportedTypeNames);
+        Assert.DoesNotContain(
+            "EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopConsumerOptions",
+            exportedTypeNames);
+        Assert.DoesNotContain(
+            "EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopReceipt",
+            exportedTypeNames);
+
+        var registrationNames = typeof(RemotingRocketMQBuilderExtensions)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Select(static method => method.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("AddRemotingLitePullConsumer", registrationNames);
+        Assert.Contains("AddRemotingPushConsumer", registrationNames);
+        Assert.DoesNotContain("AddRemotingPullConsumer", registrationNames);
+        Assert.DoesNotContain("AddRemotingPopConsumer", registrationNames);
     }
 }

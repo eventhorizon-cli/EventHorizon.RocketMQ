@@ -24,10 +24,8 @@ Remoting 客户端先连接 NameServer 获取 topic route，然后对 route 中�
 | --- | --- | :---: |
 | `IRemotingAdmin` | 只读路由、位点、时间和物理消息查询 | — |
 | `IRemotingProducer` | 发送、队列选择、批量、事务、撤回与请求-响应 | ✅ |
-| `IRemotingPullConsumer` | 应用显式选择队列和位点来拉取、确认/提交 | ✅ |
-| `IRemotingLitePullConsumer` | 订阅后的自动分配或 `AssignAsync` 手工分配、客户端位点、pause/resume/seek | ✅ |
-| `IRemotingPopConsumer` | POP receipt、确认和可见期续租 | ✅ |
-| `IRemotingPushConsumer` | 自动批量消费、重试、死信、重平衡与经典 Broker 兼容行为 | ✅ |
+| `IRemotingLitePullConsumer` | 应用轮询，SDK 管理 assignment、后台 PULL 接收、本地位点及自动或显式提交 | ✅ |
+| `IRemotingPushConsumer` | SDK 管理 assignment、PULL/POP 接收、handler 分发、结算及经典协议协调 | ✅ |
 
 “后台生命周期”表示通过 Generic Host 注册时会有 hosted service 启动/停止该角色。Admin 是按需查询 API，
 不启动独立循环。
@@ -68,29 +66,37 @@ SNI、吊销检查或协议选择；该回调可能并发执行，且每条连�
 [`LegacyAclSigner`](../../../src/EventHorizon.RocketMQ.Remoting/Protocol/LegacyAclSigner.cs) 会对 NameServer 和
 Broker 请求签名。注册阶段强制两个值成对出现，防止“只有一半凭据”的失败拖到网络请求时才暴露。
 
-### 4. 不同 Consumer 代表不同确认模型
+### 4. LitePull 与 Push 代表两种应用模型
 
-这些角色名称都包含“消费”，但确认与所有权完全不同：
+低层 PULL 与 POP wire operation 不再作为公开角色，而是由 LitePull 与 Push 内部保留。两种公开模型的控制边界如下：
 
-- **Pull**：调用方决定 `RemotingPullMessageQueue`、起始 offset、批量与处理节奏。适合需要明确 queue/offset
-  语义的工作流；成功处理后才应提交 offset。
-- **LitePull**：订阅模式使用自动分配；也可以使用 `AssignAsync` 手工指定队列。两种模式互斥，客户端维护
-  offset，并提供 pause、resume 与 seek。当前实现仅支持集群消费，不能把它当作广播 Consumer。
-- **POP**：Broker 返回 receipt；应用使用 receipt 确认，并在长时间处理时请求更改不可见期。receipt 不是
-  可跨消息、跨队列复用的 token。
-- **Push**：客户端仍以拉取/长轮询为基础，但加上经典 group、心跳、Broker 回调、重平衡和可选队列锁的
-  兼容流程。它支持 cluster/broadcast、并发批量或 FIFO 分发，以及队列有序消费所需的经典锁定行为。
-  唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>` 和
-  `RemotingPushConsumeContext`。`BatchSize` 限制单次长轮询向 Broker 请求的消息数；`ConsumeMessageBatchSize`
-  独立限制单次 handler 调用收到的消息数，默认值为 `1`。来自同一个 Broker 物理队列、且不带 `MessageGroup`
-  的并发消息可以合并为一批，多个批次可在 `MaxConcurrency` 范围内并行处理；带 `MessageGroup` 的 FIFO 投递和
-  `ConsumeOrderly` 投递保持单消息、串行处理。
+- **LitePull**：订阅模式自动分配，也可以使用 `AssignAsync` 手工指定 `RemotingConsumerQueue`；两种模式互斥。
+  SDK 为每条 assignment 启动后台 PULL 接收并填充共享有界本地缓存，`PollAsync` 从缓存返回
+  `IReadOnlyList<RemotingMessageView>`。`PullBatchSize` 限制单次 Broker 接收，`MaxCachedMessages` 与
+  `MaxCachedMessageBytes` 限制 LitePull 缓存。需要显式 queue/offset 工作流时，使用手工 assignment、`Seek` 和
+  显式 `CommitAsync`。
+- **Push**：默认 `QueueAssignmentMode.Client` 使用客户端分配与 PULL；集群模式平均分配，广播模式分配全部可读队列。
+  `QueueAssignmentMode.Broker` 为集群并发消费查询 `QUERY_ASSIGNMENT`，并按每条 assignment 创建内部 PULL 或 POP
+  receiver。即使请求 `Broker`，广播或 `ConsumeOrderly` 也会强制使用有效的客户端分配与 PULL，与 Java Remoting
+  一致。运行时 Consumer 不发送
+  `SET_MESSAGE_REQUEST_MODE`，topic/group 的 request mode 由运维侧配置 Broker。
 
-  `Success` 默认确认整个批次。并发、非 FIFO handler 可以在返回 `Success` 前把 `AckIndex` 设为最后一条已接受
-  消息的从零开始索引；客户端会确认这个连续前缀，并只重试尾部消息。无论 `AckIndex` 为何，`Retry` 和
-  `DeadLetter` 都会应用到批次中的每条消息。context 还提供 `DelayLevelWhenNextConsume`，用于未确认的尾部：
-  `0` 交由 Broker 决定重试时间，正值选择 RocketMQ 延迟级别，负值请求直接进入死信队列。广播模式没有 Broker
-  重试或死信路径，因此未确认的尾部消息会被跳过。
+LitePull 与 Push 共享 `ConsumerOptions.InitialPosition`，其类型为 `ConsumeFromPosition`；只有队列没有已提交 group
+位点时才会应用 Beginning、End 或 Timestamp。Push 的 PULL options 使用 `PullBatchSize`、
+`PullMaxCachedMessages` 与 `PullMaxCachedMessageBytes`；Broker-assigned POP 使用 `PopBatchSize`、
+`PopInvisibleDuration` 与 `PopMaxInflightMessagesPerAssignment`。POP receipt 获取、续租、确认与重试都由 Push
+内部管理，不构成调用方控制的 Consumer API。
+
+Push 唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>` 和
+`RemotingPushConsumeContext`。`ConsumeMessageBatchSize` 独立限制单次 handler 调用收到的消息数，默认值为 `1`。
+来自同一个 Broker 物理队列且不带 `MessageGroup` 的并发消息可以合并为一批，多个批次可在 `MaxConcurrency`
+范围内并行处理；带 `MessageGroup` 的 FIFO 投递和 `ConsumeOrderly` 投递保持单消息、串行处理。
+
+`Success` 默认确认整个批次。并发、非 FIFO handler 可以在返回 `Success` 前把 `AckIndex` 设为最后一条已接受
+消息的从零开始索引；客户端会确认这个连续前缀，并只重试尾部消息。无论 `AckIndex` 为何，`Retry` 和
+`DeadLetter` 都会应用到批次中的每条消息。context 还提供 `DelayLevelWhenNextConsume`，用于未确认的尾部：
+`0` 交由 Broker 决定重试时间，正值选择 RocketMQ 延迟级别，负值请求直接进入死信队列。广播模式没有 Broker
+重试或死信路径，因此未确认的尾部消息会被跳过。
 
 `ConsumeTimeout` 默认值为 15 分钟，仅适用于并发集群、非 FIFO 批次。超时后，客户端会取消 handler token，并为
 整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。
@@ -122,8 +128,8 @@ Broker 成员变化
 
 物理 `RemotingClient` 只负责传输，本身没有 group identity。每个活跃的 Push 或 LitePull session 都会在初始和周期
 协调时，经由分配给自己的 Client 发送 heartbeat；LitePull 在拥有订阅或手工分配队列后成为活跃成员。因此共享 Client
-可以保持多个不同 group 的活跃状态，而同组的隔离成员会分别维护自己的 membership。直接 Pull 和 POP 是显式 API，
-有意不创建后台消费组成员关系或 heartbeat 循环；Producer 维护自己的 producer heartbeat 生命周期。
+可以保持多个不同 group 的活跃状态，而同组的隔离成员会分别维护自己的 membership。内部 PULL 与 POP receiver
+归这两个公开 group session 所有，不会注册额外的 membership；Producer 维护自己的 producer heartbeat 生命周期。
 
 通过 `AssignAsync([])` 清除 LitePull 手工分配会立即结束该活跃成员关系：session 会向已知 Broker 注销，同时保留这些
 端点，以便 shutdown 时可重试一次失败的注销。
@@ -152,9 +158,10 @@ assignment 互斥且并集完整，再正常停止一个成员，并确认另一
 
 #### 并发 Push 分发与位点安全
 
-并发模式下，每个已分配的 Broker 物理队列都有一个客户端侧 `ProcessQueue`。`ProcessQueue` 保存本地已拉取的
+并发 PULL 模式下，每个已分配的 Broker 物理队列都有一个客户端侧 `ProcessQueue`。`ProcessQueue` 保存本地已拉取的
 消息及其消费状态；它不是另一个 Broker 队列，也不会创建任何服务端资源。拉取位点可以独立于 handler 完成而
-继续推进。`MaxCachedMessages` 限制等待首次分发的新拉取消息准入，已经交给 handler 的批次不会继续占用该容量。
+继续推进。`PullMaxCachedMessages` 与 `PullMaxCachedMessageBytes` 限制等待首次分发的新拉取消息准入，已经交给
+handler 的批次不会继续占用该容量。
 处置尚未解决，或 FIFO 消息存在未完成的前驱（包括位于另一个物理队列的前驱）时，该 `ProcessQueue` 中已经缓存
 的消息会释放准入配额，并暂停该队列的新准入，直到可以继续推进。因此被阻塞的队列不会独占健康队列所需的容量，
 该设置也不是进程内所有驻留消息的严格总数上限。
@@ -182,9 +189,10 @@ assignment 互斥且并集完整，再正常停止一个成员，并确认另一
 `SendAsync` 的 `RemotingSendResult.Status` 必须由调用方检查：Broker 可能返回磁盘或 slave 相关状态而不抛出
 异常。`SendOnewayAsync` 返回只表示请求已写入连接，并不表示 Broker 已持久化消息。
 
-`IRemotingAdmin` 保持只读边界：它用于发现队列、查询 offset/时间，并按 `OffsetMessageId` 查看物理消息。
-这是一项适合运维、诊断和审计工具的 API；它不是 topic、group 或 ACL 的写管理面，也不应与业务 Producer
-职责混在一起。可执行的配置与查询示例见
+`IRemotingAdmin` 保持只读边界：它以 `RemotingConsumerQueue` 返回可读队列，并让 min、max、timestamp 和
+消费组 offset 查询直接接收这些值；同时可以按 `OffsetMessageId` 查看物理消息。Producer 发布队列仍由
+Producer API 以 `RemotingMessageQueue` 表示。这是一项适合运维、诊断和审计工具的 API；它不是 topic、group
+或 ACL 的写管理面，也不应与业务 Producer 职责混在一起。可执行的配置与查询示例见
 [Remoting Admin sample](../../../samples/remoting/GenericHost/Admin/README.zh-CN.md)。
 
 ## 取舍与约束
@@ -196,8 +204,9 @@ assignment 互斥且并集完整，再正常停止一个成员，并确认另一
 ACL、重连和 route 仍由本项目维护。修改这些代码时应配合 framing、并发和 Docker 集成测试，而不是仅看
 单个发送测试。
 
-**经典类型应留在 Remoting Project。** `RemotingMessageQueue`、`RemotingSendStatus`、POP receipt 和
-route 数据都有经典协议语义。把它们放进第三个通用 Project，会让 gRPC 用户错误依赖无法实现的能力。
+**经典类型应留在 Remoting Project。** 公开的 Consumer queue identity、offset、`RemotingMessageQueue` 与
+`RemotingSendStatus` 都有经典协议语义；PULL/POP wire result 和 POP receipt 则是内部实现细节。把任一类放进
+第三个通用 Project，都会让 gRPC 用户错误依赖无法实现的能力。
 
 **服务端特性仍需验证。** SQL 过滤、POP、Lite、优先级、定时撤回、事务、请求-响应回调和队列锁均可能依赖
 Broker 版本、Broker 配置与网络策略。请使用[Remoting Project 指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)
@@ -208,4 +217,5 @@ Broker 版本、Broker 配置与网络策略。请使用[Remoting Project 指南
 - [协议边界](../architecture/protocol-boundaries.md)
 - [依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
+- [classic Remoting Consumer 模型](consumer-model.md)
 - [本地与集成测试](../testing/local-and-integration-testing.md)

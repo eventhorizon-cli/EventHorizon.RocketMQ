@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Compatibility.Tests;
 public sealed class ConsumerOptionsTests
 {
     [Fact]
-    public void FilterExpression_RejectsNullExpression()
+    public void FilterExpression_NullExpression_Rejects()
     {
         Assert.Throws<ArgumentNullException>(() => new GrpcFilterExpression(null!));
         Assert.Throws<ArgumentNullException>(() => new RemotingFilterExpression(null!));
@@ -36,14 +36,14 @@ public sealed class ConsumerOptionsTests
     [InlineData("")]
     [InlineData(" ")]
     [InlineData("\t")]
-    public void FilterExpression_RejectsBlankExpression(string expression)
+    public void FilterExpression_BlankExpression_Rejects(string expression)
     {
         Assert.Throws<ArgumentException>(() => new GrpcFilterExpression(expression));
         Assert.Throws<ArgumentException>(() => new RemotingFilterExpression(expression));
     }
 
     [Fact]
-    public void FilterExpression_RejectsUnknownType()
+    public void FilterExpression_UnknownType_Rejects()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new GrpcFilterExpression("*", (GrpcFilterExpressionType)int.MaxValue));
@@ -52,7 +52,7 @@ public sealed class ConsumerOptionsTests
     }
 
     [Fact]
-    public void FilterExpression_PreservesPositionalDeconstruction()
+    public void FilterExpression_PositionalDeconstruction_PreservesValues()
     {
         var grpcExpression = new GrpcFilterExpression("region = 'west'", GrpcFilterExpressionType.Sql);
         var remotingExpression = new RemotingFilterExpression("region = 'west'", RemotingFilterExpressionType.Sql);
@@ -67,7 +67,7 @@ public sealed class ConsumerOptionsTests
     }
 
     [Fact]
-    public void Subscribe_RejectsBlankTopic()
+    public void Subscribe_BlankTopic_Rejects()
     {
         var grpcOptions = new GrpcTestConsumerOptions();
         var remotingOptions = new RemotingTestConsumerOptions();
@@ -77,7 +77,7 @@ public sealed class ConsumerOptionsTests
     }
 
     [Fact]
-    public void Subscribe_UsesAllFilterAndExposesReadOnlyView()
+    public void Subscribe_FilterAndReadOnlyView_SetsAllAndExposesReadOnlyView()
     {
         var grpcOptions = new GrpcTestConsumerOptions();
         grpcOptions.Subscribe("orders");
@@ -98,7 +98,7 @@ public sealed class ConsumerOptionsTests
     }
 
     [Fact]
-    public void Subscribe_ReplacesExistingTopicFilter()
+    public void Subscribe_ExistingTopicFilter_Replaces()
     {
         var grpcOptions = new GrpcTestConsumerOptions();
         grpcOptions.Subscribe("orders", new GrpcFilterExpression("created"));

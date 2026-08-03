@@ -39,7 +39,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.Push;
 public sealed class GrpcPushConsumerTests
 {
     [Fact]
-    public async Task FifoMessagesWithSameGroupAreProcessedInArrivalOrder()
+    public async Task FifoMessages_SameGroup_ProcessedInArrivalOrder()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -101,7 +101,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoRetryKeepsSuccessorBlockedUntilPredecessorSucceeds()
+    public async Task FifoRetry_PredecessorCompletion_KeepsSuccessorBlocked()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstSecondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -169,7 +169,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoRetryExhaustionForwardsOnceThenReleasesSuccessor()
+    public async Task FifoRetryExhaustion_Successor_ForwardsOnceAndReleases()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var processingOrder = new ConcurrentQueue<string>();
@@ -209,7 +209,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ReceiveAsync_KeepsCorruptedMessageAndLaterValidMessageInBatch()
+    public async Task ReceiveAsync_CorruptedAndValidMessages_KeepsBoth()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -244,7 +244,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CorruptedStandardMessageSkipsHandlerAndRequestsRedelivery()
+    public async Task CorruptedStandardMessage_HandlerFailure_SkipsHandlerAndRequestsRedelivery()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handlerCalls = 0;
@@ -268,7 +268,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CorruptedFifoMessageGoesToDeadLetterBeforeSuccessorRuns()
+    public async Task CorruptedFifoMessage_DeadLetterBeforeSuccessor_SendsToDeadLetter()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handled = new ConcurrentQueue<string>();
@@ -300,7 +300,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task RuntimeSubscriptionsResyncSettingsAndReconcileTopicReceivers()
+    public async Task RuntimeSubscriptions_TopicReceivers_ResyncAndReconcile()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var ordersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -357,7 +357,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task GrpcSimpleConsumerRuntimeSubscriptionsResyncActiveSession()
+    public async Task GrpcSimpleConsumer_ActiveSession_ResyncSubscriptions()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var client = new FakeGrpcClient();
@@ -395,7 +395,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task AssignmentsReceiveIndependentlyAndRebalanceCancelsRemovedReceiver()
+    public async Task Assignments_RemovedReceiver_ReceiveIndependentlyAndRebalance()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queues = new[] { Queue(0), Queue(1), Queue(2) };
@@ -444,7 +444,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task RebalanceCancellationDuringReceiveRetryIsNotARefreshFailure()
+    public async Task RebalanceCancellation_ReceiveRetry_NotRefreshFailure()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queues = new[] { Queue(0), Queue(1) };
@@ -490,7 +490,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task OversizedMessageExclusivelyReservesByteCapacityAndReleasesAfterConsumption()
+    public async Task OversizedMessage_ByteCapacity_ReservesAndReleasesAfterConsumption()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -536,7 +536,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoCompletionFailureBlocksSuccessorAndStopCancelsBlockedGroup()
+    public async Task FifoCompletionFailure_BlockedGroup_BlocksSuccessorAndCancelsStop()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -613,7 +613,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task StopInterruptsFifoRetryDelayWithoutReleasingSuccessor()
+    public async Task Stop_FifoRetryDelay_InterruptsWithoutReleasingSuccessor()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -673,7 +673,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task StopAsync_CancelsNonCooperativeFifoHandlerAndIgnoresLateSuccess()
+    public async Task StopAsync_NonCooperativeFifoHandlerAndLateSuccess_CancelsAndIgnores()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -742,7 +742,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentMessageTimeout_CancelsHandlerRequestsRetryAndIgnoresLateSuccess()
+    public async Task ConcurrentMessageTimeout_HandlerAndLateSuccess_CancelsRetriesAndIgnores()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -817,7 +817,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_ContinuesWhenProcessTelemetryStartFails()
+    public async Task ConsumeLoop_ProcessTelemetryStartFailure_Continues()
     {
         var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
         telemetry
@@ -864,7 +864,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_ContinuesWhenProcessTelemetryCompletionOrDisposalFails()
+    public async Task ConsumeLoop_ProcessTelemetryCompletionFailure_Continues()
     {
         var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
         operation
@@ -911,7 +911,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_ContinuesAfterUnexpectedMessageProcessingFailure()
+    public async Task ConsumeLoop_UnexpectedProcessingFailure_Continues()
     {
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
         engine
@@ -963,7 +963,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task UnexpectedFifoProcessingFailureKeepsSuccessorBlocked()
+    public async Task UnexpectedFifoFailure_Successor_KeepsBlocked()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1006,7 +1006,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_RetriesAckAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_AckAfterTransientFailure_RetriesAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1029,7 +1029,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_RetriesChangeInvisibleAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_ChangeInvisibleAfterTransientFailure_RetriesAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1058,7 +1058,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_RecordsRetryAsFailedProcessTelemetry()
+    public async Task ConsumeLoop_RetryResult_RecordsFailedProcessTelemetry()
     {
         var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
         operation.Setup(value => value.Complete(false, ConsumeResult.Retry.ToString()));
@@ -1093,7 +1093,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_RetriesDeadLetterAfterTransientFailureAndContinues()
+    public async Task ConsumeLoop_DeadLetterAfterTransientFailure_RetriesAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1116,7 +1116,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_AcknowledgesAndContinuesAfterRenewalFailure()
+    public async Task ConsumeLoop_RenewalFailure_AcknowledgesAndContinues()
     {
         var renewalAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new FakeGrpcClient
@@ -1158,7 +1158,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task BrokerSettingsControlReceptionAndRetryPolicy()
+    public async Task BrokerSettings_ReceptionAndRetryPolicy_ControlsReceiveBehavior()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -1234,7 +1234,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CompletionRequestsPreserveLiteTopicAndUpdatedInvisibility()
+    public async Task CompletionRequests_LiteTopicAndInvisibility_PreservesLiteTopicAndInvisibility()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var client = new FakeGrpcClient
@@ -1261,7 +1261,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CompletionRetriesAreBoundedAndCancellationAware()
+    public async Task CompletionRetries_BoundedAndCancellationAware_AreBoundedAndCancellable()
     {
         var client = new FakeGrpcClient
         {
@@ -1284,7 +1284,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CompletionDoesNotRetryPermanentBrokerFailure()
+    public async Task CompletionRetries_PermanentBrokerFailure_DoesNotRetry()
     {
         var client = new FakeGrpcClient
         {
@@ -1303,7 +1303,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumerEngineCanRestartAfterStop()
+    public async Task ConsumerEngine_AfterStop_CanRestart()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -1331,7 +1331,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task PushConsumerCanRestartAfterStop()
+    public async Task PushConsumer_AfterStop_CanRestart()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var client = new FakeGrpcClient();
@@ -1349,7 +1349,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task GrpcSimpleConsumerReceiveOmitsLongPollingTimeoutFromRequest()
+    public async Task GrpcSimpleConsumer_LongPollingTimeout_OmitsFromRequest()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();

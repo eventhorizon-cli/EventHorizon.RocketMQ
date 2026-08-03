@@ -20,7 +20,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 /// <summary>
 /// Represents the broker-issued receipt required to acknowledge or extend the invisibility of a POP message.
 /// </summary>
-public sealed class RemotingPopReceipt
+internal sealed class RemotingPopReceipt
 {
     internal RemotingPopReceipt(
         string topic,
@@ -32,7 +32,8 @@ public sealed class RemotingPopReceipt
         DateTimeOffset popTime,
         TimeSpan invisibleTime,
         int reviveQueueId,
-        string extraInfo)
+        string extraInfo,
+        RemotingPopRetryTopicKind retryTopicKind = RemotingPopRetryTopicKind.Normal)
     {
         Topic = topic;
         BrokerName = brokerName;
@@ -44,6 +45,7 @@ public sealed class RemotingPopReceipt
         InvisibleTime = invisibleTime;
         ReviveQueueId = reviveQueueId;
         ExtraInfo = extraInfo;
+        RetryTopicKind = retryTopicKind;
     }
 
     /// <summary>
@@ -90,6 +92,8 @@ public sealed class RemotingPopReceipt
 
     internal string ExtraInfo { get; }
 
+    internal RemotingPopRetryTopicKind RetryTopicKind { get; }
+
     internal RemotingPopReceipt Renew(
         long popTimeMilliseconds,
         long invisibleTimeMilliseconds,
@@ -119,7 +123,7 @@ public sealed class RemotingPopReceipt
             popTimeMilliseconds.ToString(CultureInfo.InvariantCulture),
             invisibleTimeMilliseconds.ToString(CultureInfo.InvariantCulture),
             reviveQueueId.ToString(CultureInfo.InvariantCulture),
-            "0",
+            GetRetryTopicMarker(RetryTopicKind),
             BrokerName,
             QueueId.ToString(CultureInfo.InvariantCulture),
             QueueOffset.ToString(CultureInfo.InvariantCulture));
@@ -133,6 +137,23 @@ public sealed class RemotingPopReceipt
             popTime,
             invisibleTime,
             reviveQueueId,
-            extraInfo);
+            extraInfo,
+            RetryTopicKind);
     }
+
+    internal string GetWireTopic(string wireTopic, string wireConsumerGroup) => RetryTopicKind switch
+    {
+        RemotingPopRetryTopicKind.Normal => wireTopic,
+        RemotingPopRetryTopicKind.RetryV1 => $"%RETRY%{wireConsumerGroup}_{wireTopic}",
+        RemotingPopRetryTopicKind.RetryV2 => $"%RETRY%{wireConsumerGroup}+{wireTopic}",
+        _ => throw new InvalidOperationException($"Unsupported POP retry topic kind '{RetryTopicKind}'.")
+    };
+
+    private static string GetRetryTopicMarker(RemotingPopRetryTopicKind retryTopicKind) => retryTopicKind switch
+    {
+        RemotingPopRetryTopicKind.Normal => "0",
+        RemotingPopRetryTopicKind.RetryV1 => "1",
+        RemotingPopRetryTopicKind.RetryV2 => "2",
+        _ => throw new InvalidOperationException($"Unsupported POP retry topic kind '{retryTopicKind}'.")
+    };
 }

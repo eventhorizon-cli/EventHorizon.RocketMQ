@@ -30,9 +30,9 @@ internal sealed class LitePullConsumer(
         {
             try
             {
-                // Subscription mode polls only client-assigned queues; rebalance can temporarily leave none to poll.
-                var result = await consumer.PollAsync(cancellationToken: stoppingToken).ConfigureAwait(false);
-                foreach (var message in result.Messages)
+                // Poll reads only currently assigned queues; rebalance can temporarily leave none to poll.
+                var messages = await consumer.PollAsync(cancellationToken: stoppingToken).ConfigureAwait(false);
+                foreach (var message in messages)
                 {
                     logger.LogInformation(
                         "Received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",

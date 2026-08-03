@@ -28,7 +28,7 @@ public sealed class RocketMQTracePropagationIntegrationTests(RocketMQSingleBroke
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task PushConsumerLinksProducerTraceAfterBrokerRoundTrip()
+    public async Task PushConsumer_BrokerRoundTrip_LinksProducerTrace()
     {
         using var listener = CreateActivityListener();
         var cancellationToken = TestContext.Current.CancellationToken;

@@ -27,7 +27,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Instrumentation;
 public sealed class GrpcRocketMQTelemetryTests
 {
     [Fact]
-    public void StartSend_DoesNotCreateActivityOrInjectContextWithoutSubscribers()
+    public void StartSend_WithoutSubscribers_DoesNotCreateOrInjectContext()
     {
         using var provider = CreateServiceProvider();
         var telemetry = CreateTelemetry(provider);
@@ -43,7 +43,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void StartSend_InjectsContextAndPreservesExistingContext()
+    public void StartSend_ExistingContext_InjectsAndPreserves()
     {
         using var listener = CreateActivityListener();
         using var provider = CreateServiceProvider();
@@ -71,7 +71,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void AddRocketMQGrpcInstrumentation_ConfiguresTracingAndMetricsBuilders()
+    public void AddRocketMQGrpcInstrumentation_TracingAndMetricsBuilders_ConfiguresTracingAndMetricsBuilders()
     {
         var tracingBuilder = Sdk.CreateTracerProviderBuilder();
         var metricsBuilder = Sdk.CreateMeterProviderBuilder();
@@ -90,7 +90,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void StartProcess_UsesReceiveContextAsParentAndProducerContextAsLink()
+    public void StartProcess_ReceiveAndProducerContexts_UsesParentAndLink()
     {
         using var listener = CreateActivityListener();
         using var provider = CreateServiceProvider();
@@ -144,7 +144,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void StartReceive_DoesNotCreateActivityForEmptyResult()
+    public void StartReceive_EmptyResult_DoesNotCreateActivity()
     {
         using var listener = CreateActivityListener();
         using var provider = CreateServiceProvider();
@@ -164,7 +164,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void StartReceive_LinksProducerContexts()
+    public void StartReceive_ProducerContexts_LinksContexts()
     {
         using var listener = CreateActivityListener();
         using var provider = CreateServiceProvider();
@@ -200,7 +200,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void StartProcess_UsesProducerContextAsParentWithoutReceiveContext()
+    public void StartProcess_ProducerWithoutReceiveContext_UsesProducerAsParent()
     {
         using var listener = CreateActivityListener();
         using var provider = CreateServiceProvider();
@@ -229,7 +229,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void Complete_RecordsMetricsForFailedOperation()
+    public void Complete_FailedOperationMetrics_RecordsFailureMetrics()
     {
         var measurements = new List<(string InstrumentName, long Value, KeyValuePair<string, object?>[] Tags)>();
         var durations = new List<(string InstrumentName, double Value, KeyValuePair<string, object?>[] Tags)>();
@@ -270,7 +270,7 @@ public sealed class GrpcRocketMQTelemetryTests
     }
 
     [Fact]
-    public void Dispose_RecordsAnAbandonedOperationOnlyOnce()
+    public void Dispose_AbandonedOperation_RecordsOnce()
     {
         var measurements = new List<(string InstrumentName, long Value, KeyValuePair<string, object?>[] Tags)>();
         var durations = new List<(string InstrumentName, double Value, KeyValuePair<string, object?>[] Tags)>();

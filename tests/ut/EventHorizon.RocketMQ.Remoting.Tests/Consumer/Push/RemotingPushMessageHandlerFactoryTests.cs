@@ -29,7 +29,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     [InlineData(ServiceLifetime.Singleton, 1, 0, 1)]
     [InlineData(ServiceLifetime.Scoped, 2, 2, 2)]
     [InlineData(ServiceLifetime.Transient, 2, 2, 2)]
-    public async Task Create_UsesConfiguredLifetimeAndDisposesHandlers(
+    public async Task Create_ConfiguredLifetime_UsesAndDisposesHandlers(
         ServiceLifetime lifetime,
         int expectedCreatedCount,
         int expectedDisposedBeforeProviderDisposal,
@@ -80,7 +80,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_GenericHandlerRegistersAndInvokesTypedHandler()
+    public async Task AddRemotingPushConsumer_GenericHandlerAndTypedHandler_RegistersAndInvokesTypedHandler()
     {
         var services = new ServiceCollection();
         var tracker = new MessageHandlerTracker();
@@ -107,7 +107,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_GenericHandlerIsConstructedByServiceProviderWithLogger()
+    public async Task AddRemotingPushConsumer_GenericHandlerProviderWithLogger_IsConstructed()
     {
         var services = new ServiceCollection();
         var logger = NullLogger<LoggerInjectingMessageHandler>.Instance;
@@ -131,7 +131,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_SingletonHandlerCannotConsumeScopedDependency()
+    public async Task AddRemotingPushConsumer_HandlerCannotConsumeScopedDependency_RejectsSingletonHandler()
     {
         var services = new ServiceCollection();
         services.AddSingleton<ScopedDependencyTracker>();
@@ -150,7 +150,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_ScopedHandlerConsumesAndDisposesScopedDependency()
+    public async Task AddRemotingPushConsumer_ScopedHandlerAndScopedDependency_ConsumesAndDisposesScopedDependency()
     {
         var services = new ServiceCollection();
         var tracker = new ScopedDependencyTracker();
@@ -182,7 +182,7 @@ public sealed class RemotingPushMessageHandlerFactoryTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_TypedHandlersAreIsolatedByRegistrationName()
+    public async Task AddRemotingPushConsumer_TypedHandlersByRegistrationName_IsolatesTypedHandlers()
     {
         var services = new ServiceCollection();
         var tracker = new MessageHandlerTracker();

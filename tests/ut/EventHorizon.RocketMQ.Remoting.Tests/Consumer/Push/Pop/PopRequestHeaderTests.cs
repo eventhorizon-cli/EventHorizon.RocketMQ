@@ -20,7 +20,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push.Pop;
 public sealed class PopRequestHeaderTests
 {
     [Fact]
-    public void PopMessageRequestHeader_EncodesClassicPopFields()
+    public void PopMessageRequestHeader_ClassicPopFields_Encodes()
     {
         var fields = new global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.PopMessageRequestHeader
         {
@@ -55,7 +55,7 @@ public sealed class PopRequestHeaderTests
     }
 
     [Fact]
-    public void AckMessageRequestHeader_EncodesReceiptFields()
+    public void AckMessageRequestHeader_ReceiptFields_Encodes()
     {
         var fields = new global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.AckMessageRequestHeader
         {
@@ -76,7 +76,7 @@ public sealed class PopRequestHeaderTests
     }
 
     [Fact]
-    public void ChangeInvisibleTimeRequestHeader_EncodesReceiptAndDurationFields()
+    public void ChangeInvisibleTimeRequestHeader_ReceiptAndDurationFields_Encodes()
     {
         var fields = new global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.ChangeInvisibleTimeRequestHeader
         {
@@ -86,7 +86,8 @@ public sealed class PopRequestHeaderTests
             Offset = 42,
             ExtraInfo = "40 1700000000000 60000 2 0 broker-a 3 42",
             InvisibleTime = 120_000,
-            Bname = "broker-a"
+            Bname = "broker-a",
+            Suspend = true
         }.Encode();
 
         Assert.Equal("pop-group", fields["consumerGroup"]);
@@ -96,5 +97,6 @@ public sealed class PopRequestHeaderTests
         Assert.Equal("40 1700000000000 60000 2 0 broker-a 3 42", fields["extraInfo"]);
         Assert.Equal(120_000L, fields["invisibleTime"]);
         Assert.Equal("broker-a", fields["bname"]);
+        Assert.Equal(true, fields["suspend"]);
     }
 }

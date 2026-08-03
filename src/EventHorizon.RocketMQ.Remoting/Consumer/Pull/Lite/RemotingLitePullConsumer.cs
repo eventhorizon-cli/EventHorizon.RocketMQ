@@ -62,7 +62,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         _logger = logger;
     }
 
-    public IReadOnlyList<RemotingPullMessageQueue> Assignment
+    public IReadOnlyList<RemotingConsumerQueue> Assignment
     {
         get
         {
@@ -71,7 +71,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    public async Task<IReadOnlyList<RemotingPullMessageQueue>> GetMessageQueuesAsync(
+    public async Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default)
     {
@@ -105,10 +105,16 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             }
 
             await _consumerEngine.StartAsync(cancellationToken).ConfigureAwait(false);
-            var run = new RunState(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            var run = new RunState(
+                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                _options.MaxCachedMessages,
+                _options.MaxCachedMessageBytes);
             _run = run;
             try
             {
+                run.AutoCommitTask = _options.EnableAutoCommit
+                    ? RunAutoCommitAsync(run)
+                    : Task.CompletedTask;
                 run.RebalanceRegistration = _rebalanceService.Register(
                     _groupSession.ConsumerGroup,
                     token => RebalanceAsync(run, token));
@@ -219,10 +225,12 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     }
 
     public async Task AssignAsync(
-        IEnumerable<RemotingPullMessageQueue> queues,
+        IEnumerable<RemotingConsumerQueue> queues,
+        IReadOnlyDictionary<string, FilterExpression>? filters = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queues);
+        filters ??= new Dictionary<string, FilterExpression>(StringComparer.Ordinal);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var requestedQueues = queues.ToArray();
         if (requestedQueues.Any(static queue => queue is null))
@@ -238,6 +246,13 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             {
                 throw new InvalidOperationException(
                     "Manual assignment requires a Lite Pull consumer with no topic subscriptions.");
+            }
+
+            foreach (var queue in requestedQueues)
+            {
+                _consumerEngine.SetSubscription(
+                    queue.Topic,
+                    filters.TryGetValue(queue.Topic, out var filter) ? filter : FilterExpression.All);
             }
 
             await run.CoordinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -273,58 +288,72 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    public async Task<RemotingPullResult> PollAsync(
+    public async Task<IReadOnlyList<RemotingMessageView>> PollAsync(
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
-        if (timeout is { } localTimeout && localTimeout <= TimeSpan.Zero)
+        if (timeout is { } localTimeout && localTimeout < TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(timeout), "Poll timeout must be positive.");
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Poll timeout cannot be negative.");
         }
 
         var run = await GetActiveRunAsync(cancellationToken).ConfigureAwait(false);
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             run.Stopping.Token);
-        await run.OperationGate.WaitAsync(operationCancellation.Token).ConfigureAwait(false);
-        try
-        {
-            var selection = run.SelectNextActiveQueue();
-            using var pullCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+        var configuredTimeout = timeout ?? _options.PollTimeout;
+        using var timeoutCancellation = configuredTimeout > TimeSpan.Zero
+            ? new CancellationTokenSource(configuredTimeout, _timeProvider)
+            : null;
+        using var pollCancellation = timeoutCancellation is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(
                 operationCancellation.Token,
-                selection.CancellationToken);
-            if (timeout is { } configuredTimeout)
-            {
-                pullCancellation.CancelAfter(configuredTimeout);
-            }
-
-            var result = await _consumerEngine.PullAsync(
-                selection.Queue,
-                selection.Offset,
-                cancellationToken: pullCancellation.Token).ConfigureAwait(false);
-            if (!run.AdvanceOffset(selection.Key, selection.State, selection.Version, result.NextOffset))
-            {
-                throw new OperationCanceledException(pullCancellation.Token);
-            }
-
-            return result;
-        }
-        finally
+                timeoutCancellation.Token);
+        var pollToken = pollCancellation?.Token ?? operationCancellation.Token;
+        while (true)
         {
-            run.OperationGate.Release();
+            var attempt = run.TryDrainBuffer();
+            if (attempt.Messages.Count > 0)
+            {
+                return attempt.Messages;
+            }
+
+            if (configuredTimeout == TimeSpan.Zero)
+            {
+                return [];
+            }
+
+            try
+            {
+                await attempt.StateChanged.WaitAsync(pollToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                !cancellationToken.IsCancellationRequested &&
+                !run.Stopping.IsCancellationRequested &&
+                timeoutCancellation?.IsCancellationRequested == true)
+            {
+                return [];
+            }
         }
     }
 
-    public void Seek(RemotingPullMessageQueue queue, long offset)
+    public long Position(RemotingConsumerQueue queue)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        return RequireActiveRun().GetRequiredQueuePosition(queue).Offset;
+    }
+
+    public void Seek(RemotingConsumerQueue queue, long offset)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         var run = RequireActiveRun();
-        run.SetOffset(queue, offset);
+        StartReceiver(run, run.ReplacePosition(queue, offset));
     }
 
     public async Task SeekToBeginningAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
@@ -338,9 +367,9 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             var assignedQueue = run.GetRequiredQueue(queue);
             var offset = await _consumerEngine.QueryOffsetAsync(
                 assignedQueue,
-                QueryOffsetPolicy.Beginning,
+                ConsumeFromPosition.Beginning,
                 cancellationToken: operationCancellation.Token).ConfigureAwait(false);
-            run.SetOffset(assignedQueue, offset);
+            StartReceiver(run, run.ReplacePosition(assignedQueue, offset));
         }
         finally
         {
@@ -348,7 +377,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    public async Task SeekToEndAsync(RemotingPullMessageQueue queue, CancellationToken cancellationToken = default)
+    public async Task SeekToEndAsync(RemotingConsumerQueue queue, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
         var run = await GetActiveRunAsync(cancellationToken).ConfigureAwait(false);
@@ -361,9 +390,9 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             var assignedQueue = run.GetRequiredQueue(queue);
             var offset = await _consumerEngine.QueryOffsetAsync(
                 assignedQueue,
-                QueryOffsetPolicy.End,
+                ConsumeFromPosition.End,
                 cancellationToken: operationCancellation.Token).ConfigureAwait(false);
-            run.SetOffset(assignedQueue, offset);
+            StartReceiver(run, run.ReplacePosition(assignedQueue, offset));
         }
         finally
         {
@@ -371,7 +400,45 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    public void Pause(IEnumerable<RemotingPullMessageQueue> queues)
+    public async Task SeekToTimestampAsync(
+        RemotingConsumerQueue queue,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        var run = await GetActiveRunAsync(cancellationToken).ConfigureAwait(false);
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            run.Stopping.Token);
+        await run.OperationGate.WaitAsync(operationCancellation.Token).ConfigureAwait(false);
+        try
+        {
+            var assignedQueue = run.GetRequiredQueue(queue);
+            var offset = await _consumerEngine.QueryOffsetAsync(
+                assignedQueue,
+                ConsumeFromPosition.Timestamp,
+                timestamp,
+                operationCancellation.Token).ConfigureAwait(false);
+            StartReceiver(run, run.ReplacePosition(assignedQueue, offset));
+        }
+        finally
+        {
+            run.OperationGate.Release();
+        }
+    }
+
+    public async Task<long?> GetCommittedOffsetAsync(
+        RemotingConsumerQueue queue,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        var run = await GetActiveRunAsync(cancellationToken).ConfigureAwait(false);
+        var assignedQueue = run.GetRequiredQueue(queue);
+        var offset = await _consumerEngine.GetOffsetAsync(assignedQueue, cancellationToken).ConfigureAwait(false);
+        return offset >= 0 ? offset : null;
+    }
+
+    public void Pause(IEnumerable<RemotingConsumerQueue> queues)
     {
         ArgumentNullException.ThrowIfNull(queues);
         var run = RequireActiveRun();
@@ -382,7 +449,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         }
     }
 
-    public void Resume(IEnumerable<RemotingPullMessageQueue> queues)
+    public void Resume(IEnumerable<RemotingConsumerQueue> queues)
     {
         ArgumentNullException.ThrowIfNull(queues);
         var run = RequireActiveRun();
@@ -399,7 +466,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         await CommitAsync(run, static state => state.GetPositions(), cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task CommitAsync(RemotingPullMessageQueue queue, CancellationToken cancellationToken = default)
+    public async Task CommitAsync(RemotingConsumerQueue queue, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
         var run = await GetActiveRunAsync(cancellationToken).ConfigureAwait(false);
@@ -479,29 +546,73 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                 return true;
             }
 
-            var queuesByTopic = new Dictionary<string, IReadOnlyList<RemotingPullMessageQueue>>(
-                StringComparer.Ordinal);
+            var subscribedTopics = subscriptions
+                .Select(static entry => entry.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            var desiredByTopic = run.GetAssignment()
+                .Where(queue => subscribedTopics.Contains(queue.Topic))
+                .GroupBy(static queue => queue.Topic, StringComparer.Ordinal)
+                .ToDictionary(
+                    static group => group.Key,
+                    static group => (IReadOnlyList<RemotingConsumerQueue>)group.ToArray(),
+                    StringComparer.Ordinal);
+            var snapshots = new List<TopicSnapshot>(subscriptions.Length);
+            var balanced = true;
             foreach (var subscription in subscriptions)
             {
-                var queues = await _consumerEngine.GetMessageQueuesAsync(
-                    subscription.Key,
-                    cancellationToken).ConfigureAwait(false);
-                queuesByTopic[subscription.Key] = queues;
-                AddKnownBrokers(run, queues);
+                try
+                {
+                    var queues = await _consumerEngine.GetMessageQueuesAsync(
+                        subscription.Key,
+                        cancellationToken).ConfigureAwait(false);
+                    snapshots.Add(new TopicSnapshot(subscription.Key, queues));
+                    AddKnownBrokers(run, queues);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    balanced = false;
+                    _logger.LogWarning(
+                        exception,
+                        "Unable to refresh legacy Lite Pull route for topic {Topic}",
+                        subscription.Key);
+                }
             }
 
             await SendHeartbeatsAsync(run, subscriptions, cancellationToken).ConfigureAwait(false);
-            var assigned = new List<RemotingPullMessageQueue>();
-            var balanced = true;
-            foreach (var (_, queues) in queuesByTopic)
+            foreach (var snapshot in snapshots)
             {
-                if (queues.Count == 0)
+                if (snapshot.Queues.Count == 0)
                 {
+                    desiredByTopic[snapshot.Topic] = [];
                     continue;
                 }
 
-                var consumerIds = await _groupSession.GetConsumerIdsAsync(queues[0], cancellationToken)
-                    .ConfigureAwait(false);
+                IReadOnlyList<string> consumerIds;
+                try
+                {
+                    consumerIds = await _groupSession.GetConsumerIdsAsync(
+                        snapshot.Queues[0],
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    balanced = false;
+                    _logger.LogWarning(
+                        exception,
+                        "Unable to discover consumers for legacy Lite Pull group {GroupName} and topic {Topic}",
+                        _options.GroupName,
+                        snapshot.Topic);
+                    continue;
+                }
+
                 if (!consumerIds.Contains(_groupSession.ClientId, StringComparer.Ordinal))
                 {
                     balanced = false;
@@ -509,16 +620,20 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                         "Broker membership for legacy Lite Pull group {GroupName} does not contain client {ClientId}",
                         _options.GroupName,
                         _groupSession.ClientId);
+                    desiredByTopic[snapshot.Topic] = [];
                     continue;
                 }
 
-                assigned.AddRange(LegacyConsumerProtocol.Allocate(
-                    queues,
+                desiredByTopic[snapshot.Topic] = LegacyConsumerProtocol.Allocate(
+                    snapshot.Queues,
                     consumerIds,
-                    _groupSession.ClientId));
+                    _groupSession.ClientId);
             }
 
-            await ReconcileAssignmentsAsync(run, assigned, cancellationToken).ConfigureAwait(false);
+            await ReconcileAssignmentsAsync(
+                run,
+                desiredByTopic.Values.SelectMany(static queues => queues).ToArray(),
+                cancellationToken).ConfigureAwait(false);
             return balanced;
         }
         finally
@@ -553,7 +668,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
 
     private static void AddKnownBrokers(
         RunState run,
-        IEnumerable<RemotingPullMessageQueue> queues)
+        IEnumerable<RemotingConsumerQueue> queues)
     {
         foreach (var queue in queues)
         {
@@ -566,21 +681,25 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
 
     private async Task ReconcileAssignmentsAsync(
         RunState run,
-        IReadOnlyCollection<RemotingPullMessageQueue> desiredQueues,
+        IReadOnlyCollection<RemotingConsumerQueue> desiredQueues,
         CancellationToken cancellationToken)
     {
         var desired = desiredQueues
             .GroupBy(QueueKey.Create)
             .ToDictionary(static entry => entry.Key, static entry => entry.First());
-        run.CancelQueuesNotIn(desired);
         await run.OperationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var additions = run.ApplyDesiredQueues(desired);
-            foreach (var queue in additions)
+            var changes = run.ApplyDesiredQueues(desired);
+            await AwaitReceiversAsync(changes.Removed).ConfigureAwait(false);
+            foreach (var queue in changes.Additions)
             {
                 var offset = await InitializeOffsetAsync(queue, cancellationToken).ConfigureAwait(false);
-                run.AddInitializedQueue(queue, offset, desired);
+                var state = run.AddInitializedQueue(queue, offset, desired);
+                if (state is not null)
+                {
+                    StartReceiver(run, state);
+                }
             }
         }
         finally
@@ -590,7 +709,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     }
 
     private async Task<long> InitializeOffsetAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CancellationToken cancellationToken)
     {
         var committed = await _consumerEngine.GetOffsetAsync(queue, cancellationToken).ConfigureAwait(false);
@@ -601,19 +720,139 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
 
         return await _consumerEngine.QueryOffsetAsync(
             queue,
-            _options.InitialOffset,
-            _options.InitialOffsetTimestamp,
+            _options.InitialPosition,
+            _options.ConsumeTimestamp,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private void StartReceiver(RunState run, QueueState state) =>
+        state.ReceiverTask = ReceiveQueueAsync(run, state);
+
+    private async Task ReceiveQueueAsync(RunState run, QueueState state)
+    {
+        using var receiveCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            run.Stopping.Token,
+            state.ReceiveCancellation.Token);
+        var cancellationToken = receiveCancellation.Token;
+        try
+        {
+            while (true)
+            {
+                var selection = run.SelectReceive(state, _options.PullBatchSize);
+                if (!selection.IsCurrent)
+                {
+                    return;
+                }
+
+                if (!selection.CanReceive)
+                {
+                    await selection.StateChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RemotingPullResult result;
+                try
+                {
+                    result = await _consumerEngine.PullAsync(
+                        selection.Queue!,
+                        selection.Offset,
+                        selection.MaxMessages,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Legacy Lite Pull receive failed for {Topic}/{BrokerName}/{QueueId}; retrying",
+                        state.Queue.Topic,
+                        state.Queue.BrokerName,
+                        state.Queue.QueueId);
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!await run.AdmitAsync(state, result, cancellationToken).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                await Task.Yield();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            run.ReceiverCompleted(state);
+            state.Dispose();
+        }
+    }
+
+    private async Task RunAutoCommitAsync(RunState run)
+    {
+        while (!run.Stopping.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(
+                    _options.AutoCommitInterval,
+                    _timeProvider,
+                    run.Stopping.Token).ConfigureAwait(false);
+                await CommitAsync(
+                    run,
+                    static state => state.GetPositions(),
+                    run.Stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (run.Stopping.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to auto-commit legacy Lite Pull positions for group {GroupName}",
+                    _options.GroupName);
+            }
+        }
+    }
+
+    private static async Task AwaitReceiversAsync(IEnumerable<QueueState> states)
+    {
+        foreach (var state in states)
+        {
+            try
+            {
+                await state.ReceiverTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
     }
 
     private async Task ShutdownRunAsync(RunState run)
     {
         run.Stopping.Cancel();
-        run.CancelAllQueues();
+        var receivers = run.CancelAllQueues();
         if (run.RebalanceRegistration is { } rebalanceRegistration)
         {
             run.RebalanceRegistration = null;
             await rebalanceRegistration.DisposeAsync().ConfigureAwait(false);
+        }
+
+        await AwaitReceiversAsync(receivers).ConfigureAwait(false);
+        try
+        {
+            await run.AutoCommitTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
         }
 
         await run.OperationGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -690,12 +929,12 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         return _run ?? throw new InvalidOperationException("Lite Pull consumer has not been started.");
     }
 
-    private string GetConsumeFromWhere() => _options.InitialOffset switch
+    private string GetConsumeFromWhere() => _options.InitialPosition switch
     {
-        QueryOffsetPolicy.Beginning => "CONSUME_FROM_FIRST_OFFSET",
-        QueryOffsetPolicy.End => "CONSUME_FROM_LAST_OFFSET",
-        QueryOffsetPolicy.Timestamp => "CONSUME_FROM_TIMESTAMP",
-        _ => throw new ArgumentOutOfRangeException(nameof(_options.InitialOffset), _options.InitialOffset, null)
+        ConsumeFromPosition.Beginning => "CONSUME_FROM_FIRST_OFFSET",
+        ConsumeFromPosition.End => "CONSUME_FROM_LAST_OFFSET",
+        ConsumeFromPosition.Timestamp => "CONSUME_FROM_TIMESTAMP",
+        _ => throw new ArgumentOutOfRangeException(nameof(_options.InitialPosition), _options.InitialPosition, null)
     };
 
     private string GetWireTopic(string topic) => LegacyNamespace.Wrap(_clientOptions.Namespace, topic);
@@ -707,11 +946,21 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
 
         private readonly object _stateGate = new();
         private readonly Dictionary<QueueKey, QueueState> _assignments = [];
-        private int _nextQueueIndex;
+        private readonly LinkedList<BufferedMessage> _buffer = [];
+        private readonly HashSet<QueueState> _receivers = [];
+        private readonly int _maxCachedMessages;
+        private readonly int _maxCachedMessageBytes;
+        private TaskCompletionSource _stateChanged = CreateStateSignal();
+        private int _cachedMessageBytes;
 
-        public RunState(long subscriptionVersion)
+        public RunState(
+            long subscriptionVersion,
+            int maxCachedMessages,
+            int maxCachedMessageBytes)
         {
             SubscriptionVersion = subscriptionVersion;
+            _maxCachedMessages = maxCachedMessages;
+            _maxCachedMessageBytes = maxCachedMessageBytes;
         }
 
         public CancellationTokenSource Stopping { get; } = new();
@@ -719,12 +968,13 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         public SemaphoreSlim OperationGate { get; } = new(1, 1);
         public Dictionary<string, RemotingBrokerEndpoint> KnownBrokers { get; } = new(StringComparer.Ordinal);
         public IRemotingRebalanceRegistration? RebalanceRegistration { get; set; }
+        public Task AutoCommitTask { get; set; } = Task.CompletedTask;
         public bool ManualAssignment { get; set; }
         public long SubscriptionVersion { get; private set; }
 
         public void BumpSubscriptionVersion() => SubscriptionVersion++;
 
-        public IReadOnlyList<RemotingPullMessageQueue> GetAssignment()
+        public IReadOnlyList<RemotingConsumerQueue> GetAssignment()
         {
             lock (_stateGate)
             {
@@ -737,18 +987,22 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             }
         }
 
-        public IReadOnlyList<RemotingPullMessageQueue> ApplyDesiredQueues(
-            IReadOnlyDictionary<QueueKey, RemotingPullMessageQueue> desired)
+        public AssignmentChanges ApplyDesiredQueues(
+            IReadOnlyDictionary<QueueKey, RemotingConsumerQueue> desired)
         {
             lock (_stateGate)
             {
+                var removed = new List<QueueState>();
                 foreach (var key in _assignments.Keys.Except(desired.Keys).ToArray())
                 {
-                    _assignments[key].CancelPolling();
+                    var state = _assignments[key];
+                    state.CancelReceive();
                     _assignments.Remove(key);
+                    RemoveBufferedMessages(state);
+                    removed.Add(state);
                 }
 
-                var additions = new List<RemotingPullMessageQueue>();
+                var additions = new List<RemotingConsumerQueue>();
                 foreach (var (key, queue) in desired)
                 {
                     if (_assignments.TryGetValue(key, out var state))
@@ -761,95 +1015,224 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                     }
                 }
 
-                return additions;
+                SignalStateChanged();
+                return new AssignmentChanges(additions, removed);
             }
         }
 
-        public void CancelQueuesNotIn(IReadOnlyDictionary<QueueKey, RemotingPullMessageQueue> desired)
-        {
-            lock (_stateGate)
-            {
-                foreach (var (key, state) in _assignments)
-                {
-                    if (!desired.ContainsKey(key))
-                    {
-                        state.CancelPolling();
-                    }
-                }
-            }
-        }
-
-        public void CancelAllQueues()
-        {
-            lock (_stateGate)
-            {
-                foreach (var state in _assignments.Values)
-                {
-                    state.CancelPolling();
-                }
-            }
-        }
-
-        public void AddInitializedQueue(
-            RemotingPullMessageQueue queue,
+        public QueueState? AddInitializedQueue(
+            RemotingConsumerQueue queue,
             long offset,
-            IReadOnlyDictionary<QueueKey, RemotingPullMessageQueue> desired)
+            IReadOnlyDictionary<QueueKey, RemotingConsumerQueue> desired)
         {
             var key = QueueKey.Create(queue);
             lock (_stateGate)
             {
-                if (desired.ContainsKey(key) && !_assignments.ContainsKey(key))
+                if (!desired.ContainsKey(key) || _assignments.ContainsKey(key))
                 {
-                    _assignments[key] = new QueueState(queue, offset);
+                    return null;
                 }
+
+                var state = new QueueState(queue, offset);
+                _assignments[key] = state;
+                _receivers.Add(state);
+                SignalStateChanged();
+                return state;
             }
         }
 
-        public QueueSelection SelectNextActiveQueue()
+        public QueueState ReplacePosition(RemotingConsumerQueue queue, long offset)
         {
             lock (_stateGate)
             {
-                var active = _assignments
-                    .Where(static entry => !entry.Value.Paused)
-                    .OrderBy(static entry => entry.Key.Topic, StringComparer.Ordinal)
-                    .ThenBy(static entry => entry.Key.BrokerName, StringComparer.Ordinal)
-                    .ThenBy(static entry => entry.Key.QueueId)
-                    .ToArray();
-                if (active.Length == 0)
+                var key = QueueKey.Create(queue);
+                if (!_assignments.TryGetValue(key, out var current))
                 {
-                    throw new InvalidOperationException("Lite Pull consumer has no active assigned queues.");
+                    throw new InvalidOperationException(QueueNotAssignedMessage);
                 }
 
-                var index = (int)((uint)_nextQueueIndex++ % (uint)active.Length);
-                var selected = active[index];
-                return new QueueSelection(
-                    selected.Key,
-                    selected.Value,
-                    selected.Value.Queue,
-                    selected.Value.Offset,
-                    selected.Value.Version,
-                    selected.Value.PollCancellation.Token);
+                current.CancelReceive();
+                RemoveBufferedMessages(current);
+                var replacement = new QueueState(current.Queue, offset)
+                {
+                    Paused = current.Paused
+                };
+                _assignments[key] = replacement;
+                _receivers.Add(replacement);
+                SignalStateChanged();
+                return replacement;
             }
         }
 
-        public bool AdvanceOffset(QueueKey key, QueueState state, long version, long offset)
+        public IReadOnlyList<QueueState> CancelAllQueues()
         {
             lock (_stateGate)
             {
-                if (_assignments.TryGetValue(key, out var current) &&
-                    ReferenceEquals(current, state) &&
-                    current.Version == version &&
-                    !current.PollCancellation.IsCancellationRequested)
+                foreach (var state in _receivers)
                 {
-                    current.Offset = offset;
+                    state.CancelReceive();
+                }
+
+                _buffer.Clear();
+                _cachedMessageBytes = 0;
+                SignalStateChanged();
+                return _receivers.ToArray();
+            }
+        }
+
+        public void ReceiverCompleted(QueueState state)
+        {
+            lock (_stateGate)
+            {
+                _receivers.Remove(state);
+                SignalStateChanged();
+            }
+        }
+
+        public ReceiveSelection SelectReceive(QueueState state, int pullBatchSize)
+        {
+            lock (_stateGate)
+            {
+                if (!IsCurrentState(state))
+                {
+                    return ReceiveSelection.Stale;
+                }
+
+                if (state.Paused ||
+                    _buffer.Count >= _maxCachedMessages ||
+                    _cachedMessageBytes >= _maxCachedMessageBytes)
+                {
+                    return ReceiveSelection.Wait(_stateChanged.Task);
+                }
+
+                return ReceiveSelection.Ready(
+                    state.Queue,
+                    state.FetchOffset,
+                    Math.Min(pullBatchSize, _maxCachedMessages - _buffer.Count));
+            }
+        }
+
+        public async Task<bool> AdmitAsync(
+            QueueState state,
+            RemotingPullResult result,
+            CancellationToken cancellationToken)
+        {
+            if (result.Messages.Count == 0)
+            {
+                lock (_stateGate)
+                {
+                    if (!IsCurrentState(state))
+                    {
+                        return false;
+                    }
+
+                    state.FetchOffset = result.NextOffset;
                     return true;
                 }
+            }
 
-                return false;
+            long fetchOffset;
+            lock (_stateGate)
+            {
+                if (!IsCurrentState(state))
+                {
+                    return false;
+                }
+
+                fetchOffset = state.FetchOffset;
+            }
+
+            var messages = result.Messages
+                .Where(message => message.QueueOffset >= fetchOffset)
+                .OrderBy(static message => message.QueueOffset)
+                .DistinctBy(static message => message.QueueOffset)
+                .ToArray();
+            for (var index = 0; index < messages.Length; index++)
+            {
+                var message = messages[index];
+                var messageBytes = Math.Min(message.Body.Length, _maxCachedMessageBytes);
+                while (true)
+                {
+                    Task stateChanged;
+                    lock (_stateGate)
+                    {
+                        if (!IsCurrentState(state))
+                        {
+                            return false;
+                        }
+
+                        if (_buffer.Count < _maxCachedMessages &&
+                            _cachedMessageBytes + messageBytes <= _maxCachedMessageBytes)
+                        {
+                            var messageNextOffset = checked(message.QueueOffset + 1);
+                            var deliveredOffset = index == messages.Length - 1
+                                ? Math.Max(messageNextOffset, result.NextOffset)
+                                : messageNextOffset;
+                            _buffer.AddLast(new BufferedMessage(
+                                QueueKey.Create(state.Queue),
+                                state,
+                                message,
+                                deliveredOffset,
+                                messageBytes));
+                            _cachedMessageBytes += messageBytes;
+                            state.FetchOffset = Math.Max(state.FetchOffset, messageNextOffset);
+                            SignalStateChanged();
+                            break;
+                        }
+
+                        stateChanged = _stateChanged.Task;
+                    }
+
+                    await stateChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            lock (_stateGate)
+            {
+                if (!IsCurrentState(state))
+                {
+                    return false;
+                }
+
+                state.FetchOffset = Math.Max(state.FetchOffset, result.NextOffset);
+                return true;
             }
         }
 
-        public RemotingPullMessageQueue GetRequiredQueue(RemotingPullMessageQueue queue)
+        public BufferPollAttempt TryDrainBuffer()
+        {
+            lock (_stateGate)
+            {
+                if (_assignments.Count == 0)
+                {
+                    throw new InvalidOperationException("Lite Pull consumer has no assigned queues.");
+                }
+
+                if (_buffer.Count == 0)
+                {
+                    return new BufferPollAttempt([], _stateChanged.Task);
+                }
+
+                var messages = new List<RemotingMessageView>(_buffer.Count);
+                while (_buffer.First is { } node)
+                {
+                    _buffer.RemoveFirst();
+                    var buffered = node.Value;
+                    _cachedMessageBytes -= buffered.BodyBytes;
+                    if (_assignments.TryGetValue(buffered.Key, out var current) &&
+                        ReferenceEquals(current, buffered.State))
+                    {
+                        current.DeliveredOffset = buffered.DeliveredOffset;
+                        messages.Add(buffered.Message);
+                    }
+                }
+
+                SignalStateChanged();
+                return new BufferPollAttempt(messages, _stateChanged.Task);
+            }
+        }
+
+        public RemotingConsumerQueue GetRequiredQueue(RemotingConsumerQueue queue)
         {
             lock (_stateGate)
             {
@@ -859,7 +1242,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             }
         }
 
-        public QueuePosition GetRequiredQueuePosition(RemotingPullMessageQueue queue)
+        public QueuePosition GetRequiredQueuePosition(RemotingConsumerQueue queue)
         {
             lock (_stateGate)
             {
@@ -868,28 +1251,13 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                         QueueKey.Create(queue),
                         state,
                         state.Queue,
-                        state.Offset,
-                        state.Version,
-                        state.PollCancellation.Token)
+                        state.DeliveredOffset,
+                        state.ReceiveCancellation.Token)
                     : throw new InvalidOperationException(QueueNotAssignedMessage);
             }
         }
 
-        public void SetOffset(RemotingPullMessageQueue queue, long offset)
-        {
-            lock (_stateGate)
-            {
-                if (!_assignments.TryGetValue(QueueKey.Create(queue), out var state))
-                {
-                    throw new InvalidOperationException(QueueNotAssignedMessage);
-                }
-
-                state.Offset = offset;
-                state.Version++;
-            }
-        }
-
-        public void SetPaused(RemotingPullMessageQueue queue, bool paused)
+        public void SetPaused(RemotingConsumerQueue queue, bool paused)
         {
             lock (_stateGate)
             {
@@ -899,6 +1267,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                 }
 
                 state.Paused = paused;
+                SignalStateChanged();
             }
         }
 
@@ -911,9 +1280,8 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                         QueueKey.Create(state.Queue),
                         state,
                         state.Queue,
-                        state.Offset,
-                        state.Version,
-                        state.PollCancellation.Token))
+                        state.DeliveredOffset,
+                        state.ReceiveCancellation.Token))
                     .ToArray();
             }
         }
@@ -924,8 +1292,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             {
                 return _assignments.TryGetValue(position.Key, out var current) &&
                        ReferenceEquals(current, position.State) &&
-                       current.Version == position.Version &&
-                       !current.PollCancellation.IsCancellationRequested;
+                       !current.ReceiveCancellation.IsCancellationRequested;
             }
         }
 
@@ -934,39 +1301,120 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
             lock (_stateGate)
             {
                 _assignments.Clear();
+                _buffer.Clear();
+                _receivers.Clear();
+                _cachedMessageBytes = 0;
+                SignalStateChanged();
+            }
+        }
+
+        private bool IsCurrentState(QueueState state) =>
+            _assignments.TryGetValue(QueueKey.Create(state.Queue), out var current) &&
+            ReferenceEquals(current, state) &&
+            !state.ReceiveCancellation.IsCancellationRequested;
+
+        private void RemoveBufferedMessages(QueueState state)
+        {
+            var node = _buffer.First;
+            while (node is not null)
+            {
+                var next = node.Next;
+                if (ReferenceEquals(node.Value.State, state))
+                {
+                    _cachedMessageBytes -= node.Value.BodyBytes;
+                    _buffer.Remove(node);
+                }
+
+                node = next;
+            }
+        }
+
+        private void SignalStateChanged()
+        {
+            var signal = _stateChanged;
+            _stateChanged = CreateStateSignal();
+            signal.TrySetResult();
+        }
+
+        private static TaskCompletionSource CreateStateSignal() =>
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class QueueState(RemotingConsumerQueue queue, long offset) : IDisposable
+    {
+        public RemotingConsumerQueue Queue { get; set; } = queue;
+        public long FetchOffset { get; set; } = offset;
+        public long DeliveredOffset { get; set; } = offset;
+        public bool Paused { get; set; }
+        public CancellationTokenSource ReceiveCancellation { get; } = new();
+        public Task ReceiverTask { get; set; } = Task.CompletedTask;
+
+        private int _canceled;
+        private int _disposed;
+
+        public void CancelReceive()
+        {
+            if (Interlocked.Exchange(ref _canceled, 1) == 0)
+            {
+                ReceiveCancellation.Cancel();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                ReceiveCancellation.Dispose();
             }
         }
     }
 
-    private sealed class QueueState(RemotingPullMessageQueue queue, long offset)
-    {
-        public RemotingPullMessageQueue Queue { get; set; } = queue;
-        public long Offset { get; set; } = offset;
-        public bool Paused { get; set; }
-        public long Version { get; set; }
-        public CancellationTokenSource PollCancellation { get; } = new();
-
-        public void CancelPolling() => PollCancellation.Cancel();
-    }
-
     private readonly record struct QueueKey(string Topic, string BrokerName, int QueueId)
     {
-        public static QueueKey Create(RemotingPullMessageQueue queue) =>
+        public static QueueKey Create(RemotingConsumerQueue queue) =>
             new(queue.Topic, queue.BrokerName, queue.QueueId);
     }
 
     private readonly record struct QueuePosition(
         QueueKey Key,
         QueueState State,
-        RemotingPullMessageQueue Queue,
+        RemotingConsumerQueue Queue,
         long Offset,
-        long Version,
         CancellationToken CancellationToken);
-    private readonly record struct QueueSelection(
+
+    private sealed record AssignmentChanges(
+        IReadOnlyList<RemotingConsumerQueue> Additions,
+        IReadOnlyList<QueueState> Removed);
+
+    private sealed record BufferedMessage(
         QueueKey Key,
         QueueState State,
-        RemotingPullMessageQueue Queue,
+        RemotingMessageView Message,
+        long DeliveredOffset,
+        int BodyBytes);
+
+    private readonly record struct BufferPollAttempt(
+        IReadOnlyList<RemotingMessageView> Messages,
+        Task StateChanged);
+
+    private readonly record struct ReceiveSelection(
+        bool IsCurrent,
+        bool CanReceive,
+        RemotingConsumerQueue? Queue,
         long Offset,
-        long Version,
-        CancellationToken CancellationToken);
+        int MaxMessages,
+        Task StateChanged)
+    {
+        public static ReceiveSelection Stale => new(false, false, null, 0, 0, Task.CompletedTask);
+
+        public static ReceiveSelection Wait(Task stateChanged) =>
+            new(true, false, null, 0, 0, stateChanged);
+
+        public static ReceiveSelection Ready(RemotingConsumerQueue queue, long offset, int maxMessages) =>
+            new(true, true, queue, offset, maxMessages, Task.CompletedTask);
+    }
+
+    private sealed record TopicSnapshot(
+        string Topic,
+        IReadOnlyList<RemotingConsumerQueue> Queues);
 }

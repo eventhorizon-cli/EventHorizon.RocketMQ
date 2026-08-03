@@ -29,7 +29,7 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQSingleBrokerCon
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcFifoMessagesRemainOrderedWithConcurrentConsumeLoops()
+    public async Task GrpcFifoMessages_ConcurrentConsumeLoops_RemainOrdered()
     {
         const int messageCount = 8;
         var cancellationToken = TestContext.Current.CancellationToken;

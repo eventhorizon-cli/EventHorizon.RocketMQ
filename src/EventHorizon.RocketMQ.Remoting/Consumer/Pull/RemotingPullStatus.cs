@@ -18,7 +18,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 /// <summary>
 /// Specifies the outcome of a classic remoting pull operation.
 /// </summary>
-public enum RemotingPullStatus
+internal enum RemotingPullStatus
 {
     /// <summary>
     /// One or more matching messages were found.

@@ -23,7 +23,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class LegacyOffsetMessageIdTests
 {
     [Fact]
-    public void Parse_DecodesIpv4BrokerEndpointAndCommitLogOffset()
+    public void Parse_Ipv4BrokerEndpointAndCommitLogOffset_DecodesOffset()
     {
         var value = CreateOffsetMessageId(IPAddress.Parse("192.0.2.10"), 10911, 1234).ToLowerInvariant();
 
@@ -35,7 +35,7 @@ public sealed class LegacyOffsetMessageIdTests
     }
 
     [Fact]
-    public void Parse_DecodesIpv6BrokerEndpointAndCommitLogOffset()
+    public void Parse_Ipv6BrokerEndpointAndCommitLogOffset_DecodesOffset()
     {
         var value = CreateOffsetMessageId(IPAddress.Parse("2001:db8::1"), 10911, -42);
 
@@ -49,13 +49,13 @@ public sealed class LegacyOffsetMessageIdTests
     [Theory]
     [InlineData("0000000000000000000000000000000")]
     [InlineData("GG000000000000000000000000000000")]
-    public void Parse_RejectsMalformedIdentifier(string value)
+    public void Parse_MalformedIdentifier_Rejects(string value)
     {
         Assert.Throws<InvalidDataException>(() => LegacyOffsetMessageId.Parse(value));
     }
 
     [Fact]
-    public void Parse_RejectsPortOutsideSocketRange()
+    public void Parse_PortOutsideSocketRange_Rejects()
     {
         var bytes = new byte[16];
         BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(4), 65536);

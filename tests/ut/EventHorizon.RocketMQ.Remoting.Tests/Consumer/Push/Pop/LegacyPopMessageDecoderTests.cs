@@ -16,7 +16,8 @@
 using System.Buffers.Binary;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Xunit;
@@ -28,7 +29,7 @@ public sealed class LegacyPopMessageDecoderTests
     private const string Checkpoint = "40 1700000000000 60000 2 0 broker-a 3 42";
 
     [Fact]
-    public void DecodeMessage_CreatesReceiptForMatchingPhysicalQueue()
+    public void DecodeMessage_ReceiptForMatchingPhysicalQueue_CreatesReceipt()
     {
         var queue = CreateQueue();
         var message = CreateMessage(Checkpoint);
@@ -51,9 +52,9 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void DecodeMessage_UsesTheCapturedBrokerAddress()
+    public void DecodeMessage_CapturedBrokerAddress_UsesBroker()
     {
-        var queue = new RemotingPullMessageQueue(
+        var queue = new RemotingConsumerQueue(
             "orders",
             3,
             "broker-a",
@@ -73,7 +74,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void ReceiptRenew_ReplacesOnlyBrokerControlledCheckpointFields()
+    public void ReceiptRenew_BrokerControlledCheckpointFields_ReplacesBrokerFields()
     {
         var receipt = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
             CreateMessage(Checkpoint),
@@ -94,13 +95,12 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Theory]
-    [InlineData("40 1700000000000 60000 2 1 broker-a 3 42")]
     [InlineData("40 1700000000000 60000 2 0 broker-b 3 42")]
     [InlineData("40 1700000000000 60000 2 0 broker-a 4 42")]
     [InlineData("40 1700000000000 60000 2 0 broker-a 3 41")]
     [InlineData("43 1700000000000 60000 2 0 broker-a 3 42")]
     [InlineData("40 1700000000000 60000 2 0 broker-a 3")]
-    public void DecodeMessage_RejectsUnsupportedOrMalformedCheckpoint(string checkpoint)
+    public void DecodeMessage_UnsupportedOrMalformedCheckpoint_Rejects(string checkpoint)
     {
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
@@ -110,8 +110,44 @@ public sealed class LegacyPopMessageDecoderTests
         Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("1", RemotingPopRetryTopicKind.RetryV1)]
+    [InlineData("2", RemotingPopRetryTopicKind.RetryV2)]
+    public void DecodeMessage_RetryTopicMessage_PreservesRetryTopicMarker(
+        string marker,
+        object expectedKind)
+    {
+        var popMessage = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
+            CreateMessage($"40 1700000000000 60000 2 {marker} broker-a 3 42"),
+            CreateQueue());
+
+        Assert.Equal((RemotingPopRetryTopicKind)expectedKind, popMessage.Receipt.RetryTopicKind);
+    }
+
     [Fact]
-    public void DecodeMessage_RejectsMissingCheckpoint()
+    public void ReceiptRenew_RetryTopicMessage_PreservesRetryTopicMarker()
+    {
+        var receipt = new RemotingPopReceipt(
+            "orders",
+            "broker-a",
+            "127.0.0.1:10911",
+            3,
+            40,
+            42,
+            DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000),
+            TimeSpan.FromSeconds(60),
+            2,
+            "40 1700000000000 60000 2 1 broker-a 3 42",
+            RemotingPopRetryTopicKind.RetryV1);
+
+        var renewed = receipt.Renew(1_700_000_120_000, 120_000, 5);
+
+        Assert.Equal(RemotingPopRetryTopicKind.RetryV1, renewed.RetryTopicKind);
+        Assert.Equal("42 1700000120000 120000 5 1 broker-a 3 42", renewed.ExtraInfo);
+    }
+
+    [Fact]
+    public void DecodeMessage_MissingCheckpoint_Rejects()
     {
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
@@ -122,7 +158,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_SynthesizesReceiptForAnOrdinaryMessageWithoutCheckpoint()
+    public void Decode_OrdinaryMessageWithoutCheckpoint_SynthesizesReceipt()
     {
         var result = DecodeSuccess(CreateNormalResponseFields());
 
@@ -138,7 +174,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_SynthesizesReceiptWhenStartOffsetInfoIsEmpty()
+    public void Decode_EmptyStartOffsetInfo_SynthesizesReceipt()
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = string.Empty;
@@ -153,7 +189,7 @@ public sealed class LegacyPopMessageDecoderTests
     [InlineData("popTime", "invalid")]
     [InlineData("invisibleTime", "0")]
     [InlineData("reviveQid", "-1")]
-    public void Decode_RejectsMalformedSynthesizedReceiptMetadata(string name, string value)
+    public void Decode_MalformedSynthesizedReceiptMetadata_Rejects(string name, string value)
     {
         var fields = CreateNormalResponseFields();
         fields[name] = value;
@@ -167,7 +203,7 @@ public sealed class LegacyPopMessageDecoderTests
     [InlineData("popTime")]
     [InlineData("invisibleTime")]
     [InlineData("reviveQid")]
-    public void Decode_RejectsMissingSynthesizedReceiptMetadata(string name)
+    public void Decode_MissingSynthesizedReceiptMetadata_Rejects(string name)
     {
         var fields = CreateNormalResponseFields();
         fields.Remove(name);
@@ -178,7 +214,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_UsesPhysicalOffsetMappingsToSynthesizeReceipts()
+    public void Decode_PhysicalOffsetMappings_SynthesizesReceipts()
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = "1 0 99;0 3 40";
@@ -196,7 +232,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_RejectsIncompletePhysicalOffsetMapping()
+    public void Decode_IncompletePhysicalOffsetMapping_Rejects()
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = "0 3 40";
@@ -207,7 +243,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_RejectsPhysicalOffsetMappingThatDoesNotMatchMessages()
+    public void Decode_MismatchedPhysicalOffsetMapping_Rejects()
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = "0 3 40";
@@ -219,7 +255,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_RejectsPhysicalOffsetMappingWithCheckpointAfterMessage()
+    public void Decode_PhysicalOffsetMappingWithCheckpointAfterMessage_Rejects()
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = "0 3 43";
@@ -231,16 +267,62 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_RejectsSynthesizedReceiptForRetryMessage()
+    public void Decode_RetryMessageHasNoCheckpoint_SynthesizesReceipt()
     {
-        var exception = Assert.Throws<InvalidDataException>(() =>
-            DecodeSuccess(CreateNormalResponseFields(), retryTopic: "orders"));
+        var fields = CreateNormalResponseFields();
+        fields["startOffsetInfo"] = "1 3 40";
+        fields["msgOffsetInfo"] = "1 3 42";
 
-        Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
+        var receipt = Assert.Single(DecodeSuccess(fields, retryTopic: "orders").Messages).Receipt;
+
+        Assert.Equal(RemotingPopRetryTopicKind.RetryV1, receipt.RetryTopicKind);
+        Assert.Equal("40 1700000000000 60000 2 1 broker-a 3 42", receipt.ExtraInfo);
     }
 
     [Fact]
-    public void Decode_RejectsSynthesizedReceiptForLogicalQueueMessage()
+    public void Decode_WildcardPopResponse_UsesEachMessagePhysicalQueue()
+    {
+        var fields = CreateNormalResponseFields();
+        fields["startOffsetInfo"] = "0 1 10;0 3 40";
+        fields["msgOffsetInfo"] = "0 1 12;0 3 42";
+        var assignment = new RemotingPushAssignment(
+            "orders",
+            "broker-a",
+            -1,
+            RemotingPushReceiveMode.Pop,
+            new Dictionary<string, string>());
+
+        var result = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
+            new RemotingCommand
+            {
+                Code = ResponseCodes.ResSuccess,
+                Body = CreateEncodedMessages((1, 12), (3, 42)),
+                ExtFields = fields
+            },
+            assignment,
+            "127.0.0.1:10911",
+            @namespace: null);
+
+        Assert.Collection(
+            result.Messages,
+            message =>
+            {
+                Assert.Equal(1, message.Message.QueueId);
+                Assert.Equal(1, message.Receipt.QueueId);
+                Assert.Equal(10, message.Receipt.CheckpointOffset);
+                Assert.Equal(12, message.Receipt.QueueOffset);
+            },
+            message =>
+            {
+                Assert.Equal(3, message.Message.QueueId);
+                Assert.Equal(3, message.Receipt.QueueId);
+                Assert.Equal(40, message.Receipt.CheckpointOffset);
+                Assert.Equal(42, message.Receipt.QueueOffset);
+            });
+    }
+
+    [Fact]
+    public void Decode_SynthesizedReceiptForLogicalQueueMessage_Rejects()
     {
         var queue = CreateQueue("LOGICAL_QUEUE_MOCK_BROKER_orders");
 
@@ -251,7 +333,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_MapsPollingNotFoundAndRestNum()
+    public void Decode_PollingNotFoundAndRestNum_MapsPollingResult()
     {
         var result = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
             new RemotingCommand
@@ -267,7 +349,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_RejectsInvalidRestNum()
+    public void Decode_InvalidRestNum_Rejects()
     {
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
@@ -282,7 +364,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void Decode_MapsPollingFullAndRejectsUnknownResponseCodes()
+    public void Decode_PollingFullAndUnknownResponseCodes_MapsAndRejects()
     {
         var pollingFull = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
             new RemotingCommand { Code = ResponseCodes.ResPollingFull },
@@ -300,7 +382,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void DecodeMessages_HandlesEmptyCollectionsAndRejectsMissingArguments()
+    public void DecodeMessages_EmptyCollectionsAndMissingArguments_HandlesAndRejects()
     {
         var queue = CreateQueue();
 
@@ -318,7 +400,7 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void DecodeMessage_RejectsWhitespaceCheckpointsAndMismatchedQueues()
+    public void DecodeMessage_WhitespaceAndMismatchedQueues_Rejects()
     {
         var whitespace = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
@@ -336,7 +418,7 @@ public sealed class LegacyPopMessageDecoderTests
     [Theory]
     [InlineData("popTime", "9223372036854775807")]
     [InlineData("invisibleTime", "9223372036854775807")]
-    public void Decode_RejectsOutOfRangeSynthesizedReceiptValues(string name, string value)
+    public void Decode_OutOfRangeSynthesizedReceiptValues_Rejects(string name, string value)
     {
         var fields = CreateNormalResponseFields();
         fields[name] = value;
@@ -353,7 +435,7 @@ public sealed class LegacyPopMessageDecoderTests
     [InlineData("0 3 40", "0 3 invalid")]
     [InlineData("0 3 40;0 3 40", "0 3 42")]
     [InlineData("0 3 40", "0 3 42,43")]
-    public void Decode_RejectsMalformedPhysicalQueueMappings(string startOffsetInfo, string messageOffsetInfo)
+    public void Decode_MalformedPhysicalQueueMappings_Rejects(string startOffsetInfo, string messageOffsetInfo)
     {
         var fields = CreateNormalResponseFields();
         fields["startOffsetInfo"] = startOffsetInfo;
@@ -369,7 +451,7 @@ public sealed class LegacyPopMessageDecoderTests
     [InlineData("40 1700000000000 9223372036854775807 2 0 broker-a 3 42")]
     [InlineData("invalid 1700000000000 60000 2 0 broker-a 3 42")]
     [InlineData("40 1700000000000 60000 invalid 0 broker-a 3 42")]
-    public void DecodeMessage_RejectsOutOfRangeAndNonNumericCheckpointValues(string checkpoint)
+    public void DecodeMessage_OutOfRangeAndNonNumericCheckpointValues_Rejects(string checkpoint)
     {
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
@@ -382,7 +464,7 @@ public sealed class LegacyPopMessageDecoderTests
     private static global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopResult DecodeSuccess(
         Dictionary<string, object> fields,
         string? retryTopic = null,
-        RemotingPullMessageQueue? queue = null,
+        RemotingConsumerQueue? queue = null,
         byte[]? body = null)
     {
         queue ??= CreateQueue();
@@ -406,7 +488,7 @@ public sealed class LegacyPopMessageDecoderTests
             ["reviveQid"] = "2"
         };
 
-    private static RemotingPullMessageQueue CreateQueue(string brokerName = "broker-a") =>
+    private static RemotingConsumerQueue CreateQueue(string brokerName = "broker-a") =>
         new("orders", 3, brokerName, "127.0.0.1:10911");
 
     private static RemotingMessageView CreateMessage(string? checkpoint, int queueId = 3) =>
@@ -429,18 +511,21 @@ public sealed class LegacyPopMessageDecoderTests
             DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000),
             DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_001));
 
-    private static byte[] CreateEncodedMessages(params long[] queueOffsets)
+    private static byte[] CreateEncodedMessages(params long[] queueOffsets) =>
+        CreateEncodedMessages(queueOffsets.Select(static offset => (QueueId: 3, Offset: offset)).ToArray());
+
+    private static byte[] CreateEncodedMessages(params (int QueueId, long Offset)[] queues)
     {
         using var stream = new MemoryStream();
-        foreach (var queueOffset in queueOffsets)
+        foreach (var (queueId, queueOffset) in queues)
         {
-            stream.Write(CreateEncodedMessage(retryTopic: null, queueOffset: queueOffset));
+            stream.Write(CreateEncodedMessage(retryTopic: null, queueOffset: queueOffset, queueId: queueId));
         }
 
         return stream.ToArray();
     }
 
-    private static byte[] CreateEncodedMessage(string? retryTopic, long queueOffset = 42)
+    private static byte[] CreateEncodedMessage(string? retryTopic, long queueOffset = 42, int queueId = 3)
     {
         const string topic = "orders";
         var properties = new StringBuilder("UNIQ_KEY\u0001message-id\u0002");
@@ -456,7 +541,7 @@ public sealed class LegacyPopMessageDecoderTests
         WriteInt32(stream, 0);
         WriteInt32(stream, -626843481);
         WriteInt32(stream, 0);
-        WriteInt32(stream, 3);
+        WriteInt32(stream, queueId);
         WriteInt32(stream, 0);
         WriteInt64(stream, queueOffset);
         WriteInt64(stream, 100);

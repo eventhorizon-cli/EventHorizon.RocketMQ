@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Exceptions;
 public sealed class RemotingCommandExceptionTests
 {
     [Fact]
-    public void IsARocketMQClientException()
+    public void ExceptionType_RocketMQClientException_IsClientException()
     {
         var exception = new RemotingCommandException(17, "broker rejected the command");
 

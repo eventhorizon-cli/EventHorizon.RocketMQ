@@ -71,7 +71,7 @@ application work -> send -> receive -> process
 - An automatic Push or LitePush handler creates a `Consumer` process Activity. The receive Activity is its parent;
   the propagated producer context is recorded as an Activity link. When no receive context is available, the
   propagated producer context becomes the process parent instead.
-- Pull and Simple APIs return messages to application code. They create receive telemetry, but do not create a
+- LitePull and Simple APIs return messages to application code. They create receive telemetry, but do not create a
   process Activity because the client does not own the application's processing boundary.
 
 Receive spans are not created for successful empty polls. Failed receive operations create an error Activity. Context
@@ -83,9 +83,9 @@ are preserved.
 | Operation | gRPC | Classic Remoting |
 | --- | --- | --- |
 | Producer send | All `IGrpcProducer` send paths, including transactional sends. | Standard, reply, batch, and one-way send paths. |
-| Consumer receive | Simple, Push, and LitePush receive engine. | Pull, LitePull, Push receive engine, and POP receive. |
+| Consumer receive | Simple, Push, and LitePush receive engine. | LitePull receives and Push PULL/POP receivers. |
 | Automatic handler processing | Push and LitePush handlers. | Push handlers. |
-| Consumer settlement | Acknowledge, negative acknowledgement, and dead-letter forwarding. | Offset commit, retry/dead-letter send-back, POP acknowledge, and POP invisibility changes. |
+| Consumer settlement | Acknowledge, negative acknowledgement, and dead-letter forwarding. | LitePull and Push PULL offset commits, retry/dead-letter send-back, and internal Push POP acknowledgement and invisibility changes. |
 
 Activities use OpenTelemetry messaging semantic-convention attributes such as `messaging.system`,
 `messaging.destination.name`, `messaging.consumer.group.name`, message ID, partition ID, body size, and batch size.

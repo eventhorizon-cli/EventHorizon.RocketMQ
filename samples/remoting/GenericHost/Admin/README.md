@@ -31,7 +31,7 @@ endpoint must therefore be reachable from the application.
 
 | SDK API | Result and use |
 | --- | --- |
-| `GetMessageQueuesAsync(topic)` | Returns the topic's currently writable physical queues, ordered by Broker and queue ID. Use these values to construct subsequent per-queue queries. |
+| `GetMessageQueuesAsync(topic)` | Returns the topic's currently readable physical queues as `RemotingConsumerQueue` values, ordered by Broker and queue ID. Pass them directly to subsequent per-queue queries. |
 | `GetMinOffsetAsync(queue)` | Returns the earliest offset still available in the queue; retention means this need not be zero. |
 | `GetMaxOffsetAsync(queue, committed)` | Returns the highest committed, consumable offset by default. Pass `false` to request the current in-flight offset when the Broker supports it. |
 | `GetEarliestMessageStoreTimeAsync(queue)` | Returns the earliest available message's UTC store time, or `null` when the Broker reports no available message. |
@@ -39,7 +39,7 @@ endpoint must therefore be reachable from the application.
 | `GetConsumerOffsetAsync(group, queue)` | Returns that group's committed position for one physical queue, or `null` when no position has been committed. |
 | `ViewMessageAsync(topic, offsetMessageId)` | Reads one stored message by the physical ID returned in `RemotingSendResult.OffsetMessageId`. |
 
-A `RemotingMessageQueue` is identified by topic, Broker name, and queue ID. Offsets belong to that physical queue;
+A `RemotingConsumerQueue` is identified by topic, Broker name, and queue ID. Offsets belong to that physical queue;
 they are not global topic offsets and should not be compared across queues as one sequence.
 
 ## Physical message lookup

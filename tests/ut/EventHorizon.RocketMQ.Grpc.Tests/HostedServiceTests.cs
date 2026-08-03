@@ -24,7 +24,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests;
 public sealed class HostedServiceTests
 {
     [Fact]
-    public async Task GrpcProducerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task GrpcProducerHostedService_LifecycleCancellationTokens_ForwardsLifecycleCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();
@@ -42,7 +42,7 @@ public sealed class HostedServiceTests
     }
 
     [Fact]
-    public async Task GrpcSimpleConsumerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task GrpcSimpleConsumerHostedService_LifecycleCancellationTokens_ForwardsLifecycleCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();
@@ -60,7 +60,7 @@ public sealed class HostedServiceTests
     }
 
     [Fact]
-    public async Task GrpcPushConsumerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task GrpcPushConsumerHostedService_LifecycleCancellationTokens_ForwardsLifecycleCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();

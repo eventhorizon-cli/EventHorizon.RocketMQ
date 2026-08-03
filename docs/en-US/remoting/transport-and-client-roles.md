@@ -71,22 +71,38 @@ The Remoting builder offers roles with semantics that belong to classic RocketMQ
 | --- | --- |
 | `IRemotingProducer` | Standard, FIFO, delayed, priority, Lite, transactional, selected-queue, batch, one-way, request-reply, and recall-capable Producer operations supported by this project. |
 | `IRemotingAdmin` | Read-only queue, offset, and stored-message inspection. |
-| `IRemotingPullConsumer` | Explicit route, queue, pull, offset, and commit control. |
-| `IRemotingLitePullConsumer` | Client-managed Lite Pull subscriptions, polling, and offset commits. |
-| `IRemotingPopConsumer` | POP receipt acquisition, acknowledgement, and invisibility renewal. |
-| `IRemotingPushConsumer` | Automatic long-poll batch dispatch with classic Remoting compatibility and Broker callback handling. |
+| `IRemotingLitePullConsumer` | Application polling over SDK-managed assignments, background PULL receives, local positions, and automatic or explicit commits. |
+| `IRemotingPushConsumer` | SDK-managed assignment, PULL/POP reception, handler dispatch, settlement, and classic Remoting coordination. |
 
 The role registrations live in
 [`RemotingRocketMQBuilderExtensions`](../../../src/EventHorizon.RocketMQ.Remoting/RemotingRocketMQBuilderExtensions.cs).
-Push is still driven by classic pull/long-poll behavior internally; it is not identical to the
-gRPC Push implementation and should not be treated as a common transport-neutral role.
+Low-level PULL and POP wire operations are not exposed as public roles; they remain internal to LitePull and Push.
+These classic models are not identical to gRPC Consumers and should not be treated as common transport-neutral roles.
+
+LitePull supports subscription-driven allocation and explicit `AssignAsync` with `RemotingConsumerQueue` values; the
+two modes are mutually exclusive. One background PULL loop per assignment fills a bounded shared local buffer, and
+`PollAsync` drains that buffer as `IReadOnlyList<RemotingMessageView>`. `PullBatchSize` limits each Broker receive;
+`MaxCachedMessages` and `MaxCachedMessageBytes` bound the LitePull buffer. `ConsumerOptions.InitialPosition`, whose
+type is `ConsumeFromPosition`, selects Beginning, End, or Timestamp only when a queue has no committed group
+position. Manual assignment plus `Seek` and explicit `CommitAsync` replaces the former direct queue/offset workflow.
+
+Remoting Push supports two `QueueAssignmentMode` values. The default `Client` mode preserves classic client-side
+allocation (average allocation for clustering and all readable queues for broadcasting) with PULL reception. `Broker`
+mode requests `QUERY_ASSIGNMENT` for concurrent clustered consumption and creates an internal PULL or POP receiver
+for each returned assignment. Broadcasting and `ConsumeOrderly` force effective client assignment with PULL even when
+`Broker` is requested, matching Java Remoting.
+Runtime Consumers never send `SET_MESSAGE_REQUEST_MODE`; the desired topic/group request mode belongs to
+operator-managed Broker configuration.
+
+Push PULL settings are named `PullBatchSize`, `PullMaxCachedMessages`, and `PullMaxCachedMessageBytes`. Broker-assigned
+POP uses `PopBatchSize`, `PopInvisibleDuration`, and `PopMaxInflightMessagesPerAssignment`. POP receipt acquisition,
+renewal, acknowledgement, and retry remain internal Push responsibilities rather than a caller-managed Consumer API.
 
 Remoting Push has one batch-oriented handler API: `IRemotingPushMessageHandler.HandleAsync` receives an
-`IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`. `BatchSize` limits how many messages one
-long poll requests from the Broker; `ConsumeMessageBatchSize` independently limits how many messages one handler
-invocation receives and defaults to `1`. Concurrent non-`MessageGroup` messages from the same Broker physical queue
-can be grouped and those batches can run in parallel up to `MaxConcurrency`. `MessageGroup` FIFO deliveries and
-`ConsumeOrderly` deliveries remain singleton and serialized.
+`IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`. `ConsumeMessageBatchSize` independently limits
+how many messages one handler invocation receives and defaults to `1`. Concurrent non-`MessageGroup` messages from the
+same Broker physical queue can be grouped and those batches can run in parallel up to `MaxConcurrency`.
+`MessageGroup` FIFO deliveries and `ConsumeOrderly` deliveries remain singleton and serialized.
 
 `Success` normally confirms the complete batch. A concurrent non-FIFO handler can set `AckIndex` to the zero-based
 index of the final accepted message before returning `Success`; the client confirms that contiguous prefix and retries
@@ -130,8 +146,8 @@ and unlock commands belong to `RemotingPushQueueLockManager`.
 A physical `RemotingClient` is transport only and has no group identity of its own. Each active Push or LitePull
 session sends its own heartbeat through its assigned client on initial and periodic coordination; LitePull becomes
 active when it has subscriptions or manual queue assignments. Thus a shared client can keep several distinct groups
-alive, while isolated same-group members each maintain their own membership. Direct Pull and POP are explicit APIs and
-intentionally do not create background consumer-group membership or heartbeat loops; Producers maintain their own
+alive, while isolated same-group members each maintain their own membership. Internal PULL and POP receivers belong
+to those two public group sessions rather than registering additional memberships. Producers maintain their own
 producer heartbeat lifecycle.
 
 Clearing a LitePull manual assignment with `AssignAsync([])` ends that active membership immediately: the session
@@ -167,14 +183,15 @@ because Broker queue-lock lease expiry, rather than client notification, determi
 
 #### Concurrent Push dispatch and offset safety
 
-In concurrent mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue` holds
+In concurrent PULL mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue`
+holds
 locally pulled messages and their consumption state; it is not another Broker queue and does not create any
-server-side resource. Pulling can advance independently of handler completion. `MaxCachedMessages` bounds admission
-of newly pulled messages waiting for their first dispatch. Batches already handed to handlers do not retain that
-capacity. When settlement is unresolved or a FIFO message has an incomplete predecessor, including one in another
-physical queue, messages already cached by that `ProcessQueue` release their admission and new admission for the queue
-pauses until it can make progress. A blocked queue therefore cannot monopolize capacity needed by healthy queues, and
-the setting is not a strict limit on every resident message.
+server-side resource. Pulling can advance independently of handler completion. `PullMaxCachedMessages` and
+`PullMaxCachedMessageBytes` bound admission of newly pulled messages waiting for their first dispatch. Batches already
+handed to handlers do not retain that capacity. When settlement is unresolved or a FIFO message has an incomplete
+predecessor, including one in another physical queue, messages already cached by that `ProcessQueue` release their
+admission and new admission for the queue pauses until it can make progress. A blocked queue therefore cannot
+monopolize capacity needed by healthy queues, and the setting is not a strict limit on every resident message.
 
 Ready `ProcessQueue` instances enter a coalesced ready queue at most once. The shared logical consume loops take one
 handler batch from a ready queue, put it at the back again when more work remains, and thereby round-robin across
@@ -196,8 +213,9 @@ the Java data path.
 
 ### Read-only Admin and physical message IDs
 
-`IRemotingAdmin` is intentionally a separate, read-only role. It can discover writable queues,
-inspect min/max/timestamp offsets, query a consumer offset, and view a physical message. The API is
+`IRemotingAdmin` is intentionally a separate, read-only role. It discovers readable queues as
+`RemotingConsumerQueue` values, accepts those values for min/max/timestamp and consumer-offset queries, and can view
+a physical message. Producer publish queues remain `RemotingMessageQueue` values owned by the Producer API. The Admin API is
 documented in
 [`IRemotingAdmin`](../../../src/EventHorizon.RocketMQ.Remoting/Admin/IRemotingAdmin.cs), and the
 [Admin sample](../../../samples/remoting/GenericHost/Admin/README.md) exposes it through a small Swagger UI.
@@ -216,8 +234,9 @@ network can be valid syntactically and still be unusable from the current networ
 
 - Remoting has a broader classic feature surface, but that surface relies on direct Broker access
   and classic server compatibility.
-- The client preserves route, queue, offset, receipt, and send-result types in the Remoting
-  namespace. They should not be moved into a third generic Project or substituted with gRPC types.
+- The client preserves public Consumer queue identities, offsets, and send-result types in the Remoting namespace.
+  PULL/POP wire results and POP receipts are internal implementation details. Neither category should be moved into a
+  third generic Project or substituted with gRPC types.
 - The Admin role performs read-only operations. It is not a general Broker-administration API and
   does not create topics or mutate consumer offsets.
 - ACL credentials, TLS settings, frame-size limits, and advertised Broker addresses are part of
@@ -229,6 +248,8 @@ network can be valid syntactically and still be unusable from the current networ
 
 - [classic Remoting project guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md)
 - [Remoting Admin sample](../../../samples/remoting/GenericHost/Admin/README.md)
-- [Remoting PullConsumer sample](../../../samples/remoting/GenericHost/PullConsumer/README.md)
+- [Remoting LitePullConsumer sample](../../../samples/remoting/GenericHost/LitePullConsumer/README.md)
+- [Remoting PushConsumer sample](../../../samples/remoting/GenericHost/PushConsumer/README.md)
+- [Classic Remoting consumer model](consumer-model.md)
 - [Protocol Boundaries and Type Ownership](../architecture/protocol-boundaries.md)
 - [Local and integration testing](../testing/local-and-integration-testing.md)

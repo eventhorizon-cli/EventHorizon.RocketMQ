@@ -20,7 +20,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests;
 public sealed class RemotingClientOptionsTests
 {
     [Fact]
-    public void BuildRemotingClientId_AppendsUnitName()
+    public void BuildRemotingClientId_UnitName_AppendsUnitName()
     {
         var options = new RemotingClientOptions
         {
@@ -35,7 +35,7 @@ public sealed class RemotingClientOptionsTests
     }
 
     [Fact]
-    public void LogicalClientIdentity_PreservesRemotingOptionsAndAppendsUnitNameLast()
+    public void LogicalClientIdentity_RemotingOptionsAndUnitNameLast_PreservesOptionsAndAppendsUnitName()
     {
         var options = new RemotingClientOptions
         {
@@ -80,7 +80,7 @@ public sealed class RemotingClientOptionsTests
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
-    public void ForLogicalClient_RejectsBlankLogicalName(string logicalClient)
+    public void ForLogicalClient_BlankLogicalName_Rejects(string logicalClient)
     {
         var options = new RemotingClientOptions();
 
@@ -88,7 +88,7 @@ public sealed class RemotingClientOptionsTests
     }
 
     [Fact]
-    public void ForLogicalClient_RejectsNullLogicalName()
+    public void ForLogicalClient_NullLogicalName_Rejects()
     {
         var options = new RemotingClientOptions();
 

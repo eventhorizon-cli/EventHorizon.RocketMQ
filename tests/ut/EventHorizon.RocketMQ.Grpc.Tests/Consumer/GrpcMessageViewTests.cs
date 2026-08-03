@@ -27,7 +27,7 @@ public sealed class GrpcMessageViewTests
     private static readonly byte[] Body = "foobar"u8.ToArray();
 
     [Fact]
-    public void IdentityEncoding_ReturnsOriginalBodyWhenDigestIsAbsent()
+    public void IdentityEncoding_DigestAbsent_ReturnsOriginalBody()
     {
         var view = CreateView(Body, Proto.Encoding.Identity);
 
@@ -37,7 +37,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void UnspecifiedEncodingAndDigest_PreserveBackwardCompatibleIdentityBody()
+    public void UnspecifiedEncodingAndDigest_BackwardCompatibleIdentityBody_PreservesIdentityBody()
     {
         var view = CreateView(Body, Proto.Encoding.Unspecified);
 
@@ -48,7 +48,7 @@ public sealed class GrpcMessageViewTests
     [InlineData((int)Proto.DigestType.Crc32, "9EF61F95")]
     [InlineData((int)Proto.DigestType.Md5, "3858F62230AC3C915F300C664312C63F")]
     [InlineData((int)Proto.DigestType.Sha1, "8843D7F92416211DE9EBB963FF4CE28125932878")]
-    public void SupportedDigest_ValidatesEncodedBody(int digestType, string checksum)
+    public void SupportedDigest_EncodedBody_ValidatesChecksum(int digestType, string checksum)
     {
         var view = CreateView(Body, Proto.Encoding.Identity, new Proto.Digest
         {
@@ -60,7 +60,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void LowercaseChecksum_IsAcceptedBecauseProtoDoesNotSpecifyHexCasing()
+    public void LowercaseChecksum_ProtoHexCasing_IsAccepted()
     {
         var view = CreateView(Body, Proto.Encoding.Identity, new Proto.Digest
         {
@@ -72,7 +72,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void GzipEncoding_ValidatesWireBodyThenDecompresses()
+    public void GzipEncoding_WireBody_ValidatesThenDecompresses()
     {
         var encoded = Compress(Body);
         var checksum = Convert.ToHexString(SHA1.HashData(encoded));
@@ -87,7 +87,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void DigestMismatch_MarksMessageCorruptedAndRetainsWireBody()
+    public void DigestMismatch_CorruptedMessage_MarksAndRetainsWireBody()
     {
         var view = CreateView(
             Body,
@@ -102,7 +102,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void MissingChecksum_MarksMessageCorrupted()
+    public void MissingChecksum_MessageCorrupted_Marks()
     {
         var view = CreateView(
             Body,
@@ -115,7 +115,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void UnsupportedDigest_MarksMessageCorrupted()
+    public void UnsupportedDigest_MessageCorrupted_Marks()
     {
         var view = CreateView(
             Body,
@@ -128,7 +128,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void InvalidGzipBody_MarksMessageCorruptedAndRetainsCompressedBytes()
+    public void InvalidGzipBody_CorruptedMessage_MarksAndRetainsCompressedBytes()
     {
         var view = CreateView(
             Body,
@@ -140,7 +140,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void UnsupportedEncoding_MarksMessageCorrupted()
+    public void UnsupportedEncoding_CorruptedMessage_Marks()
     {
         var view = CreateView(
             Body,
@@ -152,7 +152,7 @@ public sealed class GrpcMessageViewTests
     }
 
     [Fact]
-    public void Factory_MapsDeliveryAndUserMetadata()
+    public void Factory_DeliveryAndUserMetadata_MapsMetadata()
     {
         var systemProperties = new Proto.SystemProperties
         {

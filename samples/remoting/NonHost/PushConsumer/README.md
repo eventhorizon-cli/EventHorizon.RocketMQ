@@ -19,9 +19,10 @@ for each delivery. It logs every `RemotingMessageView` in the batch. Returning `
 offset only after the entire batch has completed; a real handler should return a retry outcome instead when it cannot
 complete the work and should tolerate duplicate delivery.
 
-The configured group starts at `End` when it has no offset, subscribes to `eventhorizon-test-topic` with the `sample`
-tag filter, and uses bounded handler concurrency. It is intentionally one Consumer role so that registration,
-lifecycle, subscription, and settlement remain visible in one path.
+The configured group starts at `End` when it has no offset, explicitly uses the default
+`RemotingPushQueueAssignmentMode.Client`, subscribes to `eventhorizon-test-topic` with the `sample` tag filter, and uses
+bounded handler concurrency. `PullBatchSize` controls each Broker request. It is intentionally one Consumer role so
+that registration, lifecycle, subscription, and settlement remain visible in one path.
 
 For a normal .NET `IHost`, use the [Generic Host Push Consumer sample](../../GenericHost/PushConsumer/README.md). Its
 host drives the SDK lifecycle; application code must not manually call `IRemotingPushConsumer.StartAsync` or

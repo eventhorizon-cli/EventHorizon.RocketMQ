@@ -13,12 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Producer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 
 namespace EventHorizon.RocketMQ.Samples.Remoting.Admin;
 
 internal sealed record AdminQueueResponse(string Topic, string BrokerName, int QueueId)
 {
-    internal static AdminQueueResponse From(RemotingMessageQueue queue) =>
+    internal static AdminQueueResponse From(RemotingConsumerQueue queue) =>
         new(queue.Topic, queue.BrokerName, queue.QueueId);
 }

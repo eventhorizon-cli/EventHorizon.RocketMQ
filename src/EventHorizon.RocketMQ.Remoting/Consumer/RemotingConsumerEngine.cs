@@ -41,6 +41,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     private readonly TimeProvider _timeProvider;
     private readonly IRemotingRocketMQTelemetry _telemetry;
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
+    private readonly ConcurrentDictionary<RemotingConsumerQueue, long> _preferredBrokerIds = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private int _started;
     private int _disposed;
@@ -101,7 +102,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         }
     }
 
-    public async Task<IReadOnlyList<RemotingPullMessageQueue>> GetMessageQueuesAsync(
+    public async Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default)
     {
@@ -111,7 +112,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         var route = await _routes.GetAsync(
             GetWireTopic(logicalTopic),
             cancellationToken: cancellationToken).ConfigureAwait(false);
-        var queues = new List<RemotingPullMessageQueue>();
+        var queues = new List<RemotingConsumerQueue>();
         foreach (var queueData in route.QueueDatas
                      .Where(static queue => (queue.Perm & ReadPermission) == ReadPermission)
                      .OrderBy(static queue => queue.BrokerName, StringComparer.Ordinal))
@@ -124,7 +125,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
 
             for (var queueId = 0; queueId < queueData.ReadQueueNums; queueId++)
             {
-                queues.Add(new RemotingPullMessageQueue(
+                queues.Add(new RemotingConsumerQueue(
                     logicalTopic,
                     queueId,
                     queueData.BrokerName,
@@ -136,7 +137,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     }
 
     public async Task<RemotingPullResult> PullAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         long offset,
         int? maxMessages = null,
         CancellationToken cancellationToken = default)
@@ -172,8 +173,12 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
+            var brokerAddress = await ResolveBrokerAddressAsync(
+                queue,
+                useSuggestedBroker: true,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(queue.GetPullBrokerAddress()),
+                EndpointParser.Parse(brokerAddress),
                 request,
                 _clientOptions.RequestTimeout + _settings.LongPollingTimeout + BrokerLongPollingCheckInterval,
                 cancellationToken).ConfigureAwait(false);
@@ -181,7 +186,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
             var suggestedBrokerId = GetInt64(response.ExtFields, "suggestWhichBrokerId", long.MinValue);
             if (suggestedBrokerId != long.MinValue)
             {
-                queue.SetPreferredBrokerId(suggestedBrokerId);
+                _preferredBrokerIds[queue] = suggestedBrokerId;
             }
 
             var status = response.Code switch
@@ -240,7 +245,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     }
 
     public async Task<long> GetOffsetAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CancellationToken cancellationToken = default)
     {
         EnsureStarted();
@@ -266,7 +271,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     }
 
     public async Task UpdateOffsetAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         long offset,
         CancellationToken cancellationToken = default)
     {
@@ -304,21 +309,21 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     }
 
     public async Task<long> QueryOffsetAsync(
-        RemotingPullMessageQueue queue,
-        QueryOffsetPolicy policy,
+        RemotingConsumerQueue queue,
+        ConsumeFromPosition position,
         DateTimeOffset? timestamp = null,
         CancellationToken cancellationToken = default)
     {
         EnsureStarted();
-        if (policy == QueryOffsetPolicy.Timestamp && timestamp is null)
+        if (position == ConsumeFromPosition.Timestamp && timestamp is null)
         {
             throw new ArgumentException("A timestamp is required for timestamp-based offset queries.", nameof(timestamp));
         }
 
-        var requestCode = policy switch
+        var requestCode = position switch
         {
-            QueryOffsetPolicy.End => RequestCode.GetMaxOffset,
-            QueryOffsetPolicy.Timestamp => RequestCode.SearchOffsetByTimestamp,
+            ConsumeFromPosition.End => RequestCode.GetMaxOffset,
+            ConsumeFromPosition.Timestamp => RequestCode.SearchOffsetByTimestamp,
             _ => RequestCode.GetMinOffset
         };
         var response = await InvokeOffsetAsync(
@@ -337,7 +342,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
     }
 
     public async Task SendBackAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         RemotingMessageView message,
         int delayLevel,
         int maxReconsumeTimes,
@@ -353,8 +358,12 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
             message.Properties);
         try
         {
+            var brokerAddress = await ResolveBrokerAddressAsync(
+                queue,
+                useSuggestedBroker: false,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                GetBrokerEndpoint(queue),
+                EndpointParser.Parse(brokerAddress),
                 new RemotingCommand(RequestCode.ConsumerSendMsgBack, new ConsumerSendMessageBackRequestHeader
                 {
                     Offset = message.CommitLogOffset,
@@ -411,19 +420,54 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
         }
     }
 
-    private Task<RemotingCommand> InvokeOffsetAsync(
+    private async Task<RemotingCommand> InvokeOffsetAsync(
         int requestCode,
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CommandCustomHeader header,
-        CancellationToken cancellationToken) =>
-        _remotingClient.InvokeAsync(
-            GetBrokerEndpoint(queue),
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        var brokerAddress = await ResolveBrokerAddressAsync(
+            queue,
+            useSuggestedBroker: false,
+            cancellationToken).ConfigureAwait(false);
+        return await _remotingClient.InvokeAsync(
+            EndpointParser.Parse(brokerAddress),
             new RemotingCommand(requestCode, header),
             _clientOptions.RequestTimeout,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+    }
 
-    private static System.Net.EndPoint GetBrokerEndpoint(RemotingPullMessageQueue queue) =>
-        EndpointParser.Parse(queue.BrokerAddress);
+    private async Task<string> ResolveBrokerAddressAsync(
+        RemotingConsumerQueue queue,
+        bool useSuggestedBroker,
+        CancellationToken cancellationToken)
+    {
+        var route = await _routes.GetAsync(
+            GetWireTopic(queue.Topic),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        var broker = route.BrokerDatas.FirstOrDefault(value =>
+            string.Equals(value.BrokerName, queue.BrokerName, StringComparison.Ordinal));
+        var brokerAddresses = broker is { BrokerAddrs.Count: > 0 }
+            ? broker.BrokerAddrs
+            : queue.BrokerAddresses;
+        if (brokerAddresses.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No current or previously resolved route for topic '{queue.Topic}' contains Broker '{queue.BrokerName}'.");
+        }
+
+        if (useSuggestedBroker &&
+            _preferredBrokerIds.TryGetValue(queue, out var preferredBrokerId) &&
+            brokerAddresses.TryGetValue(preferredBrokerId, out var preferredAddress))
+        {
+            return preferredAddress;
+        }
+
+        return brokerAddresses.TryGetValue(0, out var masterAddress)
+            ? masterAddress
+            : brokerAddresses.OrderBy(static entry => entry.Key).First().Value;
+    }
 
     private static void EnsureSuccess(RemotingCommand response, string operation)
     {

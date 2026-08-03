@@ -15,16 +15,14 @@
 | 角色 | 公共 API | 核心工作流 | 项目 |
 | --- | --- | --- | --- |
 | Producer | `IRemotingProducer` | 启动、构造并发送一条带 tag 的消息、检查结果状态、停止。 | `Producer` |
-| Pull Consumer | `IRemotingPullConsumer` | 启动、发现物理队列、为每个队列解析并持久化位点、拉取并处理消息、停止。 | `PullConsumer` |
 | Lite Pull Consumer | `IRemotingLitePullConsumer` | 启动、轮询 SDK 分配的队列、处理消息、提交本地位置、停止。 | `LitePullConsumer` |
 | Push Consumer | `IRemotingPushConsumer` | 启动、由 SDK 分发到 scoped handler、处理后返回 `Success`、停止。 | `PushConsumer` |
-| POP Consumer | `IRemotingPopConsumer` | 启动、选择物理队列、POP 消息、处理后确认每个 receipt、停止。 | `PopConsumer` |
 
 Consumer 会持续运行到按下 Ctrl+C。Ctrl+C token 被取消后，关闭路径刻意使用 `CancellationToken.None`，这样 `StopAsync`
 仍能优雅完成。Producer 发送一条消息后即退出。
 
-这些直接工作流保持分离：Pull 由应用负责队列和位点协调；Lite Pull 基于 SDK 分配但仍由调用方负责 poll 和 commit；Push
-由 SDK 负责 handler 分发和重试；POP 由应用负责 receipt 结算。各项目不会用共享的示例抽象掩盖这些协议专用职责。
+这些工作流保持分离：Lite Pull 由调用方基于 SDK 管理或手工分配执行 poll 和 commit；Push 则由 SDK 负责分配、接收、
+handler 分发和结算。各项目不会用共享的示例抽象掩盖这些协议专用职责。
 
 ## 运行项目
 
@@ -38,17 +36,16 @@ docker compose -f test-environments/rocketmq/compose.yaml up -d --wait
 
 ```shell
 dotnet run --project samples/remoting/NonHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.Producer.csproj
-dotnet run --project samples/remoting/NonHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PullConsumer.csproj
 dotnet run --project samples/remoting/NonHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.LitePullConsumer.csproj
 dotnet run --project samples/remoting/NonHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PushConsumer.csproj
-dotnet run --project samples/remoting/NonHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PopConsumer.csproj
 ```
 
 每个项目默认使用 `localhost:9876`，并接受标准 .NET 配置覆盖，例如
 `RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`。外部环境必须公开 NameServer 和路由发现返回的所有 Broker
 端点，创建 `eventhorizon-test-topic`，并授予相应 Producer 或 Consumer 权限。
 
-关于 Generic Host 对应示例和每个角色的投递契约，参见 [Remoting Producer](../GenericHost/Producer/README.zh-CN.md)、
-[Pull Consumer](../GenericHost/PullConsumer/README.zh-CN.md)、[Lite Pull Consumer](../GenericHost/LitePullConsumer/README.zh-CN.md)、
-[Push Consumer](../GenericHost/PushConsumer/README.zh-CN.md)、[POP Consumer](../GenericHost/PopConsumer/README.zh-CN.md)，以及
+关于 Generic Host 对应示例和每个角色的投递契约，参见
+[Remoting Producer](../GenericHost/Producer/README.zh-CN.md)、
+[Lite Pull Consumer](../GenericHost/LitePullConsumer/README.zh-CN.md)、
+[Push Consumer](../GenericHost/PushConsumer/README.zh-CN.md)，以及
 [Remoting 协议指南](../../../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

@@ -70,22 +70,22 @@ gRPC Push 和 LitePush 都依靠客户端主动查询分配结果并执行长轮
 | 指定队列、队列选择器、批量发送和单向发送 | ✅ | 均由 `IRemotingProducer` 提供。 |
 | 事务消息、延迟消息撤回和请求-响应 | ✅ | 需要 Broker 支持相应功能。 |
 | 只读 Admin API | ✅ | `IRemotingAdmin` 查询队列、消息和位点。 |
-| PullConsumer | ✅ | 可显式指定队列和位点，并支持 Tag 或 SQL 过滤。 |
-| LitePullConsumer | ✅ | 由客户端完成轮询、队列分配、seek、暂停/恢复和提交；目前仅支持集群消费。 |
-| POPConsumer | ✅ | 可显式选择队列、使用 receipt 确认消息并续期不可见时长；仅适用于普通 topic。 |
-| PushConsumer | ✅ | 支持集群或广播模式、可部分确认前缀的并发批量回调或单消息 FIFO 分发、运行时订阅、重试和死信处理。 |
+| LitePullConsumer | ✅ | 应用从 SDK 后台接收的本地缓存轮询消息，支持订阅或手工分配、seek、暂停/恢复和提交；目前仅支持集群消费。 |
+| PushConsumer | ✅ | 支持客户端分配的集群或广播消费、可选的 Broker-assigned 并发集群 PULL/POP、可部分确认前缀的并发批量回调或单消息 FIFO 分发、运行时订阅、重试和死信处理。 |
 | Microsoft DI、Options、日志、Generic Host 生命周期，以及默认或 keyed 客户端注册 | ✅ | 使用 `AddRocketMQRemoting` 注册。 |
 | OpenTelemetry tracing 和 metrics | ✅ | 使用 `AddRocketMQRemotingInstrumentation` 注册；SDK processor 和 exporter 由应用选择。 |
 
-经典 Push 同样由客户端发起长轮询。SQL 过滤需要 Broker 启用相应配置；POP 则要求 Broker 支持该功能。
-每个协议 Package 都有各自的 `RocketMQClientException` 基类。
+经典 Push 同样由客户端发起长轮询。`QueueAssignmentMode` 默认为使用 PULL 的 `Client`；可选的 `Broker` 值可以按
+assignment 返回 PULL 或 POP，但要求运维侧准备兼容的 Broker 配置。POP 是 Push 的内部接收模式，不是独立的
+公开 Consumer。SQL 过滤同样需要 Broker 启用相应配置。每个协议 Package 都有各自的
+`RocketMQClientException` 基类。
 
 ## Packages
 
 | Package | 连接目标 | 主要 API | 文档 |
 | --- | --- | --- | --- |
 | `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer`、`IGrpcLitePushConsumer` | [gRPC 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md) |
-| `EventHorizon.RocketMQ.Remoting` | NameServer 和 Broker | `IRemotingProducer`、`IRemotingAdmin`、`IRemotingPullConsumer`、`IRemotingLitePullConsumer`、`IRemotingPopConsumer`、`IRemotingPushConsumer` | [Remoting 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md) |
+| `EventHorizon.RocketMQ.Remoting` | NameServer 和 Broker | `IRemotingProducer`、`IRemotingAdmin`、`IRemotingLitePullConsumer`、`IRemotingPushConsumer` | [Remoting 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md) |
 
 应用只需安装实际使用的协议 Package。两个协议 Package 在客户端 API 层面都完全自包含：公开模型位于
 各自的程序集，不依赖其他 EventHorizon.RocketMQ Package。

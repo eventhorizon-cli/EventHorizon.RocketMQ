@@ -31,10 +31,8 @@ internal readonly record struct RemotingRocketMQRoleKey(
     {
         RemotingRocketMQRole.Admin => "remoting administrator",
         RemotingRocketMQRole.Producer => "remoting producer",
-        RemotingRocketMQRole.PullConsumer => "remoting pull consumer",
         RemotingRocketMQRole.LitePullConsumer => "remoting lite pull consumer",
         RemotingRocketMQRole.PushConsumer => "remoting push consumer",
-        RemotingRocketMQRole.PopConsumer => "remoting POP consumer",
         _ => Role.ToString()
     };
 
@@ -42,10 +40,8 @@ internal readonly record struct RemotingRocketMQRoleKey(
     {
         RemotingRocketMQRole.Admin => "remoting-admin",
         RemotingRocketMQRole.Producer => "remoting-producer",
-        RemotingRocketMQRole.PullConsumer => "remoting-pull-consumer",
         RemotingRocketMQRole.LitePullConsumer => "remoting-lite-pull-consumer",
         RemotingRocketMQRole.PushConsumer => "remoting-push-consumer",
-        RemotingRocketMQRole.PopConsumer => "remoting-pop-consumer",
         _ => Role.ToString().ToLowerInvariant()
     };
 

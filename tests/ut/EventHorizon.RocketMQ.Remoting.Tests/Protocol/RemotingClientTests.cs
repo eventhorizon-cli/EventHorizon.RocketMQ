@@ -32,7 +32,7 @@ public sealed class RemotingClientTests
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(5);
 
     [Fact]
-    public async Task InvokeAsync_RoundTripsFragmentedResponse()
+    public async Task InvokeAsync_FragmentedResponse_RoundTrip()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -65,7 +65,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task InvokeAsync_RoundTripsLargeFrameOverNetworkStream()
+    public async Task InvokeAsync_LargeFrameOverNetworkStream_RoundTrip()
     {
         const int BodyLength = 512 * 1024;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -117,7 +117,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task InvokeAsync_UsesTlsWithLocalhostSni()
+    public async Task InvokeAsync_TlsWithLocalhostSni_UsesSecureChannel()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -178,7 +178,7 @@ public sealed class RemotingClientTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task InvokeAsync_CancelsWhileTlsHandshakeIsStalled(bool callerCancellation)
+    public async Task InvokeAsync_TlsHandshakeStalled_CancelsRequest(bool callerCancellation)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -212,7 +212,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task StalledTlsHandshake_DoesNotBlockDifferentEndpoint()
+    public async Task StalledTlsHandshake_DifferentEndpoint_DoesNotBlock()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var stalledServer = new LoopbackServer(cancellationToken);
@@ -279,7 +279,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task DisposeAsync_CancelsStalledTlsHandshakeWithInfiniteRequestTimeout()
+    public async Task DisposeAsync_StalledTlsHandshakeWithInfiniteRequestTimeout_Cancels()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -337,7 +337,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task ConcurrentRequests_PreserveFramesAndMatchOutOfOrderResponses()
+    public async Task ConcurrentRequests_FramesAndMatchOutOfOrderResponses_PreservesFramesAndMatching()
     {
         const int requestCount = 16;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -393,7 +393,7 @@ public sealed class RemotingClientTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task CanceledRequest_IsRemovedAndLateResponseDoesNotBlockNextRequest(bool callerCancellation)
+    public async Task CanceledRequest_LateResponse_DoesNotBlockNextRequest(bool callerCancellation)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -454,7 +454,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task InvokeAsync_ReturnsResponseReceivedBeforePeerClosesDuringSend()
+    public async Task InvokeAsync_ResponseBeforePeerClose_ReturnsResponse()
     {
         const int BodyLength = 8 * 1024 * 1024;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -492,7 +492,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task RemoteDisconnect_FailsPendingRequestAndNextRequestReconnects()
+    public async Task RemoteDisconnect_PendingRequestAndNextRequest_FailsAndReconnects()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -539,7 +539,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task PartialResponseFrame_FailsPendingRequestImmediately()
+    public async Task PartialResponseFrame_PendingRequestImmediately_FailsPendingRequest()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
@@ -616,7 +616,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task BrokerOnewayRequest_InvokesRegisteredHandlerWithoutWritingResponse()
+    public async Task BrokerOnewayRequest_RegisteredHandlerWithoutWritingResponse_Invokes()
     {
         const int BrokerRequestCode = 1201;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -662,7 +662,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task UnknownBrokerRequest_ReturnsNotSupportedResponse()
+    public async Task UnknownBrokerRequest_NotSupportedResponse_ReturnsNotSupportedResponse()
     {
         const int UnknownRequestCode = 1202;
         const int BrokerOpaque = 7002;
@@ -700,7 +700,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task UnsupportedTransactionStateCheck_IsIgnoredWithoutWritingResponse()
+    public async Task UnsupportedTransactionStateCheck_WithoutWritingResponse_IsIgnored()
     {
         const int BrokerOpaque = 7006;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -736,7 +736,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task UnsupportedOnewayBrokerRequest_IsIgnoredWithoutWritingResponse()
+    public async Task UnsupportedOnewayBrokerRequest_WithoutWritingResponse_IsIgnored()
     {
         const int UnknownRequestCode = 1206;
         const int BrokerOpaque = 7007;
@@ -773,7 +773,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task DisposedBrokerRequestHandler_ReturnsNotSupportedResponse()
+    public async Task DisposedBrokerRequestHandler_NotSupportedResponse_ReturnsNotSupportedResponse()
     {
         const int BrokerRequestCode = 1207;
         const int BrokerOpaque = 7008;
@@ -812,7 +812,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task MultipleBrokerRequestHandlers_UseFirstHandledResponse()
+    public async Task MultipleBrokerRequestHandlers_FirstHandledResponse_UsesFirstHandler()
     {
         const int BrokerRequestCode = 1208;
         const int BrokerOpaque = 7009;
@@ -865,7 +865,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task TransactionStateHandlerWithoutResponse_SuppressesResponse()
+    public async Task TransactionStateHandlerWithoutResponse_Response_Suppresses()
     {
         const int BrokerOpaque = 7010;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -910,7 +910,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task SyncHandlerWithoutResponse_ReturnsErrorInsteadOfTimingOut()
+    public async Task SyncHandlerWithoutResponse_ErrorInsteadOfTimingOut_ReturnsErrorWithoutTimeout()
     {
         const int BrokerRequestCode = 1205;
         const int BrokerOpaque = 7005;
@@ -949,7 +949,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task SlowBrokerRequestHandler_DoesNotBlockNormalResponse()
+    public async Task SlowBrokerRequestHandler_NormalResponse_DoesNotBlock()
     {
         const int BrokerRequestCode = 1203;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -997,7 +997,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task FullInboundRequestQueue_ReturnsSystemBusyResponse()
+    public async Task FullInboundRequestQueue_SystemBusyResponse_ReturnsSystemBusyResponse()
     {
         const int BrokerRequestCode = 1209;
         const int InitialBrokerOpaque = 8000;
@@ -1054,7 +1054,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task ThrowingBrokerRequestHandler_ReturnsErrorAndKeepsConnectionUsable()
+    public async Task ThrowingBrokerRequestHandler_ErrorAndConnectionUsable_ReturnsAndKeeps()
     {
         const int BrokerRequestCode = 1204;
         const int BrokerOpaque = 7004;
@@ -1107,7 +1107,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task InvokeOnewayAsync_SetsOnewayFlagAndWritesCompleteFrame()
+    public async Task InvokeOnewayAsync_OnewayFlagAndCompleteFrame_SetsAndWrites()
     {
         const int OnewayFlag = 1 << 1;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -1136,7 +1136,7 @@ public sealed class RemotingClientTests
     }
 
     [Fact]
-    public async Task DisposeAsync_IsIdempotentAndRejectsFurtherRequests()
+    public async Task DisposeAsync_RepeatedCalls_RemainsIdempotentAndRejectsRequests()
     {
         var client = CreateClient();
 

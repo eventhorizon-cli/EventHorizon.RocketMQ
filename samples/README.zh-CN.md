@@ -11,7 +11,7 @@
 
 - **gRPC** 通过 `GrpcClientOptions.Endpoint` 连接 RocketMQ 5 Proxy。适用于 Proxy 部署和 RocketMQ 5 gRPC 消息模型。
 - **classic Remoting** 通过 `RemotingClientOptions.NamesrvAddr` 发现 Broker，再直连路由中公布的端点。适用于 classic
-  部署，以及需要物理队列、位点、POP 或 classic Producer 操作的场景。
+  部署、由应用驱动定位的 LitePull、由 SDK 驱动的 Push 消费，以及 classic Producer 操作。
 
 示例不会用传输无关的包装层隐藏这些差异。应先根据部署实际公开的协议进行选择。
 
@@ -43,10 +43,8 @@ gRPC Push 仍由客户端发起长轮询，不是 Broker 主动建立的网络 P
 | --- | --- | --- |
 | [GenericHost：Producer](remoting/GenericHost/Producer/README.zh-CN.md) | `IRemotingProducer` | 应用通过 NameServer/Broker Remoting 发布，或需要 classic 的选队列、批量、单向、事务、撤回和请求/响应操作。 |
 | [GenericHost：Admin](remoting/GenericHost/Admin/README.zh-CN.md) | `IRemotingAdmin` | 只读工具需要检查物理队列、位点边界、已提交位置或存储消息。 |
-| [GenericHost：Pull Consumer](remoting/GenericHost/PullConsumer/README.zh-CN.md) | `IRemotingPullConsumer` | 应用负责选择物理队列、请求位点、处理和提交。 |
-| [GenericHost：Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | SDK 负责队列分配，但应用代码负责轮询和提交。 |
-| [GenericHost：POP Consumer](remoting/GenericHost/PopConsumer/README.zh-CN.md) | `IRemotingPopConsumer` | 工作通过逐消息 receipt 和不可见期结算，而不是提交队列位点。 |
-| [GenericHost：Push Consumer](remoting/GenericHost/PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | SDK 负责队列分配、长轮询、公平并发分发、重试结算和位点持久化。 |
+| [GenericHost：Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | 应用在 SDK 管理的订阅或显式手工队列分配上执行轮询和提交。 |
+| [GenericHost：Push Consumer](remoting/GenericHost/PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | SDK 负责客户端或 Broker 分配、PULL 或 POP 接收、分发、结算与进度。 |
 | [NonHost 集合](remoting/NonHost/README.zh-CN.md) | 所有受生命周期管理的角色 | 未运行 Generic Host 的进程显式启动和停止选定的 Remoting 角色。 |
 
 Remoting Push 同样使用客户端发起的长轮询。同一个集群 group 内的 Consumer 会分摊 Broker 物理队列；不同 group 会
@@ -97,8 +95,8 @@ SDK 自己的连接与角色 options 使用协议专用的 `RocketMQ` 配置节�
 ## 覆盖边界
 
 每个项目演示一条完整连贯的端到端工作流，而不是每个 overload。需要不同资源、协作端或真实处理时机的高级路径会先留在
-协议指南中，直到它们值得拥有独立的可运行示例，例如 Producer 事务与请求/响应、运行时订阅变更、手动分配与 seek、
-延长不可见期，以及其他 Push 投递模式。
+协议指南中，直到它们值得拥有独立的可运行示例，例如 Producer 事务与请求/响应、运行时订阅变更、LitePull 手工分配与
+seek，以及由运维选择 Broker 侧 POP 请求模式。
 
 完整公共 API 请参阅 [gRPC 指南](../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)和
 [Remoting 指南](../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

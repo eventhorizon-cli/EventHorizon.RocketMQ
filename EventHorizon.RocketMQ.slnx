@@ -31,16 +31,12 @@
   <Folder Name="/samples/remoting/GenericHost/">
     <Project Path="samples/remoting/GenericHost/Admin/EventHorizon.RocketMQ.Samples.Remoting.Admin.csproj" />
     <Project Path="samples/remoting/GenericHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.LitePullConsumer.csproj" />
-    <Project Path="samples/remoting/GenericHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.PopConsumer.csproj" />
     <Project Path="samples/remoting/GenericHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.Producer.csproj" />
-    <Project Path="samples/remoting/GenericHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.PullConsumer.csproj" />
     <Project Path="samples/remoting/GenericHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.PushConsumer.csproj" />
   </Folder>
   <Folder Name="/samples/remoting/NonHost/">
     <Project Path="samples/remoting/NonHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.LitePullConsumer.csproj" />
-    <Project Path="samples/remoting/NonHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PopConsumer.csproj" />
     <Project Path="samples/remoting/NonHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.Producer.csproj" />
-    <Project Path="samples/remoting/NonHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PullConsumer.csproj" />
     <Project Path="samples/remoting/NonHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PushConsumer.csproj" />
   </Folder>
   <Folder Name="/src/">

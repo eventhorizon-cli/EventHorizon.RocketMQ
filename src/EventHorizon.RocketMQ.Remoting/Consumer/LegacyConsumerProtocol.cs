@@ -14,8 +14,8 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Newtonsoft.Json;
 
@@ -23,6 +23,104 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
 internal static class LegacyConsumerProtocol
 {
+    public static byte[] EncodeQueryAssignment(
+        string topic,
+        string consumerGroup,
+        string clientId,
+        string strategyName = "AVG")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroup);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(strategyName);
+        return Encoding.UTF8.GetBytes(new QueryAssignmentRequestBody
+        {
+            Topic = topic,
+            ConsumerGroup = consumerGroup,
+            ClientId = clientId,
+            StrategyName = strategyName,
+            MessageModel = "CLUSTERING"
+        }.ToJson());
+    }
+
+    public static RemotingPushAssignmentUpdate DecodeQueryAssignment(byte[]? body)
+    {
+        if (body is not { Length: > 0 })
+        {
+            return new RemotingPushAssignmentUpdate(false, []);
+        }
+
+        QueryAssignmentResponseBody response;
+        try
+        {
+            response = Encoding.UTF8.GetString(body).FromJson<QueryAssignmentResponseBody>() ??
+                       throw new InvalidDataException("Broker assignment response is null.");
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException)
+        {
+            throw new InvalidDataException("Broker assignment response is malformed.", exception);
+        }
+
+        if (response.MessageQueueAssignments is null)
+        {
+            return new RemotingPushAssignmentUpdate(false, []);
+        }
+
+        var assignments = new List<RemotingPushAssignment>(response.MessageQueueAssignments.Length);
+        var identities = new HashSet<(string Topic, string BrokerName, int QueueId)>();
+        foreach (var value in response.MessageQueueAssignments)
+        {
+            var queue = value?.MessageQueue ?? throw new InvalidDataException(
+                "Broker assignment response contains an assignment without a message queue.");
+            if (string.IsNullOrWhiteSpace(queue.Topic) || string.IsNullOrWhiteSpace(queue.BrokerName))
+            {
+                throw new InvalidDataException("Broker assignment response contains an incomplete message queue.");
+            }
+
+            var mode = value!.Mode switch
+            {
+                null or "" or "PULL" => RemotingPushReceiveMode.Pull,
+                "POP" => RemotingPushReceiveMode.Pop,
+                _ => throw new InvalidDataException(
+                    $"Broker assignment response contains unsupported receive mode '{value.Mode}'.")
+            };
+            if (queue.QueueId < 0 && (queue.QueueId != -1 || mode != RemotingPushReceiveMode.Pop))
+            {
+                throw new InvalidDataException(
+                    $"Broker assignment response contains invalid queue ID {queue.QueueId} for {mode} mode.");
+            }
+
+            if (!identities.Add((queue.Topic, queue.BrokerName, queue.QueueId)))
+            {
+                throw new InvalidDataException(
+                    $"Broker assignment response contains duplicate queue '{queue.Topic}/{queue.BrokerName}/{queue.QueueId}'.");
+            }
+
+            var attachments = value.Attachments is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : new Dictionary<string, string>(value.Attachments, StringComparer.Ordinal);
+            assignments.Add(new RemotingPushAssignment(
+                queue.Topic,
+                queue.BrokerName,
+                queue.QueueId,
+                mode,
+                attachments));
+        }
+
+        return new RemotingPushAssignmentUpdate(
+            true,
+            assignments
+                .OrderBy(static value => value.Topic, StringComparer.Ordinal)
+                .ThenBy(static value => value.BrokerName, StringComparer.Ordinal)
+                .ThenBy(static value => value.QueueId)
+                .ThenBy(static value => value.Mode)
+                .ToArray());
+    }
+
     public static byte[] EncodeHeartbeat(
         string clientId,
         string groupName,
@@ -106,14 +204,14 @@ internal static class LegacyConsumerProtocol
             .ToArray() ?? Array.Empty<string>();
     }
 
-    public static IReadOnlyList<RemotingPullMessageQueue> Allocate(
-        IReadOnlyList<RemotingPullMessageQueue> queues,
+    public static IReadOnlyList<RemotingConsumerQueue> Allocate(
+        IReadOnlyList<RemotingConsumerQueue> queues,
         IReadOnlyList<string> consumerIds,
         string currentConsumerId)
     {
         if (queues.Count == 0 || consumerIds.Count == 0)
         {
-            return Array.Empty<RemotingPullMessageQueue>();
+            return Array.Empty<RemotingConsumerQueue>();
         }
 
         var orderedConsumers = consumerIds
@@ -123,7 +221,7 @@ internal static class LegacyConsumerProtocol
         var index = Array.IndexOf(orderedConsumers, currentConsumerId);
         if (index < 0)
         {
-            return Array.Empty<RemotingPullMessageQueue>();
+            return Array.Empty<RemotingConsumerQueue>();
         }
 
         var orderedQueues = queues
@@ -142,7 +240,7 @@ internal static class LegacyConsumerProtocol
             : index * averageSize + remainder;
         var range = Math.Min(averageSize, orderedQueues.Length - startIndex);
         return range <= 0
-            ? Array.Empty<RemotingPullMessageQueue>()
+            ? Array.Empty<RemotingConsumerQueue>()
             : orderedQueues.AsSpan(startIndex, range).ToArray();
     }
 
@@ -212,5 +310,33 @@ internal static class LegacyConsumerProtocol
     private sealed class GetConsumerListByGroupResponseBody
     {
         public string[]? ConsumerIdList { get; init; }
+    }
+
+    private sealed class QueryAssignmentRequestBody
+    {
+        public string Topic { get; init; } = string.Empty;
+        public string ConsumerGroup { get; init; } = string.Empty;
+        public string ClientId { get; init; } = string.Empty;
+        public string StrategyName { get; init; } = string.Empty;
+        public string MessageModel { get; init; } = string.Empty;
+    }
+
+    private sealed class QueryAssignmentResponseBody
+    {
+        public MessageQueueAssignmentBody?[]? MessageQueueAssignments { get; init; }
+    }
+
+    private sealed class MessageQueueAssignmentBody
+    {
+        public MessageQueueBody? MessageQueue { get; init; }
+        public string? Mode { get; init; }
+        public Dictionary<string, string>? Attachments { get; init; }
+    }
+
+    private sealed class MessageQueueBody
+    {
+        public string Topic { get; init; } = string.Empty;
+        public string BrokerName { get; init; } = string.Empty;
+        public int QueueId { get; init; }
     }
 }

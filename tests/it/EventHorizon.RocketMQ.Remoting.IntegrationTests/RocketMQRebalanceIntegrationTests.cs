@@ -17,7 +17,6 @@ using System.Collections.Concurrent;
 using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Producer;
@@ -44,7 +43,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task PushConsumersUnderOneRegistrationRebalanceAfterMemberStops()
+    public async Task PushConsumers_MemberStops_Rebalances()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var scope = await _fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
@@ -238,7 +237,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LitePullConsumersUnderOneRegistrationRebalanceAfterMemberStops()
+    public async Task LitePullConsumers_MemberStops_Rebalances()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var scope = await _fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
@@ -326,7 +325,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
         options.GroupName = group;
         options.InitialPosition = ConsumeFromPosition.Beginning;
         options.MaxConcurrency = 1;
-        options.BatchSize = 1;
+        options.PullBatchSize = 1;
         options.ConsumeMessageBatchSize = 1;
         options.LongPollingTimeout = TimeSpan.FromSeconds(1);
         options.RetryDelay = TimeSpan.FromMilliseconds(100);
@@ -340,7 +339,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
         string tag)
     {
         options.GroupName = group;
-        options.InitialOffset = QueryOffsetPolicy.Beginning;
+        options.InitialPosition = ConsumeFromPosition.Beginning;
         options.LongPollingTimeout = TimeSpan.FromSeconds(1);
         options.Subscribe(topic, new FilterExpression(tag));
     }
@@ -474,7 +473,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
         return $"expected=[{expected}], first=[{first}], second=[{second}]";
     }
 
-    private static string QueueKey(RemotingPullMessageQueue queue)
+    private static string QueueKey(RemotingConsumerQueue queue)
     {
         return $"{queue.Topic}/{queue.BrokerName}/{queue.QueueId}";
     }

@@ -81,7 +81,7 @@ internal static class Program
             options.ConsumeOrderly = hostOptions.ConsumeOrderly;
             options.InitialPosition = ConsumeFromPosition.Beginning;
             options.MaxConcurrency = 1;
-            options.BatchSize = 1;
+            options.PullBatchSize = 1;
             options.ConsumeMessageBatchSize = 1;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.RetryDelay = TimeSpan.FromMilliseconds(100);

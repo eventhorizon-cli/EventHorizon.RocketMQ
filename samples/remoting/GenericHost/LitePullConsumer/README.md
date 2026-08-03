@@ -2,9 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`IRemotingLitePullConsumer` combines caller-driven polling with client-managed queue assignment. In subscription
-mode, the SDK participates in classic clustered consumer-group allocation and long-polls the queues assigned to this
-consumer. The application still decides when to call `PollAsync`, how to process each result, and when to commit.
+`IRemotingLitePullConsumer` combines caller-driven polling with SDK-managed receive loops. In subscription mode, the
+SDK participates in classic clustered consumer-group allocation, long-polls each assigned queue in the background,
+and places messages in a bounded local buffer. The application decides when to call `PollAsync`, how to process the
+returned messages, and when to commit delivered positions.
 
 This is the classic Remoting Lite Pull model. It is unrelated to the RocketMQ 5 gRPC LitePush protocol and is not
 protocol-level Broker push.
@@ -15,9 +16,9 @@ Choose Lite Pull when an application wants a polling API and control over proces
 implement clustered queue allocation itself. It fits batch pipelines, controlled ingestion loops, and applications
 that need to pause, resume, or seek assigned queues.
 
-Prefer the lower-level Pull Consumer when an external system owns physical queue allocation or exact request offsets.
-Prefer Push Consumer when the SDK should also own the receive loop, concurrent dispatch, and retry settlement. Lite
-Pull currently supports clustering only; use Push Consumer broadcasting when every instance must consume every queue.
+Use manual assignment, `Seek`, and explicit commits when an external system owns physical queue allocation or exact
+positions. Prefer Push Consumer when the SDK should also own application dispatch, retries, and settlement. Lite Pull
+currently supports clustering only; use Push Consumer broadcasting when every instance must consume every queue.
 
 Subscription mode and manual-assignment mode are mutually exclusive. Use subscription mode for normal consumer-group
 load balancing. Use manual mode only when the application deliberately selects queues and accepts responsibility for
@@ -40,22 +41,25 @@ topic, while inconsistent filters can make accepted messages depend on the curre
 
 The subscription-mode processing loop is:
 
-1. Call `PollAsync` to long-poll the next active assigned queue.
-2. Process the `RemotingPullResult.Messages`.
+1. Let the SDK background receivers fill the bounded local buffer for assigned queues.
+2. Call `PollAsync` and process the returned `IReadOnlyList<RemotingMessageView>`.
 3. Call `CommitAsync()` to persist all current local positions, or `CommitAsync(queue)` for one assigned queue.
 
 Runtime `SubscribeAsync` and `UnsubscribeAsync` change the subscription and trigger assignment reconciliation.
 For manual mode, configure no subscriptions, discover queues with `GetMessageQueuesAsync`, and pass the selected set to
-`AssignAsync`. `Pause`, `Resume`, `Seek`, `SeekToBeginningAsync`, and `SeekToEndAsync` control local polling positions.
+`AssignAsync`. `Pause`, `Resume`, `Seek`, `SeekToBeginningAsync`, `SeekToEndAsync`, and `SeekToTimestampAsync` control
+local polling positions.
 
-`InitialOffset` is consulted only when an assigned queue has no committed group position. Changing it does not reset an
-existing committed offset.
+`InitialPosition` is consulted only when an assigned queue has no committed group position. Changing it does not reset
+an existing committed offset. `PullBatchSize` controls each background Broker request; `MaxCachedMessages` and
+`MaxCachedMessageBytes` bound the shared local buffer. `PollTimeout` controls only how long `PollAsync` waits locally
+when the buffer is empty, independently of `LongPollingTimeout` at the Broker.
 
 ## Positions, failures, and concurrency
 
-`PollAsync` advances the selected queue's **local** position to `NextOffset` before returning; it does not update the
-Broker offset. A processing failure therefore requires the application to retain and retry that result, or to rewind
-the queue with `Seek` before polling past it. Merely omitting `CommitAsync` does not rewind the in-process position.
+`PollAsync` advances the delivered **local** positions before returning; it does not update Broker offsets. A processing
+failure therefore requires the application to retain and retry those messages, or to rewind the affected queue with
+`Seek` before polling past it. Merely omitting `CommitAsync` does not rewind the in-process position.
 
 Commit only after business processing is complete. On restart or reassignment, another consumer resumes from the last
 Broker-committed position, so work completed after that position can be delivered again. Processing must be
@@ -66,9 +70,10 @@ from the same queue is unfinished. `CommitAsync()` covers every assigned queue's
 all work through those positions is complete; otherwise coordinate queue-specific commits and keep polling from
 advancing beyond gaps.
 
-The SDK manages assignment and long polling, but application code owns business retries and the decision to commit.
-Polling or assignment failures do not automatically retry a returned business batch or route it to a dead-letter
-queue.
+The sample disables `EnableAutoCommit` because its application loop commits only after logging the returned messages.
+When auto commit is enabled, the configured interval persists delivered positions; it still never commits messages
+that remain prefetched but have not been returned by `PollAsync`. Application code owns business retries in either
+mode, and failures do not automatically route a returned batch to a dead-letter queue.
 
 ## Run the sample
 

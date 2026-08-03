@@ -37,9 +37,10 @@ services
     .AddRemotingLitePullConsumer(options =>
     {
         options.GroupName = "rocketmq-dotnet-remoting-nonhost-lite-pull-consumer-sample";
-        options.BatchSize = 32;
+        options.PullBatchSize = 32;
         options.LongPollingTimeout = TimeSpan.FromSeconds(5);
-        options.InitialOffset = QueryOffsetPolicy.End;
+        options.InitialPosition = ConsumeFromPosition.End;
+        options.EnableAutoCommit = false;
         options.Subscribe(Topic);
     });
 
@@ -91,9 +92,9 @@ static async Task ConsumeAsync(
     {
         try
         {
-            // Subscription mode polls a queue assigned by the SDK and advances only its local position.
-            var result = await consumer.PollAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            foreach (var message in result.Messages)
+            // Poll reads the SDK's local buffer and advances only delivered local positions.
+            var messages = await consumer.PollAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            foreach (var message in messages)
             {
                 logger.LogInformation(
                     "Received {MessageId} from {Topic}/{BrokerName}/{QueueId} at offset {QueueOffset}: {Body}",

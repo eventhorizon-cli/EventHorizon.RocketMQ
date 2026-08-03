@@ -132,4 +132,33 @@ public sealed class RemotingMessageView
     public DateTimeOffset StoreTimestamp { get; }
 
     internal ActivityContext? ReceiveActivityContext { get; set; }
+
+    internal RemotingMessageView WithTopic(string topic)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        if (string.Equals(Topic, topic, StringComparison.Ordinal))
+        {
+            return this;
+        }
+
+        return new RemotingMessageView(
+            topic,
+            Body,
+            MessageId,
+            OffsetMessageId,
+            Tag,
+            Keys,
+            Properties,
+            DeliveryAttempt,
+            MessageGroup,
+            QueueId,
+            BrokerName,
+            QueueOffset,
+            CommitLogOffset,
+            BornTimestamp,
+            StoreTimestamp)
+        {
+            ReceiveActivityContext = ReceiveActivityContext
+        };
+    }
 }

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using System.Globalization;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 
@@ -24,19 +24,37 @@ internal static class LegacyPopMessageDecoder
 {
     private const string PopCheckpointProperty = "POP_CK";
     private const string RetryTopicProperty = "RETRY_TOPIC";
-    private const string NormalTopicMarker = "0";
     private const string StartOffsetInfoField = "startOffsetInfo";
     private const string MessageOffsetInfoField = "msgOffsetInfo";
     private const string PopTimeField = "popTime";
     private const string InvisibleTimeField = "invisibleTime";
     private const string ReviveQueueIdField = "reviveQid";
-    private const string RetryTopicPrefix = "%RETRY%";
-    private const string DeadLetterTopicPrefix = "%DLQ%";
     private const string LogicalQueueBrokerPrefix = "LOGICAL_QUEUE_MOCK_BROKER_";
 
     public static RemotingPopResult Decode(
         RemotingCommand response,
-        RemotingPullMessageQueue queue,
+        RemotingPushAssignment assignment,
+        string brokerAddress,
+        string? @namespace)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        if (assignment.Mode != RemotingPushReceiveMode.Pop)
+        {
+            throw new ArgumentException("The assignment must use POP receive mode.", nameof(assignment));
+        }
+
+        return Decode(
+            response,
+            assignment.Topic,
+            assignment.BrokerName,
+            assignment.QueueId,
+            brokerAddress,
+            @namespace);
+    }
+
+    public static RemotingPopResult Decode(
+        RemotingCommand response,
+        RemotingConsumerQueue queue,
         string? @namespace = null)
     {
         ArgumentNullException.ThrowIfNull(queue);
@@ -45,12 +63,31 @@ internal static class LegacyPopMessageDecoder
 
     public static RemotingPopResult Decode(
         RemotingCommand response,
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
+        string brokerAddress,
+        string? @namespace)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        return Decode(
+            response,
+            queue.Topic,
+            queue.BrokerName,
+            queue.QueueId,
+            brokerAddress,
+            @namespace);
+    }
+
+    private static RemotingPopResult Decode(
+        RemotingCommand response,
+        string topic,
+        string brokerName,
+        int requestedQueueId,
         string brokerAddress,
         string? @namespace)
     {
         ArgumentNullException.ThrowIfNull(response);
-        ArgumentNullException.ThrowIfNull(queue);
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ArgumentException.ThrowIfNullOrWhiteSpace(brokerName);
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
 
         var restNum = GetRestNum(response);
@@ -59,8 +96,10 @@ internal static class LegacyPopMessageDecoder
             ResponseCodes.ResSuccess => new RemotingPopResult(
                 response.Body is { Length: > 0 }
                     ? DecodeMessages(
-                        LegacyMessageDecoder.Decode(response.Body, queue.BrokerName, @namespace),
-                        queue,
+                        LegacyMessageDecoder.Decode(response.Body, brokerName, @namespace),
+                        topic,
+                        brokerName,
+                        requestedQueueId,
                         brokerAddress,
                         response.ExtFields)
                     : Array.Empty<RemotingPopMessage>(),
@@ -82,7 +121,7 @@ internal static class LegacyPopMessageDecoder
 
     public static IReadOnlyList<RemotingPopMessage> DecodeMessages(
         IReadOnlyList<RemotingMessageView> messages,
-        RemotingPullMessageQueue queue)
+        RemotingConsumerQueue queue)
     {
         ArgumentNullException.ThrowIfNull(queue);
         return DecodeMessages(messages, queue, queue.GetPullBrokerAddress());
@@ -90,36 +129,68 @@ internal static class LegacyPopMessageDecoder
 
     public static IReadOnlyList<RemotingPopMessage> DecodeMessages(
         IReadOnlyList<RemotingMessageView> messages,
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         string brokerAddress)
     {
-        return DecodeMessages(messages, queue, brokerAddress, responseFields: null);
+        ArgumentNullException.ThrowIfNull(queue);
+        return DecodeMessages(
+            messages,
+            queue.Topic,
+            queue.BrokerName,
+            queue.QueueId,
+            brokerAddress,
+            responseFields: null);
     }
 
     private static IReadOnlyList<RemotingPopMessage> DecodeMessages(
         IReadOnlyList<RemotingMessageView> messages,
-        RemotingPullMessageQueue queue,
+        string topic,
+        string brokerName,
+        int requestedQueueId,
         string brokerAddress,
         IReadOnlyDictionary<string, object>? responseFields)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        ArgumentNullException.ThrowIfNull(queue);
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
         if (messages.Count == 0)
         {
             return Array.Empty<RemotingPopMessage>();
         }
 
-        var checkpointOffsets = GetCheckpointOffsets(messages, queue, responseFields);
+        foreach (var message in messages)
+        {
+            EnsureMatchingPhysicalQueue(message, brokerName, requestedQueueId);
+            EnsureSupportedMessage(message);
+        }
+
+        var receiptOffsets = GetReceiptOffsets(messages, brokerName, requestedQueueId, responseFields);
         var result = new RemotingPopMessage[messages.Count];
         for (var index = 0; index < messages.Count; index++)
         {
-            result[index] = DecodeMessage(
-                messages[index],
-                queue,
-                brokerAddress,
-                responseFields,
-                checkpointOffsets?[index]);
+            var message = messages[index].WithTopic(topic);
+            if (message.Properties.TryGetValue(PopCheckpointProperty, out var extraInfo))
+            {
+                if (string.IsNullOrWhiteSpace(extraInfo))
+                {
+                    throw InvalidCheckpoint(message, "must contain exactly eight non-empty fields");
+                }
+
+                result[index] = new RemotingPopMessage(
+                    message,
+                    DecodeReceipt(message, brokerAddress, extraInfo));
+                continue;
+            }
+
+            if (responseFields is null || receiptOffsets is null)
+            {
+                throw new InvalidDataException(
+                    $"POP message '{message.MessageId}' does not contain a valid {PopCheckpointProperty} receipt.");
+            }
+
+            var receiptOffset = receiptOffsets[index];
+            result[index] = new RemotingPopMessage(
+                message,
+                SynthesizeReceipt(message, brokerAddress, responseFields, receiptOffset));
         }
 
         return Array.AsReadOnly(result);
@@ -127,7 +198,7 @@ internal static class LegacyPopMessageDecoder
 
     public static RemotingPopMessage DecodeMessage(
         RemotingMessageView message,
-        RemotingPullMessageQueue queue)
+        RemotingConsumerQueue queue)
     {
         ArgumentNullException.ThrowIfNull(queue);
         return DecodeMessage(message, queue, queue.GetPullBrokerAddress());
@@ -135,54 +206,28 @@ internal static class LegacyPopMessageDecoder
 
     public static RemotingPopMessage DecodeMessage(
         RemotingMessageView message,
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         string brokerAddress)
-    {
-        return DecodeMessage(message, queue, brokerAddress, responseFields: null);
-    }
-
-    private static RemotingPopMessage DecodeMessage(
-        RemotingMessageView message,
-        RemotingPullMessageQueue queue,
-        string brokerAddress,
-        IReadOnlyDictionary<string, object>? responseFields,
-        long? checkpointOffset = null)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(queue);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
-        EnsureMatchingPhysicalQueue(message, queue);
-        EnsureSupportedMessage(message);
-
-        if (message.Properties.TryGetValue(PopCheckpointProperty, out var extraInfo))
-        {
-            if (string.IsNullOrWhiteSpace(extraInfo))
-            {
-                throw new InvalidDataException(
-                    $"POP message '{message.MessageId}' does not contain a valid {PopCheckpointProperty} receipt.");
-            }
-
-            return new RemotingPopMessage(message, DecodeReceipt(message, brokerAddress, extraInfo));
-        }
-
-        if (responseFields is null || checkpointOffset is null)
-        {
-            throw new InvalidDataException(
-                $"POP message '{message.MessageId}' does not contain a valid {PopCheckpointProperty} receipt.");
-        }
-
-        return new RemotingPopMessage(
-            message,
-            SynthesizeReceipt(message, brokerAddress, responseFields, checkpointOffset.Value));
+        var messages = DecodeMessages(
+            [message],
+            queue.Topic,
+            queue.BrokerName,
+            queue.QueueId,
+            brokerAddress,
+            responseFields: null);
+        return messages[0];
     }
 
     private static RemotingPopReceipt SynthesizeReceipt(
         RemotingMessageView message,
         string brokerAddress,
         IReadOnlyDictionary<string, object> responseFields,
-        long checkpointOffset)
+        ReceiptOffset receiptOffset)
     {
-        if (checkpointOffset < 0 || message.QueueId < 0 || message.QueueOffset < 0)
+        if (receiptOffset.CheckpointOffset < 0 || message.QueueId < 0 || message.QueueOffset < 0)
         {
             throw new InvalidDataException(
                 $"POP message '{message.MessageId}' does not have a valid physical queue position.");
@@ -195,14 +240,15 @@ internal static class LegacyPopMessageDecoder
         var reviveQueueId = GetRequiredNonNegativeResponseInt32(responseFields, ReviveQueueIdField, message);
         var extraInfo = string.Join(
             ' ',
-            checkpointOffset.ToString(CultureInfo.InvariantCulture),
+            receiptOffset.CheckpointOffset.ToString(CultureInfo.InvariantCulture),
             popTimeMilliseconds.ToString(CultureInfo.InvariantCulture),
             invisibleTimeMilliseconds.ToString(CultureInfo.InvariantCulture),
             reviveQueueId.ToString(CultureInfo.InvariantCulture),
-            NormalTopicMarker,
+            GetRetryTopicMarker(receiptOffset.RetryTopicKind),
             brokerName,
             message.QueueId.ToString(CultureInfo.InvariantCulture),
             message.QueueOffset.ToString(CultureInfo.InvariantCulture));
+
         try
         {
             return new RemotingPopReceipt(
@@ -210,12 +256,13 @@ internal static class LegacyPopMessageDecoder
                 brokerName,
                 brokerAddress,
                 message.QueueId,
-                checkpointOffset,
+                receiptOffset.CheckpointOffset,
                 message.QueueOffset,
                 DateTimeOffset.FromUnixTimeMilliseconds(popTimeMilliseconds),
                 TimeSpan.FromMilliseconds(invisibleTimeMilliseconds),
                 reviveQueueId,
-                extraInfo);
+                extraInfo,
+                receiptOffset.RetryTopicKind);
         }
         catch (ArgumentOutOfRangeException exception)
         {
@@ -231,9 +278,10 @@ internal static class LegacyPopMessageDecoder
         }
     }
 
-    private static IReadOnlyList<long>? GetCheckpointOffsets(
+    private static IReadOnlyList<ReceiptOffset>? GetReceiptOffsets(
         IReadOnlyList<RemotingMessageView> messages,
-        RemotingPullMessageQueue queue,
+        string brokerName,
+        int requestedQueueId,
         IReadOnlyDictionary<string, object>? responseFields)
     {
         if (responseFields is null)
@@ -241,153 +289,197 @@ internal static class LegacyPopMessageDecoder
             return null;
         }
 
-        for (var index = 0; index < messages.Count; index++)
-        {
-            EnsureMatchingPhysicalQueue(messages[index], queue);
-            EnsureSupportedMessage(messages[index]);
-        }
-
         if (!TryGetResponseField(responseFields, StartOffsetInfoField, out var startOffsetInfo) ||
             startOffsetInfo.Length == 0)
         {
-            return GetFallbackCheckpointOffsets(messages);
+            return messages.Select(static message =>
+                new ReceiptOffset(message.QueueOffset, GetRetryTopicKind(message))).ToArray();
         }
 
         if (string.IsNullOrWhiteSpace(startOffsetInfo))
         {
-            throw InvalidOffsetMapping(StartOffsetInfoField, queue, "it is empty");
+            throw InvalidOffsetMapping(StartOffsetInfoField, brokerName, requestedQueueId, "it is empty");
         }
 
         if (!TryGetResponseField(responseFields, MessageOffsetInfoField, out var messageOffsetInfo) ||
             string.IsNullOrWhiteSpace(messageOffsetInfo))
         {
-            throw InvalidOffsetMapping(MessageOffsetInfoField, queue, "it is missing or empty");
-        }
-
-        var checkpointOffset = ParseCheckpointOffset(startOffsetInfo, queue);
-        var messageOffsets = ParseMessageOffsets(messageOffsetInfo, queue);
-        if (messageOffsets.Count != messages.Count)
-        {
             throw InvalidOffsetMapping(
                 MessageOffsetInfoField,
-                queue,
-                $"it contains {messageOffsets.Count} offsets for {messages.Count} messages");
+                brokerName,
+                requestedQueueId,
+                "it is missing or empty");
         }
 
-        for (var index = 0; index < messages.Count; index++)
-        {
-            if (messageOffsets[index] != messages[index].QueueOffset)
-            {
-                throw InvalidOffsetMapping(
-                    MessageOffsetInfoField,
-                    queue,
-                    $"offset {messageOffsets[index]} does not match message offset {messages[index].QueueOffset}");
-            }
+        var checkpoints = ParseCheckpointOffsets(startOffsetInfo, brokerName, requestedQueueId);
+        var mappedOffsets = ParseMessageOffsets(messageOffsetInfo, brokerName, requestedQueueId);
+        var messageGroups = messages
+            .Select((message, index) => (Message: message, Index: index))
+            .Where(static item => !item.Message.Properties.ContainsKey(PopCheckpointProperty))
+            .GroupBy(item => new ReceiptKey(GetRetryTopicKind(item.Message, mappedOffsets), item.Message.QueueId));
+        var result = new ReceiptOffset[messages.Count];
 
-            if (checkpointOffset > messages[index].QueueOffset)
+        foreach (var group in messageGroups)
+        {
+            if (!checkpoints.TryGetValue(group.Key, out var checkpointOffset))
             {
                 throw InvalidOffsetMapping(
                     StartOffsetInfoField,
-                    queue,
-                    $"checkpoint offset {checkpointOffset} is after message offset {messages[index].QueueOffset}");
+                    brokerName,
+                    requestedQueueId,
+                    "it does not contain a required physical queue segment");
+            }
+
+            if (!mappedOffsets.TryGetValue(group.Key, out var offsets))
+            {
+                throw InvalidOffsetMapping(
+                    MessageOffsetInfoField,
+                    brokerName,
+                    requestedQueueId,
+                    "it does not contain a required physical queue segment");
+            }
+
+            var groupMessages = group.ToArray();
+            if (offsets.Count != groupMessages.Length)
+            {
+                throw InvalidOffsetMapping(
+                    MessageOffsetInfoField,
+                    brokerName,
+                    requestedQueueId,
+                    $"it contains {offsets.Count} offsets for {groupMessages.Length} messages");
+            }
+
+            for (var index = 0; index < groupMessages.Length; index++)
+            {
+                var (message, messageIndex) = groupMessages[index];
+                if (offsets[index] != message.QueueOffset)
+                {
+                    throw InvalidOffsetMapping(
+                        MessageOffsetInfoField,
+                        brokerName,
+                        requestedQueueId,
+                        $"offset {offsets[index]} does not match message offset {message.QueueOffset}");
+                }
+
+                if (checkpointOffset > message.QueueOffset)
+                {
+                    throw InvalidOffsetMapping(
+                        StartOffsetInfoField,
+                        brokerName,
+                        requestedQueueId,
+                        $"checkpoint offset {checkpointOffset} is after message offset {message.QueueOffset}");
+                }
+
+                result[messageIndex] = new ReceiptOffset(checkpointOffset, group.Key.RetryTopicKind);
             }
         }
 
-        var checkpointOffsets = new long[messages.Count];
-        Array.Fill(checkpointOffsets, checkpointOffset);
-        return checkpointOffsets;
+        return result;
     }
 
-    private static IReadOnlyList<long> GetFallbackCheckpointOffsets(IReadOnlyList<RemotingMessageView> messages)
+    private static Dictionary<ReceiptKey, long> ParseCheckpointOffsets(
+        string value,
+        string brokerName,
+        int requestedQueueId)
     {
-        var fallbackOffsets = new long[messages.Count];
-        for (var index = 0; index < messages.Count; index++)
-        {
-            fallbackOffsets[index] = messages[index].QueueOffset;
-        }
-
-        return fallbackOffsets;
-    }
-
-    private static long ParseCheckpointOffset(string startOffsetInfo, RemotingPullMessageQueue queue)
-    {
-        var fields = GetPhysicalQueueSegment(startOffsetInfo, StartOffsetInfoField, queue);
-        if (fields.Length != 3)
-        {
-            throw InvalidOffsetMapping(StartOffsetInfoField, queue, "its physical queue segment is malformed");
-        }
-
-        if (!long.TryParse(
-                fields[2],
-                NumberStyles.Integer,
-                CultureInfo.InvariantCulture,
-                out var checkpointOffset) ||
-            checkpointOffset < 0)
-        {
-            throw InvalidOffsetMapping(StartOffsetInfoField, queue, "its checkpoint offset is invalid");
-        }
-
-        return checkpointOffset;
-    }
-
-    private static IReadOnlyList<long> ParseMessageOffsets(string messageOffsetInfo, RemotingPullMessageQueue queue)
-    {
-        var fields = GetPhysicalQueueSegment(messageOffsetInfo, MessageOffsetInfoField, queue);
-        if (fields.Length != 3 || string.IsNullOrWhiteSpace(fields[2]))
-        {
-            throw InvalidOffsetMapping(MessageOffsetInfoField, queue, "its physical queue segment is malformed");
-        }
-
-        var rawOffsets = fields[2].Split(',', StringSplitOptions.None);
-        var offsets = new long[rawOffsets.Length];
-        for (var index = 0; index < rawOffsets.Length; index++)
+        var result = new Dictionary<ReceiptKey, long>();
+        foreach (var segment in ParseSegments(value, StartOffsetInfoField, brokerName, requestedQueueId))
         {
             if (!long.TryParse(
-                    rawOffsets[index],
+                    segment.Value,
                     NumberStyles.Integer,
                     CultureInfo.InvariantCulture,
-                    out var offset) ||
-                offset < 0)
+                    out var checkpointOffset) ||
+                checkpointOffset < 0)
             {
-                throw InvalidOffsetMapping(MessageOffsetInfoField, queue, "it contains an invalid message offset");
+                throw InvalidOffsetMapping(
+                    StartOffsetInfoField,
+                    brokerName,
+                    requestedQueueId,
+                    "it contains an invalid checkpoint offset");
             }
 
-            offsets[index] = offset;
+            if (!result.TryAdd(segment.Key, checkpointOffset))
+            {
+                throw InvalidOffsetMapping(
+                    StartOffsetInfoField,
+                    brokerName,
+                    requestedQueueId,
+                    "it contains duplicate physical queue segments");
+            }
         }
 
-        return offsets;
+        return result;
     }
 
-    private static string[] GetPhysicalQueueSegment(
+    private static Dictionary<ReceiptKey, IReadOnlyList<long>> ParseMessageOffsets(
         string value,
-        string fieldName,
-        RemotingPullMessageQueue queue)
+        string brokerName,
+        int requestedQueueId)
     {
-        string[]? physicalQueueSegment = null;
-        foreach (var rawSegment in value.Split(';', StringSplitOptions.None))
+        var result = new Dictionary<ReceiptKey, IReadOnlyList<long>>();
+        foreach (var segment in ParseSegments(value, MessageOffsetInfoField, brokerName, requestedQueueId))
         {
-            var segment = rawSegment.Split(
-                ' ',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (segment.Length < 2 || !string.Equals(segment[0], NormalTopicMarker, StringComparison.Ordinal) ||
-                !int.TryParse(segment[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var queueId) ||
-                queueId != queue.QueueId)
+            var rawOffsets = segment.Value.Split(',', StringSplitOptions.None);
+            var offsets = new long[rawOffsets.Length];
+            for (var index = 0; index < rawOffsets.Length; index++)
             {
-                continue;
+                if (!long.TryParse(
+                        rawOffsets[index],
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var offset) ||
+                    offset < 0)
+                {
+                    throw InvalidOffsetMapping(
+                        MessageOffsetInfoField,
+                        brokerName,
+                        requestedQueueId,
+                        "it contains an invalid message offset");
+                }
+
+                offsets[index] = offset;
             }
 
-            if (physicalQueueSegment is not null)
+            if (!result.TryAdd(segment.Key, offsets))
             {
-                throw InvalidOffsetMapping(fieldName, queue, "it contains duplicate physical queue segments");
+                throw InvalidOffsetMapping(
+                    MessageOffsetInfoField,
+                    brokerName,
+                    requestedQueueId,
+                    "it contains duplicate physical queue segments");
             }
-
-            physicalQueueSegment = segment;
         }
 
-        return physicalQueueSegment ?? throw InvalidOffsetMapping(
-            fieldName,
-            queue,
-            "it does not contain the requested physical queue");
+        return result;
+    }
+
+    private static IEnumerable<(ReceiptKey Key, string Value)> ParseSegments(
+        string value,
+        string fieldName,
+        string brokerName,
+        int requestedQueueId)
+    {
+        foreach (var rawSegment in value.Split(';', StringSplitOptions.None))
+        {
+            var fields = rawSegment.Split(
+                ' ',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (fields.Length != 3 ||
+                !TryParseRetryTopicKind(fields[0], out var retryTopicKind) ||
+                !int.TryParse(fields[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var queueId) ||
+                queueId < 0 ||
+                string.IsNullOrWhiteSpace(fields[2]))
+            {
+                throw InvalidOffsetMapping(
+                    fieldName,
+                    brokerName,
+                    requestedQueueId,
+                    "it contains a malformed physical queue segment");
+            }
+
+            yield return (new ReceiptKey(retryTopicKind, queueId), fields[2]);
+        }
     }
 
     private static bool TryGetResponseField(
@@ -407,10 +499,11 @@ internal static class LegacyPopMessageDecoder
 
     private static void EnsureMatchingPhysicalQueue(
         RemotingMessageView message,
-        RemotingPullMessageQueue queue)
+        string brokerName,
+        int requestedQueueId)
     {
-        if (!string.Equals(message.BrokerName, queue.BrokerName, StringComparison.Ordinal) ||
-            message.QueueId != queue.QueueId)
+        if (!string.Equals(message.BrokerName, brokerName, StringComparison.Ordinal) ||
+            requestedQueueId >= 0 && message.QueueId != requestedQueueId)
         {
             throw new InvalidDataException(
                 $"POP message '{message.MessageId}' does not match the requested physical queue.");
@@ -419,20 +512,21 @@ internal static class LegacyPopMessageDecoder
 
     private static void EnsureSupportedMessage(RemotingMessageView message)
     {
-        if (IsRetryOrLogicalMessage(message))
+        if (message.BrokerName?.StartsWith(LogicalQueueBrokerPrefix, StringComparison.Ordinal) == true)
         {
             throw new InvalidDataException(
-                $"POP message '{message.MessageId}' targets an unsupported retry or logical queue and cannot be represented by a {PopCheckpointProperty} receipt.");
+                $"POP message '{message.MessageId}' targets an unsupported logical queue and cannot be represented by a {PopCheckpointProperty} receipt.");
         }
     }
 
     private static InvalidDataException InvalidOffsetMapping(
         string fieldName,
-        RemotingPullMessageQueue queue,
+        string brokerName,
+        int requestedQueueId,
         string reason) =>
         new(
             $"POP response field '{fieldName}' contains an invalid mapping for physical queue " +
-            $"'{queue.BrokerName}:{queue.QueueId}': {reason}.");
+            $"'{brokerName}:{requestedQueueId}': {reason}.");
 
     private static RemotingPopReceipt DecodeReceipt(
         RemotingMessageView message,
@@ -449,9 +543,9 @@ internal static class LegacyPopMessageDecoder
         var popTimeMilliseconds = ParsePositiveInt64(fields[1], message, "pop time");
         var invisibleTimeMilliseconds = ParsePositiveInt64(fields[2], message, "invisible time");
         var reviveQueueId = ParseNonNegativeInt32(fields[3], message, "revive queue ID");
-        if (!string.Equals(fields[4], NormalTopicMarker, StringComparison.Ordinal))
+        if (!TryParseRetryTopicKind(fields[4], out var retryTopicKind))
         {
-            throw InvalidCheckpoint(message, "targets a retry or logical topic");
+            throw InvalidCheckpoint(message, "contains an unknown retry topic marker");
         }
 
         var brokerName = fields[5];
@@ -489,7 +583,8 @@ internal static class LegacyPopMessageDecoder
                 DateTimeOffset.FromUnixTimeMilliseconds(popTimeMilliseconds),
                 TimeSpan.FromMilliseconds(invisibleTimeMilliseconds),
                 reviveQueueId,
-                extraInfo);
+                extraInfo,
+                retryTopicKind);
         }
         catch (ArgumentOutOfRangeException exception)
         {
@@ -522,12 +617,51 @@ internal static class LegacyPopMessageDecoder
         return restNum;
     }
 
-    private static bool IsRetryOrLogicalMessage(RemotingMessageView message) =>
-        message.Properties.TryGetValue(RetryTopicProperty, out var retryTopic) &&
-        !string.IsNullOrWhiteSpace(retryTopic) ||
-        message.Topic.StartsWith(RetryTopicPrefix, StringComparison.Ordinal) ||
-        message.Topic.StartsWith(DeadLetterTopicPrefix, StringComparison.Ordinal) ||
-        message.BrokerName?.StartsWith(LogicalQueueBrokerPrefix, StringComparison.Ordinal) == true;
+    private static RemotingPopRetryTopicKind GetRetryTopicKind(
+        RemotingMessageView message,
+        IReadOnlyDictionary<ReceiptKey, IReadOnlyList<long>>? mappedOffsets = null)
+    {
+        if (!message.Properties.TryGetValue(RetryTopicProperty, out var retryTopic) ||
+            string.IsNullOrWhiteSpace(retryTopic))
+        {
+            return RemotingPopRetryTopicKind.Normal;
+        }
+
+        if (mappedOffsets is not null)
+        {
+            var retryKinds = mappedOffsets.Keys
+                .Where(key => key.QueueId == message.QueueId && key.RetryTopicKind != RemotingPopRetryTopicKind.Normal)
+                .Select(static key => key.RetryTopicKind)
+                .Distinct()
+                .ToArray();
+            if (retryKinds.Length == 1)
+            {
+                return retryKinds[0];
+            }
+        }
+
+        return RemotingPopRetryTopicKind.RetryV1;
+    }
+
+    private static string GetRetryTopicMarker(RemotingPopRetryTopicKind retryTopicKind) => retryTopicKind switch
+    {
+        RemotingPopRetryTopicKind.Normal => "0",
+        RemotingPopRetryTopicKind.RetryV1 => "1",
+        RemotingPopRetryTopicKind.RetryV2 => "2",
+        _ => throw new InvalidOperationException($"Unsupported POP retry topic kind '{retryTopicKind}'.")
+    };
+
+    private static bool TryParseRetryTopicKind(string value, out RemotingPopRetryTopicKind retryTopicKind)
+    {
+        retryTopicKind = value switch
+        {
+            "0" => RemotingPopRetryTopicKind.Normal,
+            "1" => RemotingPopRetryTopicKind.RetryV1,
+            "2" => RemotingPopRetryTopicKind.RetryV2,
+            _ => (RemotingPopRetryTopicKind)(-1)
+        };
+        return retryTopicKind >= RemotingPopRetryTopicKind.Normal;
+    }
 
     private static long GetRequiredPositiveResponseInt64(
         IReadOnlyDictionary<string, object> fields,
@@ -597,4 +731,8 @@ internal static class LegacyPopMessageDecoder
 
     private static InvalidDataException InvalidCheckpoint(RemotingMessageView message, string reason) =>
         new($"POP message '{message.MessageId}' contains an invalid {PopCheckpointProperty} receipt: {reason}.");
+
+    private readonly record struct ReceiptKey(RemotingPopRetryTopicKind RetryTopicKind, int QueueId);
+
+    private readonly record struct ReceiptOffset(long CheckpointOffset, RemotingPopRetryTopicKind RetryTopicKind);
 }

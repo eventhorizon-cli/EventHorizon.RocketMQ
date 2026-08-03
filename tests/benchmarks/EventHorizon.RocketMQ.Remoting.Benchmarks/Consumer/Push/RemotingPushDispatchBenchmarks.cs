@@ -15,8 +15,7 @@
 
 using BenchmarkDotNet.Attributes;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Dispatch;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EventHorizon.RocketMQ.Remoting.Benchmarks.Consumer.Push;
@@ -139,7 +138,7 @@ public class RemotingPushDispatchBenchmarks
 
     private static QueueWorkload CreateWorkload(string brokerName, int queueId, int messageCount)
     {
-        var queue = new RemotingPullMessageQueue(Topic, queueId, brokerName, "127.0.0.1:10911");
+        var queue = new RemotingConsumerQueue(Topic, queueId, brokerName, "127.0.0.1:10911");
         var messages = Enumerable.Range(0, messageCount)
             .Select(offset => new RemotingMessageView(
                 Topic,
@@ -162,6 +161,6 @@ public class RemotingPushDispatchBenchmarks
     }
 
     private sealed record QueueWorkload(
-        RemotingPullMessageQueue Queue,
+        RemotingConsumerQueue Queue,
         IReadOnlyList<RemotingMessageView> Messages);
 }

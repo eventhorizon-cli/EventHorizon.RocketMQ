@@ -13,8 +13,8 @@ The two clients are independent and have different connection and feature models
 - **gRPC** connects to a RocketMQ 5 Proxy through `GrpcClientOptions.Endpoint`. Choose it for Proxy-based deployments
   and the RocketMQ 5 gRPC message model.
 - **Classic Remoting** discovers Brokers through `RemotingClientOptions.NamesrvAddr`, then connects directly to their
-  advertised endpoints. Choose it for classic deployments and APIs that expose physical queues, offsets, POP, or
-  classic Producer operations.
+  advertised endpoints. Choose it for classic deployments, application-driven LitePull positioning, SDK-driven Push
+  consumption, or classic Producer operations.
 
 Samples do not hide these differences behind a transport-neutral wrapper. Start with the protocol actually exposed
 by the deployment.
@@ -48,10 +48,8 @@ gRPC Push is client-initiated long polling; it is not a Broker-opened network pu
 | --- | --- | --- |
 | [GenericHost: Producer](remoting/GenericHost/Producer/README.md) | `IRemotingProducer` | The application publishes through NameServer/Broker Remoting or needs classic queue, batch, one-way, transaction, recall, or request-reply operations. |
 | [GenericHost: Admin](remoting/GenericHost/Admin/README.md) | `IRemotingAdmin` | A read-only tool must inspect physical queues, offset bounds, committed positions, or stored messages. |
-| [GenericHost: Pull Consumer](remoting/GenericHost/PullConsumer/README.md) | `IRemotingPullConsumer` | The application owns physical queue selection, request offsets, processing, and commits. |
-| [GenericHost: Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | The SDK should allocate queues while application code owns polling and commits. |
-| [GenericHost: POP Consumer](remoting/GenericHost/PopConsumer/README.md) | `IRemotingPopConsumer` | Work uses per-message receipts and invisibility instead of queue-offset commits. |
-| [GenericHost: Push Consumer](remoting/GenericHost/PushConsumer/README.md) | `IRemotingPushConsumer` | The SDK should own queue allocation, long polling, fair concurrent dispatch, retry settlement, and offset persistence. |
+| [GenericHost: Lite Pull Consumer](remoting/GenericHost/LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | The application polls and commits over SDK-managed subscriptions or explicit manual queue assignments. |
+| [GenericHost: Push Consumer](remoting/GenericHost/PushConsumer/README.md) | `IRemotingPushConsumer` | The SDK owns client or Broker assignment, PULL or POP reception, dispatch, settlement, and progress. |
 | [NonHost collection](remoting/NonHost/README.md) | All lifecycle-managed roles | A process without Generic Host explicitly starts and stops the selected Remoting role. |
 
 Remoting Push also uses client-initiated long polling. Consumers in one clustered group divide the Broker physical
@@ -108,7 +106,7 @@ HTTP endpoints are application shells around the SDK workflows documented in the
 Each project demonstrates one coherent end-to-end workflow, not every overload. Advanced paths that require different
 resources, a cooperating peer, or a real processing reason remain in the protocol guides until they justify a
 dedicated runnable sample. Examples include Producer transactions and request-reply, runtime subscription changes,
-manual assignment and seeking, visibility extension, and alternate Push delivery modes.
+LitePull manual assignment and seeking, and operator selection of Broker-side POP request mode.
 
 See the [gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) and
 [Remoting guide](../src/EventHorizon.RocketMQ.Remoting/README.md) for the complete public APIs.

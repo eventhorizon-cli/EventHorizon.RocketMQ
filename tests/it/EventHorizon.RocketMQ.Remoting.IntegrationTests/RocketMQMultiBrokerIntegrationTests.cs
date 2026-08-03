@@ -45,12 +45,75 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ProducerDiscoversAndSendsToEveryQueueOnAllBrokers()
+    public async Task NameServerRoute_FirstNameServerStops_FailsOverAndSendsThroughSecond()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var suffix = Guid.NewGuid().ToString("N");
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = _fixture.NameServerAddresses;
+                options.InstanceName = $"remoting-multi-nameserver-failover-{suffix}";
+                options.PollNameServerInterval = TimeSpan.FromMilliseconds(10);
+                options.NameServerRequestTimeout = TimeSpan.FromSeconds(1);
+            })
+            .AddRemotingProducer(options => options.GroupName = $"remoting-multi-nameserver-producer-{suffix}");
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IRemotingProducer>();
+        await producer.StartAsync(cancellationToken);
+        var nameServerAStopped = false;
+        try
+        {
+            // Route lookups rotate through A and B, leaving A as the next candidate before it is stopped.
+            await GetExpectedQueuesAsync(producer, cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
+            await GetExpectedQueuesAsync(producer, cancellationToken);
+
+            await _fixture.StopNameServerAAsync(cancellationToken);
+            nameServerAStopped = true;
+            await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
+
+            var queues = await GetExpectedQueuesAsync(producer, cancellationToken);
+            var queue = Assert.Single(queues, static value =>
+                value.BrokerName == RocketMQMultiBrokerRemotingContainerFixture.BrokerAName &&
+                value.QueueId == 0);
+            var result = await producer.SendAsync(
+                new Message(
+                    RocketMQMultiBrokerRemotingContainerFixture.TestTopic,
+                    Encoding.UTF8.GetBytes($"multi-nameserver-failover-{suffix}")),
+                queue,
+                cancellationToken);
+
+            Assert.Equal(RemotingSendStatus.SendOk, result.Status);
+            Assert.Equal(queue.BrokerName, result.MessageQueue.BrokerName);
+            Assert.Equal(queue.QueueId, result.MessageQueue.QueueId);
+        }
+        finally
+        {
+            try
+            {
+                if (nameServerAStopped)
+                {
+                    await _fixture.RestoreNameServerAAsync(CancellationToken.None);
+                }
+            }
+            finally
+            {
+                await producer.StopAsync(CancellationToken.None);
+            }
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Producer_EveryQueueOnAllBrokers_DiscoversAndSends()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var services = new ServiceCollection();
         services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = _fixture.NameServerAddress)
+            .AddRocketMQRemoting(options => options.NamesrvAddr = _fixture.NameServerAddresses)
             .AddRemotingProducer(options => options.GroupName = "remoting-multi-broker-producer-it");
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -80,7 +143,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task PushConsumerConsumesAndCommitsEveryQueueAcrossAllBrokers()
+    public async Task PushConsumer_EveryQueueAcrossAllBrokers_ConsumesAndCommits()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -94,7 +157,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = _fixture.NameServerAddresses;
                 options.InstanceName = $"remoting-multi-broker-push-{suffix}";
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
@@ -106,7 +169,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
-                options.BatchSize = 1;
+                options.PullBatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
@@ -156,7 +219,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task BlockedQueueDoesNotStallOtherQueuesOrAdvanceItsOffset()
+    public async Task BlockedQueue_OtherQueuesAndOffset_DoesNotStallOrAdvance()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -174,7 +237,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = _fixture.NameServerAddresses;
                 options.InstanceName = $"remoting-multi-broker-blocked-{suffix}";
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
@@ -186,9 +249,9 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
-                options.BatchSize = 1;
+                options.PullBatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
-                options.MaxCachedMessages = expectedQueueCount;
+                options.PullMaxCachedMessages = expectedQueueCount;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(RocketMQMultiBrokerRemotingContainerFixture.TestTopic, new FilterExpression(tag));
@@ -228,7 +291,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         foreach (var queue in queues)
         {
             expectedOffsets[(queue.BrokerName, queue.QueueId)] =
-                await admin.GetMaxOffsetAsync(queue, cancellationToken: cancellationToken) + 1;
+                await admin.GetMaxOffsetAsync(ToConsumerQueue(queue), cancellationToken: cancellationToken) + 1;
         }
 
         await consumer.StartAsync(cancellationToken);
@@ -249,7 +312,10 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                     cancellationToken);
             }
 
-            var slowCommitted = await admin.GetConsumerOffsetAsync(group, slowQueue, cancellationToken);
+            var slowCommitted = await admin.GetConsumerOffsetAsync(
+                group,
+                ToConsumerQueue(slowQueue),
+                cancellationToken);
             Assert.True(
                 slowCommitted is null ||
                 slowCommitted < expectedOffsets[(slowQueue.BrokerName, slowQueue.QueueId)],
@@ -271,7 +337,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task RetriedQueueDoesNotDuplicateSuccessfulQueues()
+    public async Task RetriedQueue_SuccessfulQueues_DoesNotDuplicate()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -289,7 +355,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = _fixture.NameServerAddresses;
                 options.InstanceName = $"remoting-multi-broker-retry-{suffix}";
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
@@ -301,9 +367,9 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 4;
-                options.BatchSize = 1;
+                options.PullBatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
-                options.MaxCachedMessages = expectedQueueCount;
+                options.PullMaxCachedMessages = expectedQueueCount;
                 options.MaxDeliveryAttempts = 3;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
@@ -369,7 +435,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
     [InlineData(3)]
     [InlineData(10)]
     [Trait("Category", "Integration")]
-    public async Task PushConsumersInSameGroupShareQueuesWithoutDuplicates(int consumerCount)
+    public async Task PushConsumers_SameGroup_ShareQueuesWithoutDuplicates(int consumerCount)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -384,7 +450,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
         var producerServices = new ServiceCollection();
         producerServices
-            .AddRocketMQRemoting(options => options.NamesrvAddr = _fixture.NameServerAddress)
+            .AddRocketMQRemoting(options => options.NamesrvAddr = _fixture.NameServerAddresses)
             .AddRemotingAdmin()
             .AddRemotingProducer(options => options.GroupName = $"remoting-multi-broker-producer-{suffix}");
         await using var producerProvider = producerServices.BuildServiceProvider(
@@ -450,7 +516,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         services
             .AddRocketMQRemoting(options =>
             {
-                options.NamesrvAddr = _fixture.NameServerAddress;
+                options.NamesrvAddr = _fixture.NameServerAddresses;
                 options.InstanceName = instanceName;
                 options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
                 options.PollNameServerInterval = TimeSpan.FromMilliseconds(250);
@@ -460,7 +526,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.MaxConcurrency = 1;
-                options.BatchSize = 1;
+                options.PullBatchSize = 1;
                 options.ConsumeMessageBatchSize = 1;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
@@ -539,12 +605,13 @@ public sealed class RocketMQMultiBrokerIntegrationTests
     {
         foreach (var queue in queues)
         {
-            var expectedOffset = await admin.GetMaxOffsetAsync(queue, cancellationToken: cancellationToken);
+            var consumerQueue = ToConsumerQueue(queue);
+            var expectedOffset = await admin.GetMaxOffsetAsync(consumerQueue, cancellationToken: cancellationToken);
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
             long? committedOffset;
             do
             {
-                committedOffset = await admin.GetConsumerOffsetAsync(group, queue, cancellationToken);
+                committedOffset = await admin.GetConsumerOffsetAsync(group, consumerQueue, cancellationToken);
                 if (committedOffset >= expectedOffset)
                 {
                     break;
@@ -569,10 +636,11 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        var consumerQueue = ToConsumerQueue(queue);
         long? committedOffset;
         do
         {
-            committedOffset = await admin.GetConsumerOffsetAsync(group, queue, cancellationToken);
+            committedOffset = await admin.GetConsumerOffsetAsync(group, consumerQueue, cancellationToken);
             if (committedOffset >= expectedOffset)
             {
                 return;
@@ -586,4 +654,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             $"Consumer group '{group}' did not commit {queue.BrokerName}/{queue.QueueId}. " +
             $"Expected at least {expectedOffset}, actual {committedOffset?.ToString() ?? "<none>"}.");
     }
+
+    private static RemotingConsumerQueue ToConsumerQueue(RemotingMessageQueue queue) =>
+        new(queue.Topic, queue.BrokerName, queue.QueueId);
 }

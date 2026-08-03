@@ -12,8 +12,9 @@
 Ctrl+C 后关闭逻辑使用 `CancellationToken.None`，所以不会和 poll 循环一起被取消。
 角色停止后，`await using` Service Provider 会被异步释放。
 
-示例配置了对 `eventhorizon-test-topic` 的订阅。启动后 SDK 会参与 group 分配，而 `PollAsync` 从一个活跃的已分配队列中
-选择消息。程序处理返回的消息后才调用 `CommitAsync`。`PollAsync` 会推进本地位置，但不会自行持久化它们。
+示例配置了对 `eventhorizon-test-topic` 的订阅。启动后 SDK 会参与 group 分配，后台接收器为已分配队列填充有界本地
+缓冲，`PollAsync` 从中读取可用消息。程序关闭自动提交，处理返回消息后才调用 `CommitAsync`；poll 会推进已投递的
+本地位置，但不会自行持久化它们。
 
 在 rebalance 边界，Consumer 可能暂时没有分配队列。示例把由此产生的 `InvalidOperationException` 当作可重试状态，并在
 再次 poll 前等待。处理失败会被记录，并在短暂延迟后重试；实际应用仍必须让处理具备幂等性，因为成功 commit 前的失败可能

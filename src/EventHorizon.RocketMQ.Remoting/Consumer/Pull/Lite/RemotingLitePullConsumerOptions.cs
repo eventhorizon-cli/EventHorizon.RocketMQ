@@ -21,9 +21,19 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 public sealed class RemotingLitePullConsumerOptions : ConsumerOptions
 {
     /// <summary>
-    /// Gets or sets the maximum number of messages requested by each poll operation.
+    /// Gets or sets the maximum number of messages requested by each background PULL operation.
     /// </summary>
-    public int BatchSize { get; set; } = 32;
+    public int PullBatchSize { get; set; } = 32;
+
+    /// <summary>
+    /// Gets or sets the maximum number of prefetched messages retained in the shared local delivery buffer.
+    /// </summary>
+    public int MaxCachedMessages { get; set; } = 1024;
+
+    /// <summary>
+    /// Gets or sets the maximum total message-body bytes retained in the shared local delivery buffer.
+    /// </summary>
+    public int MaxCachedMessageBytes { get; set; } = 32 * 1024 * 1024;
 
     /// <summary>
     /// Gets or sets the maximum message payload size, in bytes, requested in a pull response.
@@ -36,13 +46,17 @@ public sealed class RemotingLitePullConsumerOptions : ConsumerOptions
     public TimeSpan LongPollingTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Gets or sets the initial offset policy used for a newly assigned queue with no committed group offset.
+    /// Gets or sets how long <c>PollAsync</c> waits for locally buffered messages when no timeout is supplied.
     /// </summary>
-    public QueryOffsetPolicy InitialOffset { get; set; } = QueryOffsetPolicy.End;
+    public TimeSpan PollTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Gets or sets the timestamp used when <see cref="InitialOffset"/> is
-    /// <see cref="QueryOffsetPolicy.Timestamp"/>.
+    /// Gets or sets whether the consumer periodically commits delivered positions.
     /// </summary>
-    public DateTimeOffset? InitialOffsetTimestamp { get; set; }
+    public bool EnableAutoCommit { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets how often delivered positions are committed when <see cref="EnableAutoCommit"/> is enabled.
+    /// </summary>
+    public TimeSpan AutoCommitInterval { get; set; } = TimeSpan.FromSeconds(5);
 }

@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
 public sealed class RemotingPushConsumeContextTests
 {
     [Fact]
-    public void AckIndex_DefaultsToAcknowledgingTheCompleteBatch()
+    public void AckIndex_CompleteBatchAcknowledgement_Defaults()
     {
         var context = new RemotingPushConsumeContext();
 
@@ -29,7 +29,7 @@ public sealed class RemotingPushConsumeContextTests
     }
 
     [Fact]
-    public void AckIndex_AllowsNoAcknowledgedMessages()
+    public void AckIndex_NoMessages_AllowsAndAcknowledged()
     {
         var context = new RemotingPushConsumeContext
         {
@@ -42,7 +42,7 @@ public sealed class RemotingPushConsumeContextTests
     [Theory]
     [InlineData(-2)]
     [InlineData(int.MinValue)]
-    public void AckIndex_RejectsValuesBelowMinusOne(int value)
+    public void AckIndex_ValuesBelowMinusOne_Rejects(int value)
     {
         var context = new RemotingPushConsumeContext();
 

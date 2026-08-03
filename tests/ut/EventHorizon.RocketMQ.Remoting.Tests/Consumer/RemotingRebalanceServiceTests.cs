@@ -27,7 +27,7 @@ public sealed class RemotingRebalanceServiceTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
 
     [Fact]
-    public async Task BrokerNotification_WakesMatchingParticipantWithoutRunningRebalanceInline()
+    public async Task BrokerNotification_MatchingParticipantWithoutRunningRebalanceInline_WakesMatchingParticipant()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -67,7 +67,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task BrokerNotification_ForUnknownGroup_IsSafelyIgnored()
+    public async Task BrokerNotification_ForUnknownGroup_SafelyIgnoresUnknownGroup()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var calls = 0;
@@ -114,7 +114,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task WakeupStorm_IsCoalescedAndNeverRunsParticipantConcurrently()
+    public async Task WakeupStorm_CoalescedNotifications_IsSerialized()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -173,7 +173,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task ParticipantFailure_IsolatedAndRetriedAtTheFastInterval()
+    public async Task ParticipantFailure_FastInterval_IsolatedAndRetried()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var failingCalls = 0;
@@ -205,7 +205,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task ParticipantIncompleteResult_IsRetriedAtTheFastInterval()
+    public async Task ParticipantIncompleteResult_FastInterval_IsRetried()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var calls = 0;
@@ -230,7 +230,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task BlockedParticipant_DoesNotDelayAnotherGroup()
+    public async Task BlockedParticipant_OtherGroup_DoesNotDelay()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var blockedStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -264,7 +264,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task Unregister_WaitsForInFlightRebalanceAndPreventsLaterCalls()
+    public async Task Unregister_InFlightRebalance_WaitsAndPreventsLaterCalls()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -301,7 +301,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task Register_RejectsDuplicateGroupOnTheSamePhysicalClient()
+    public async Task Register_GroupOnTheSamePhysicalClient_RejectsDuplicateGroup()
     {
         var fixture = CreateService();
         await using var service = fixture.Service;
@@ -317,7 +317,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task PeriodicInterval_RebalancesRegisteredParticipants()
+    public async Task PeriodicInterval_RegisteredParticipants_RebalancesRegisteredParticipants()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var called = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -333,7 +333,7 @@ public sealed class RemotingRebalanceServiceTests
     }
 
     [Fact]
-    public async Task PeriodicInterval_RebalancesEveryRegisteredParticipant()
+    public async Task PeriodicInterval_EveryRegisteredParticipant_RebalancesEveryParticipant()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var ordersCalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

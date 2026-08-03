@@ -23,7 +23,8 @@ guides contain the complete public API and compatibility references:
 | [Dependency-injection client registrations and lifetimes](architecture/dependency-injection-and-lifetimes.md) | Default and keyed client registrations, hosted lifecycle, and per-role consumer engines. |
 | [OpenTelemetry instrumentation](architecture/opentelemetry-instrumentation.md) | Protocol-owned tracing and metrics, context propagation, and application-owned exporters. |
 | [gRPC consumer model](grpc/consumer-model.md) | Proxy-backed Simple, Push, and LitePush consumers, including the absence of a public gRPC Pull API. |
-| [Classic Remoting transport and client roles](remoting/transport-and-client-roles.md) | NameServer routing, the built-in pipeline transport, and the Remoting Admin role. |
+| [Classic Remoting consumer model](remoting/consumer-model.md) | The public LitePull and Push models, Broker-assigned PULL/POP, receipt settlement, and queue-route ownership. |
+| [Classic Remoting transport and client roles](remoting/transport-and-client-roles.md) | NameServer routing, the built-in pipeline transport, and the LitePull, Push, and Admin roles. |
 | [Local and integration testing](testing/local-and-integration-testing.md) | Testcontainers isolation, the manual Compose environment, and when to use each. |
 
 ## Reading order

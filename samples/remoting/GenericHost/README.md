@@ -11,10 +11,8 @@ because it is also a hosted Web application.
 | --- | --- | --- |
 | [Producer](Producer/README.md) | `IRemotingProducer` | Exposes classic Remoting sends through a small HTTP API. |
 | [Admin](Admin/README.md) | `IRemotingAdmin` | Reads physical queues, offsets, and stored messages through an HTTP API. |
-| [PullConsumer](PullConsumer/README.md) | `IRemotingPullConsumer` | Lets application code coordinate queues, offsets, pull, and commits. |
-| [LitePullConsumer](LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | Lets application code poll and commit SDK-assigned queues. |
-| [PopConsumer](PopConsumer/README.md) | `IRemotingPopConsumer` | Uses receipt-based POP delivery and settlement. |
-| [PushConsumer](PushConsumer/README.md) | `IRemotingPushConsumer` | Lets the SDK coordinate long polling, dispatch, retry, and offset persistence. |
+| [LitePullConsumer](LitePullConsumer/README.md) | `IRemotingLitePullConsumer` | Lets application code poll and commit SDK-managed or manually assigned queues. |
+| [PushConsumer](PushConsumer/README.md) | `IRemotingPushConsumer` | Lets the SDK coordinate client or Broker assignment, reception, dispatch, and settlement. |
 
 For lifecycle-managed roles in a process that only builds a plain `ServiceProvider`, use the sibling
 [non-Host samples](../NonHost/README.md).

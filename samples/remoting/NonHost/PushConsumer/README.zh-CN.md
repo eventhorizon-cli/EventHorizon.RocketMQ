@@ -17,8 +17,9 @@
 `RemotingMessageView`。返回 `Success` 只会在整个批次完成后推进源队列位点；实际 handler 不能完成工作时应返回重试结果，
 并且必须容忍重复投递。
 
-当 group 不存在位点时，已配置的 group 从 `End` 开始；它以 `sample` tag filter 订阅
-`eventhorizon-test-topic`，并使用有上限的 handler 并发。示例刻意只注册一个 Consumer 角色，让注册、生命周期、订阅和
+当 group 不存在位点时，已配置的 group 从 `End` 开始；它显式使用默认的
+`RemotingPushQueueAssignmentMode.Client`，以 `sample` tag filter 订阅 `eventhorizon-test-topic`，并使用有上限的
+handler 并发。`PullBatchSize` 控制每次 Broker 请求。示例刻意只注册一个 Consumer 角色，让注册、生命周期、订阅和
 结算都在一条路径中可见。
 
 常规 .NET `IHost` 请使用[对应的 Generic Host Push Consumer 示例](../../GenericHost/PushConsumer/README.zh-CN.md)。

@@ -44,7 +44,7 @@ IntegrationTestInfrastructure --> Testcontainers
 | `RocketMQTestTopicType` | 选择普通、事务、FIFO、延时或 Lite topic 的预配方式。 |
 | `RocketMQHostPortReservation` | 在当前测试进程内协调动态主机端口选择。 |
 | `RocketMQMultiBrokerGrpcContainerFixture` | 运行位于 cluster-mode Proxy 后面的三个 Docker 网络 Broker。 |
-| `RocketMQMultiBrokerRemotingContainerFixture` | 运行三个可从主机访问的经典 Remoting Broker。 |
+| `RocketMQMultiBrokerRemotingContainerFixture` | 运行两个相互独立的 NameServer 和三个可从主机访问的经典 Remoting Broker；每台 Broker 都向两个 NameServer 注册。 |
 
 内部类型依赖如下：
 
@@ -131,14 +131,20 @@ gRPC 多 Broker 初始化顺序为：
 Remoting 多 Broker 初始化顺序为：
 
 ```text
-预留一个 NameServer 和三个 Broker 主机端口
-    -> network -> NameServer -> 并行启动 Broker A/B/C
-    -> 等待全部 Broker 注册
+预留五个主机端口（两个 NameServer、三个 Broker）
+    -> network -> NameServer A/B -> 并行启动 Broker A/B/C
+    -> 等待每个 NameServer 报告三台 Broker 均已注册
     -> 在每个 Broker 上创建具有三个读队列和三个写队列的 topic
-    -> 等待完整路由
+    -> 等待每个 NameServer 报告完整的九个队列 route
 ```
 
-释放时依次清理各 Broker、NameServer、network 和端口记录。
+普通 Remoting multi-Broker client 将两个可从主机访问的 NameServer 地址合并为一个分号分隔的值
+（`NameServerA;NameServerB`）。专门的故障切换集成测试使用同一个配置了两个地址的 client：先通过 A 和 B 各刷新
+一次 route，再停止 NameServer A，等待 10 毫秒的 route cache 过期，确认客户端对 A 的尝试失败并切换到 B，随后仍能刷新完整
+route 并成功发送消息。最后重启 A，等待 A 再次报告三台 Broker 和完整的九个队列 topic route，再完成清理，避免
+共享 collection 处于降级状态。两个 NameServer 独立查询；fixture 不依赖 NameServer 之间的复制。
+
+释放时依次清理各 Broker、NameServer A 和 B、network 以及端口记录。
 
 ## 为什么单 Broker Fixture 可以复用
 
@@ -165,8 +171,8 @@ Fixture 暴露的所有 endpoint 在整个生命周期内都有效。两个协�
 | 客户端入口 | Proxy | NameServer 和 Broker |
 | Broker 通告主机 | `broker-a` 等 Docker alias | `127.0.0.1` |
 | Broker 端口 | 各容器固定使用 `10911` | 各自使用动态分配的主机端口 |
-| 主机端口映射 | 只映射 Proxy | 映射 NameServer 和每个 Broker |
-| 附加行为 | 启动 Proxy 并检查各 Broker offset | 显式队列数和主机可达路由 |
+| 主机端口映射 | 只映射 Proxy | 映射 NameServer A/B 和每个 Broker |
+| 附加行为 | 启动 Proxy 并检查各 Broker offset | 显式队列数、独立 NameServer route 和主机可达地址 |
 
 独立 Proxy 容器可以解析 `broker-a`、`broker-b` 和 `broker-c`，但主机上的 Remoting client 无法解析这些
 地址。如果 Broker 通告 `127.0.0.1`，主机可以通过不同的映射端口访问它们，但 Proxy 容器中的

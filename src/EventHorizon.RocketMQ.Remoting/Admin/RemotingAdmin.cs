@@ -17,7 +17,6 @@ using System.Globalization;
 using System.Net;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
-using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.Options;
@@ -26,7 +25,7 @@ namespace EventHorizon.RocketMQ.Remoting.Admin;
 
 internal sealed class RemotingAdmin : IRemotingAdmin
 {
-    private const int WritePermission = 1 << 1;
+    private const int ReadPermission = 1 << 2;
 
     private readonly RemotingClientOptions _clientOptions;
     private readonly ITopicRouteService _routeService;
@@ -42,7 +41,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
         _remotingClient = remotingClient;
     }
 
-    public async Task<IReadOnlyList<RemotingMessageQueue>> GetMessageQueuesAsync(
+    public async Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default)
     {
@@ -52,18 +51,18 @@ internal sealed class RemotingAdmin : IRemotingAdmin
             LegacyNamespace.Wrap(_clientOptions.Namespace, logicalTopic),
             cancellationToken: cancellationToken).ConfigureAwait(false);
         var queues = route.QueueDatas
-            .Where(static queue => (queue.Perm & WritePermission) == WritePermission)
+            .Where(static queue => (queue.Perm & ReadPermission) == ReadPermission)
             .SelectMany(
-                static queue => Enumerable.Range(0, queue.WriteQueueNums),
+                static queue => Enumerable.Range(0, queue.ReadQueueNums),
                 (queue, queueId) => new { queue.BrokerName, QueueId = queueId })
             .Where(queue => HasBrokerAddress(route, queue.BrokerName))
             .OrderBy(static queue => queue.BrokerName, StringComparer.Ordinal)
             .ThenBy(static queue => queue.QueueId)
-            .Select(queue => new RemotingMessageQueue(logicalTopic, queue.BrokerName, queue.QueueId))
+            .Select(queue => new RemotingConsumerQueue(logicalTopic, queue.BrokerName, queue.QueueId))
             .ToArray();
         return queues.Length > 0
             ? queues
-            : throw new RocketMQClientException($"No writable message queue is available for topic '{logicalTopic}'.");
+            : throw new RocketMQClientException($"No readable message queue is available for topic '{logicalTopic}'.");
     }
 
     public async Task<RemotingMessageView> ViewMessageAsync(
@@ -90,7 +89,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
     }
 
     public Task<long> GetMinOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default) =>
         GetQueueOffsetAsync(
             messageQueue,
@@ -105,7 +104,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
             cancellationToken);
 
     public async Task<DateTimeOffset?> GetEarliestMessageStoreTimeAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messageQueue);
@@ -124,7 +123,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
     }
 
     public Task<long> GetMaxOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         bool committed = true,
         CancellationToken cancellationToken = default) =>
         GetQueueOffsetAsync(
@@ -141,7 +140,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
             cancellationToken);
 
     public Task<long> SearchOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         DateTimeOffset timestamp,
         RemotingOffsetBoundary boundary = RemotingOffsetBoundary.Lower,
         CancellationToken cancellationToken = default)
@@ -165,7 +164,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
 
     public async Task<long?> GetConsumerOffsetAsync(
         string consumerGroup,
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroup);
@@ -192,7 +191,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
     }
 
     private async Task<long> GetQueueOffsetAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         int requestCode,
         Func<string, CommandCustomHeader> headerFactory,
         string operation,
@@ -209,7 +208,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
     }
 
     private async Task<RemotingCommand> InvokeAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         RemotingCommand request,
         CancellationToken cancellationToken)
     {
@@ -222,7 +221,7 @@ internal sealed class RemotingAdmin : IRemotingAdmin
     }
 
     private async Task<EndPoint> GetBrokerEndpointAsync(
-        RemotingMessageQueue messageQueue,
+        RemotingConsumerQueue messageQueue,
         CancellationToken cancellationToken)
     {
         var wireTopic = GetWireTopic(messageQueue.Topic);

@@ -95,6 +95,11 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
             $"listenPort={_brokerPort}\n" +
             "autoCreateTopicEnable=true\n" +
             "autoCreateSubscriptionGroup=true\n" +
+            "timerWheelEnable=true\n" +
+            "serverLoadBalancerEnable=true\n" +
+            "defaultMessageRequestMode=PULL\n" +
+            "defaultPopShareQueueNum=-1\n" +
+            "enableRetryTopicV2=false\n" +
             "enableLmq=true\n" +
             "enableMultiDispatch=true\n" +
             "recallMessageEnable=true\n");
@@ -256,7 +261,6 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
             CreateTopicAsync(LiteParentTopic, "LITE", CancellationToken.None)).ConfigureAwait(false);
         foreach (var group in new[]
                  {
-                     "remoting-pull-consumer-it",
                      "legacy-push-consumer-it",
                      "legacy-push-cluster-it"
                  })

@@ -19,8 +19,6 @@ internal enum RemotingRocketMQRole
 {
     Admin,
     Producer,
-    PullConsumer,
     LitePullConsumer,
-    PushConsumer,
-    PopConsumer
+    PushConsumer
 }

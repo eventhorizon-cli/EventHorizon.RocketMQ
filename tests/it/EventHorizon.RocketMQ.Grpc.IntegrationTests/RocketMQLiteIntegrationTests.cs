@@ -28,7 +28,7 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcLitePushConsumerDispatchesLiteMessages()
+    public async Task GrpcLitePushConsumer_LiteMessages_DispatchesMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -76,7 +76,7 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcLitePushConsumersInTheSameGroupDispatchTheirOwnLiteTopics()
+    public async Task GrpcLitePushConsumers_SameGroupLiteTopics_DispatchesOwnTopics()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

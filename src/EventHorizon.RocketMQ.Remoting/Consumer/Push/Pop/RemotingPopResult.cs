@@ -18,7 +18,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 /// <summary>
 /// Represents the result of a classic remoting POP operation.
 /// </summary>
-public sealed class RemotingPopResult
+internal sealed class RemotingPopResult
 {
     internal RemotingPopResult(
         IReadOnlyList<RemotingPopMessage> messages,

@@ -65,7 +65,7 @@ tag 会为该示例固定。两个 Web host 默认都会导出到本地 Grafana 
 - 非空 receive 会创建 `Client` Activity，记录 receive RPC 或长轮询耗时，并作为自动 handler 工作的父节点。
 - 自动 Push 或 LitePush handler 会创建 `Consumer` process Activity。receive Activity 是它的父节点，生产端传播的
   上下文作为 Activity link；如果没有 receive 上下文，则生产端上下文直接成为 process 的父节点。
-- Pull 和 Simple API 会把消息交给应用代码。它们会创建 receive telemetry，但不会创建 process Activity，因为客户端
+- LitePull 和 Simple API 会把消息交给应用代码。它们会创建 receive telemetry，但不会创建 process Activity，因为客户端
   并不拥有应用处理逻辑的边界。
 
 成功但为空的轮询不会产生 receive span。失败的 receive 操作会创建错误 Activity。只有对应 Activity source 存在
@@ -76,9 +76,9 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 | 操作 | gRPC | classic Remoting |
 | --- | --- | --- |
 | Producer 发送 | 所有 `IGrpcProducer` 发送路径，包括事务消息发送。 | 普通、reply、batch 与 one-way 发送路径。 |
-| Consumer 接收 | Simple、Push 与 LitePush 的 receive engine。 | Pull、LitePull、Push 的 receive engine，以及 POP receive。 |
+| Consumer 接收 | Simple、Push 与 LitePush 的 receive engine。 | LitePull receive 与 Push 的 PULL/POP receiver。 |
 | 自动 handler 处理 | Push 与 LitePush handler。 | Push handler。 |
-| Consumer 完结操作 | 确认、负确认和转发死信。 | 位点提交、重试/死信 send-back、POP 确认和 POP 不可见时间变更。 |
+| Consumer 完结操作 | 确认、负确认和转发死信。 | LitePull 与 Push PULL 位点提交、重试/死信 send-back，以及 Push 内部 POP 确认和不可见时间变更。 |
 
 Activity 使用 OpenTelemetry 消息语义约定属性，例如 `messaging.system`、`messaging.destination.name`、
 `messaging.consumer.group.name`、消息 ID、分区 ID、body 大小和 batch 大小。失败时会把 Activity 状态设为 error，

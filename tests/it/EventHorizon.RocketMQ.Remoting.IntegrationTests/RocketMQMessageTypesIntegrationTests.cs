@@ -28,7 +28,7 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQSingleBrokerCon
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task KeyedClientRegistrationCombinesRemotingDelayProducerAndConsumer()
+    public async Task KeyedClientRegistration_RemotingDelayProducerAndConsumer_CombinesRoles()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

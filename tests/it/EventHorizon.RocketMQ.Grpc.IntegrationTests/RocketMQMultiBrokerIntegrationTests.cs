@@ -34,7 +34,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ProducerRoutesMessagesThroughProxyToAllBrokers()
+    public async Task Producer_AllBrokersThroughProxy_RoutesMessages()
     {
         const int messageCount = 24;
         var cancellationToken = TestContext.Current.CancellationToken;

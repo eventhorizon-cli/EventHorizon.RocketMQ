@@ -15,7 +15,7 @@
 
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Admin;
-using EventHorizon.RocketMQ.Remoting.Producer;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Samples.Remoting.Admin;
 using Microsoft.OpenApi;
 
@@ -126,7 +126,7 @@ static async Task<IResult> GetQueueOffsetsAsync(
 
     try
     {
-        var queue = new RemotingMessageQueue(topic, brokerName, queueId);
+        var queue = new RemotingConsumerQueue(topic, brokerName, queueId);
         var minimumOffsetTask = admin.GetMinOffsetAsync(queue, cancellationToken);
         var maximumOffsetTask = admin.GetMaxOffsetAsync(queue, useCommittedOffset, cancellationToken);
         var earliestStoreTimeTask = admin.GetEarliestMessageStoreTimeAsync(queue, cancellationToken);
@@ -171,7 +171,7 @@ static async Task<IResult> SearchQueueOffsetAsync(
 
     try
     {
-        var queue = new RemotingMessageQueue(topic, brokerName, queueId);
+        var queue = new RemotingConsumerQueue(topic, brokerName, queueId);
         var offset = await admin.SearchOffsetAsync(queue, timestamp, selectedBoundary, cancellationToken).ConfigureAwait(false);
         return Results.Ok(new QueueOffsetSearchResponse(topic, brokerName, queueId, timestamp, selectedBoundary, offset));
     }
@@ -202,7 +202,7 @@ static async Task<IResult> GetConsumerOffsetAsync(
 {
     try
     {
-        var queue = new RemotingMessageQueue(topic, brokerName, queueId);
+        var queue = new RemotingConsumerQueue(topic, brokerName, queueId);
         var offset = await admin.GetConsumerOffsetAsync(consumerGroup, queue, cancellationToken).ConfigureAwait(false);
         return Results.Ok(new ConsumerOffsetResponse(consumerGroup, topic, brokerName, queueId, offset));
     }

@@ -23,7 +23,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 /// <param name="Status">The status reported for the pull operation.</param>
 /// <param name="MinOffset">The minimum available offset reported by the broker.</param>
 /// <param name="MaxOffset">The maximum available offset reported by the broker.</param>
-public sealed record RemotingPullResult(
+internal sealed record RemotingPullResult(
     IReadOnlyList<RemotingMessageView> Messages,
     long NextOffset,
     RemotingPullStatus Status = RemotingPullStatus.Found,

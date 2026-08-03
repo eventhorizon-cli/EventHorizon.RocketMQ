@@ -40,6 +40,8 @@ internal static class RequestCode
     public const int SendReplyMessage = 324;
     public const int PushReplyMessageToClient = 326;
     public const int RecallMessage = 370;
+    public const int QueryAssignment = 400;
+    public const int SetMessageRequestMode = 401;
     public const int PopMessage = 200050;
     public const int AckMessage = 200051;
     public const int ChangeMessageInvisibleTime = 200053;

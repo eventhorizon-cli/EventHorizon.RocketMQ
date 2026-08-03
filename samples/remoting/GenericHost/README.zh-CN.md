@@ -10,9 +10,7 @@ hosted service 会随 Host 启停；应用代码不能再自行调用同一角�
 | --- | --- | --- |
 | [Producer](Producer/README.zh-CN.md) | `IRemotingProducer` | 通过小型 HTTP API 进行 classic Remoting 发送。 |
 | [Admin](Admin/README.zh-CN.md) | `IRemotingAdmin` | 通过 HTTP API 读取物理队列、位点和存储消息。 |
-| [PullConsumer](PullConsumer/README.zh-CN.md) | `IRemotingPullConsumer` | 由应用代码协调队列、位点、拉取和提交。 |
-| [LitePullConsumer](LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | 由应用代码轮询并提交 SDK 分配的队列。 |
-| [PopConsumer](PopConsumer/README.zh-CN.md) | `IRemotingPopConsumer` | 使用基于 receipt 的 POP 投递和结算。 |
-| [PushConsumer](PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | 由 SDK 协调长轮询、分发、重试和位点持久化。 |
+| [LitePullConsumer](LitePullConsumer/README.zh-CN.md) | `IRemotingLitePullConsumer` | 由应用代码轮询并提交 SDK 管理或手工分配的队列。 |
+| [PushConsumer](PushConsumer/README.zh-CN.md) | `IRemotingPushConsumer` | 由 SDK 协调客户端或 Broker 分配、接收、分发和结算。 |
 
 只构造普通 `ServiceProvider` 的进程中，受生命周期管理的角色应使用同级[非 Host 示例](../NonHost/README.zh-CN.md)。

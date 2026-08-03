@@ -47,7 +47,7 @@ test topology and CI policy.
 | `RocketMQTestTopicType` | Selects normal, transaction, FIFO, delay, or Lite topic provisioning. |
 | `RocketMQHostPortReservation` | Coordinates dynamic host-port choices within the current test process. |
 | `RocketMQMultiBrokerGrpcContainerFixture` | Runs three Docker-network Brokers behind a cluster-mode Proxy. |
-| `RocketMQMultiBrokerRemotingContainerFixture` | Runs three host-reachable classic Remoting Brokers. |
+| `RocketMQMultiBrokerRemotingContainerFixture` | Runs two independent NameServers and three host-reachable classic Remoting Brokers; every Broker registers with both. |
 
 The internal type dependencies are:
 
@@ -137,14 +137,21 @@ Disposal runs in the reverse ownership direction: Proxy, Brokers, NameServer, ne
 The Remoting multi-Broker initialization order is:
 
 ```text
-reserve one NameServer and three Broker host ports
-    -> network -> NameServer -> Broker A/B/C in parallel
-    -> wait for all Broker registrations
+reserve five host ports (two NameServer ports and three Broker ports)
+    -> network -> NameServer A/B -> Broker A/B/C in parallel
+    -> wait for each NameServer to report all three Broker registrations
     -> create a three-read-queue and three-write-queue topic on every Broker
-    -> wait for the complete route
+    -> wait for each NameServer to report the complete nine-queue route
 ```
 
-Disposal releases the Brokers, NameServer, network, and port reservation.
+Ordinary Remoting multi-Broker clients pass both host-reachable NameServer addresses as one semicolon-separated value
+(`NameServerA;NameServerB`). A focused failover integration test uses one client with both addresses: it refreshes through
+A and B, stops NameServer A, waits for its 10-millisecond route-cache interval to expire, observes the failed A attempt
+and fallback to B, then refreshes the complete route and sends successfully. Finally it restarts A and waits for A to report
+all three Brokers and the complete nine-queue topic route before cleanup, so the shared collection is not left degraded. The
+two NameServers are queried independently; the fixture does not rely on NameServer replication.
+
+Disposal releases the Brokers, NameServer A and B, network, and port reservation.
 
 ## Why the single-Broker fixture is shared
 
@@ -173,8 +180,8 @@ The multi-Broker topologies have incompatible Broker address-advertisement requi
 | Client entry point | Proxy | NameServer and Brokers |
 | Advertised Broker host | Docker alias such as `broker-a` | `127.0.0.1` |
 | Broker ports | Fixed `10911` in separate containers | Distinct dynamically allocated host ports |
-| Host mappings | Proxy only | NameServer and every Broker |
-| Additional behavior | Proxy startup and per-Broker offset inspection | Explicit queue counts and host-reachable routes |
+| Host mappings | Proxy only | NameServer A/B and every Broker |
+| Additional behavior | Proxy startup and per-Broker offset inspection | Explicit queue counts, independent NameServer routes, and host-reachable addresses |
 
 A separate Proxy container can resolve `broker-a`, `broker-b`, and `broker-c`, while a host Remoting client cannot. If
 the Brokers advertise `127.0.0.1`, the host can reach them through distinct mapped ports, but `127.0.0.1` inside the

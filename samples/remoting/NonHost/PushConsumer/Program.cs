@@ -38,8 +38,9 @@ services
     {
         options.GroupName = "rocketmq-dotnet-remoting-nonhost-push-consumer-sample";
         options.InitialPosition = ConsumeFromPosition.End;
+        options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Client;
         options.MaxConcurrency = 4;
-        options.BatchSize = 16;
+        options.PullBatchSize = 16;
         options.ConsumeMessageBatchSize = 4;
         options.Subscribe(Topic, new FilterExpression("sample"));
     });

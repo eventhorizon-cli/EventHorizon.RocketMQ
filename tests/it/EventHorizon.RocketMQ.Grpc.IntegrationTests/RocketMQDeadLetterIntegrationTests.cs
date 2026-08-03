@@ -29,7 +29,7 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcPushConsumerForwardsMessageToDeadLetterQueue()
+    public async Task GrpcPushConsumer_DeadLetterQueue_ForwardsMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

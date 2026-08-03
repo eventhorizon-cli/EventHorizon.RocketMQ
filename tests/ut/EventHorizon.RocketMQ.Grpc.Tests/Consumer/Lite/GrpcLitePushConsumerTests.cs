@@ -33,7 +33,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.Lite;
 public sealed class GrpcLitePushConsumerTests
 {
     [Fact]
-    public async Task StartAsync_SynchronizesConfiguredTopicsWithTheBindTopic()
+    public async Task StartAsync_ConfiguredTopicsAndBindTopic_SynchronizesSubscriptions()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -72,7 +72,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task SubscribeAndUnsubscribe_SendPartialUpdatesAndPreserveOffsetOption()
+    public async Task SubscribeAndUnsubscribe_PartialUpdatesAndOffsetOption_SendsAndPreserves()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -108,7 +108,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task FailedSubscriptionDoesNotMutateLocalTopicSet()
+    public async Task FailedSubscription_LocalTopicSet_DoesNotMutate()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -138,7 +138,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task NotifyUnsubscribeLite_RemovesTheTopicWithoutSynchronizingAgain()
+    public async Task NotifyUnsubscribeLite_DuplicateSynchronization_RemovesTopic()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -163,7 +163,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task SubscribeBeforeStartIsRejectedWithoutCallingTheService()
+    public async Task SubscribeBeforeStart_ServiceCall_IsRejected()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
@@ -176,7 +176,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public void OffsetOptionsMapToExpectedProtobufVariants()
+    public void OffsetOptions_ProtobufVariants_MapsOffsets()
     {
         var timestamp = new DateTimeOffset(2026, 7, 23, 8, 9, 10, TimeSpan.Zero);
 
@@ -199,7 +199,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushReceiveEngine_UsesPushLongPollingFields()
+    public async Task LitePushReceiveEngine_PushLongPolling_UsesExpectedFields()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -290,7 +290,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task AddGrpcLitePushConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
+    public async Task AddGrpcLitePushConsumer_ProtocolSpecificConsumerAndLifecycle_Registers()
     {
         var services = new ServiceCollection();
         services
@@ -312,7 +312,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public void AddGrpcLitePushConsumer_RejectsStandardTopicSubscriptions()
+    public void AddGrpcLitePushConsumer_StandardTopicSubscriptions_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -332,7 +332,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task GrpcLitePushConsumerHostedService_ForwardsLifecycleCancellationTokens()
+    public async Task GrpcLitePushConsumerHostedService_LifecycleCancellationTokens_ForwardsCancellationTokens()
     {
         using var start = new CancellationTokenSource();
         using var stop = new CancellationTokenSource();
@@ -350,7 +350,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task SubscriptionManager_IgnoresDuplicateTopicsAndUnrelatedTelemetryCommands()
+    public async Task SubscriptionManager_DuplicateTopicsAndTelemetryCommands_Ignores()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -385,7 +385,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task SubscriptionManager_ContinuesPeriodicSynchronizationAfterANonFatalFailure()
+    public async Task SubscriptionManager_PeriodicSynchronizationAfterANonFatalFailure_Continues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -423,7 +423,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task SubscriptionManager_DisposeAsyncIsIdempotent()
+    public async Task SubscriptionManager_RepeatedDispose_IsIdempotent()
     {
         var client = new Mock<IRocketMQGrpcClient>(MockBehavior.Strict);
         var routes = new Mock<IGrpcRouteService>(MockBehavior.Strict);
@@ -437,7 +437,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushConsumer_IsIdempotentAndDisposesStartedDependencies()
+    public async Task LitePushConsumer_StartedDependencies_IsIdempotentAndDisposes()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -466,7 +466,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushConsumer_RetriesStopAfterSubscriptionManagerCancellation()
+    public async Task LitePushConsumer_StopAfterSubscriptionManagerCancellation_RetriesStop()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -523,7 +523,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushConsumer_StopsTheDispatcherWhenSubscriptionStartupFails()
+    public async Task LitePushConsumer_SubscriptionStartupFailure_StopsDispatcher()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -552,7 +552,7 @@ public sealed class GrpcLitePushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushConsumer_DelegatesRuntimeTopicUpdates()
+    public async Task LitePushConsumer_RuntimeTopicUpdates_Delegates()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");

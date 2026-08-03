@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol.Telemetry;
 public sealed class GrpcSessionManagerTests
 {
     [Fact]
-    public async Task EnsureAsync_SynchronizesSettingsAndNotifiesTheServerDuringDisposal()
+    public async Task EnsureAsync_SettingsAndNotifiesTheServerDuringDisposal_Synchronizes()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -69,7 +69,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task DisposeAsync_ContinuesWhenTerminationAndSessionDisposalFail()
+    public async Task DisposeAsync_WhenTerminationAndSessionDisposalFail_Continues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -98,7 +98,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task TelemetryCommands_WriteDiagnosticResponsesAndForwardOtherCommands()
+    public async Task TelemetryCommands_DiagnosticAndOtherCommands_WritesResponses()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -150,7 +150,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task ReconnectCommand_ReplacesTheActiveTelemetrySession()
+    public async Task ReconnectCommand_ActiveTelemetrySession_Replaces()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -198,7 +198,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task ReconnectCommandReceivedDuringSessionOpening_IsHonoredAfterRegistration()
+    public async Task ReconnectCommandReceivedDuringSessionOpening_AfterRegistration_IsHonored()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -245,7 +245,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task SessionFailure_ReplacesTheTelemetrySession()
+    public async Task SessionFailure_ActiveTelemetrySession_Replaces()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -282,7 +282,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task FailedSessionReplacement_IsCancelledWhenTheManagerIsDisposed()
+    public async Task FailedSessionReplacement_ManagerDisposal_CancelsAndDisposes()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -324,7 +324,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task Start_EmitsHeartbeatsForActiveSessions()
+    public async Task Start_ActiveSessions_EmitsHeartbeats()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -369,7 +369,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task Start_ContinuesAfterAHeartbeatFailure()
+    public async Task Start_HeartbeatFailure_Continues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -419,7 +419,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task DisposeAsync_CancelsAnInFlightHeartbeat()
+    public async Task DisposeAsync_AnInFlightHeartbeat_Cancels()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -462,7 +462,7 @@ public sealed class GrpcSessionManagerTests
     }
 
     [Fact]
-    public async Task GetServerSettings_ReturnsNullWhenTheEndpointHasNoSession()
+    public async Task GetServerSettings_NoSession_ReturnsNull()
     {
         var client = CreateClient();
         await using var manager = CreateManager(client.Object, "orders", null);

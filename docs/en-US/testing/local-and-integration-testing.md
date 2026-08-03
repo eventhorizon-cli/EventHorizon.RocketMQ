@@ -52,6 +52,12 @@ consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
 that would be less clear with a mock.
 
+Test methods follow the
+[`MemberOrBehavior_Scenario_ExpectedOutcome` convention recommended by Microsoft](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices#naming-your-tests).
+Each segment uses PascalCase and underscores separate the subject, scenario, and observable result. Integration tests
+without one method under test use the workflow as the first segment. Names omit `Test` prefixes and `Should` filler so
+runner output states the behavior and failure condition directly.
+
 Integration coverage never substitutes for unit coverage of deterministic client-owned behavior. Even when an
 integration test covers the complete workflow, keep focused unit tests for the underlying state transitions,
 allocation, scheduling, offsets, retries, and failure invariants. Integration tests complement those checks at real
@@ -125,6 +131,12 @@ groups and message identifiers. The legacy Remoting container suite deliberately
 dedicated topic and serial method execution because its cases exercise shared admin and offset
 semantics.
 
+The single-Broker fixture enables Broker-side assignment and the timer wheel while retaining PULL as the default
+message request mode. Remoting Broker-assigned Push cases use a test-only administrative operation to select POP for
+one unique topic/group, verify delivery, acknowledgement, retry, renewal, and dead-letter behavior, and restore PULL
+during cleanup. `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer
+API. Ordinary LitePull and default Push workflows do not depend on Broker-side POP configuration.
+
 The fixture obtains host ports dynamically, so parallel or repeated test runs are not tied to the
 manual Compose ports. The protocol-specific test projects are:
 
@@ -134,9 +146,15 @@ manual Compose ports. The protocol-specific test projects are:
 The multi-Broker fixtures complement the baseline fixture:
 
 - [`RocketMQMultiBrokerRemotingContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerRemotingContainerFixture.cs)
-  starts a NameServer and three host-reachable master Brokers, each with three explicit read and write queues.
-  The Remoting tests require the complete nine-queue route, send to every physical queue, verify a Push consumer
-  commits each queue, and verify clustered groups with three consumers and ten consumers. The latter confirms that
+  starts two independent NameServers and three host-reachable master Brokers, each with three explicit read and write
+  queues. Every Broker registers with both NameServers. Readiness waits until each NameServer independently reports all
+  three Brokers and the complete nine-queue route. Ordinary multi-Broker Remoting clients use the semicolon-combined
+  NameServer addresses (`NameServerA;NameServerB`). The Remoting tests require that route, send to every physical queue,
+  verify a Push consumer commits each queue, and verify clustered groups with three consumers and ten consumers. A focused
+  failover integration test uses one client with both addresses: it refreshes through A and B, stops A, waits for its
+  10-millisecond route-cache interval to expire, observes the failed A attempt and fallback to B, then refreshes the
+  complete route and sends successfully. Finally it restarts A and waits for A to report all three Brokers and the complete
+  nine-queue topic route before cleanup so the shared collection is not left degraded. The ten-consumer case confirms that
   consumers in excess of the nine queues remain unassigned without duplicate delivery.
 - [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
   starts a NameServer, three master Brokers, and a cluster-mode Proxy on an isolated Docker network. The gRPC test
@@ -169,7 +187,8 @@ selects the multi-Broker tests; the single-Broker jobs run the complementary set
 and builds only its protocol-specific integration-test dependency graph, has its own timeout budget,
 and reuses the repository's NuGet package cache. Within a single-Broker job, isolated test classes
 run concurrently up to the runner limit; the legacy Remoting suite remains serial by design.
-Testcontainers still starts isolated Broker, NameServer, and Proxy fixtures for every job. All four
+Testcontainers still starts isolated Broker, NameServer, and Proxy fixtures for every job; the multi-Broker Remoting
+fixture includes two independent NameServers. All four
 jobs collect Cobertura reports and upload them to Codecov with distinct upload names under the shared
 `integration-tests` flag. Codecov combines those reports with the `unit-tests` reports; the repository
 configuration continues to exclude `samples` from coverage.
@@ -217,4 +236,5 @@ Broker or Proxy requirements.
 - [Test-environment index](../../../test-environments/README.md)
 - [Runnable samples](../../../samples/README.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
+- [Classic Remoting consumer model](../remoting/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)

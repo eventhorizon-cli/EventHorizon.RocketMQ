@@ -33,7 +33,7 @@ public sealed class RocketMQCrossProcessRebalanceIntegrationTests(
     [InlineData(true, false)]
     [InlineData(false, true)]
     [Trait("Category", "Integration")]
-    public async Task PushConsumersInSeparateProcessesRebalanceAfterMemberLeaves(
+    public async Task PushConsumers_MemberLeaves_Rebalances(
         bool consumeOrderly,
         bool terminateSecondProcess)
     {

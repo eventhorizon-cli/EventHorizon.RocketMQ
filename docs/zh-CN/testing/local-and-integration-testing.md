@@ -24,13 +24,18 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 | [`tests/ut/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
 | [`tests/ut/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
 | [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
-| [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、Pull、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
+| [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、LitePull、Push PULL/POP、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
 | [`tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost`](../../../tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost) | 跨进程 IT 宿主 | 仅供 Remoting IT 启动独立 Push Consumer 进程，不包含测试断言且不打包。 |
 | [`tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
 | [`tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks`](../../../tests/benchmarks/EventHorizon.RocketMQ.Remoting.Benchmarks) | 基准测试 | Remoting 性能敏感路径的 BenchmarkDotNet 测量。 |
 
 单元测试优先使用 `MockBehavior.Strict` 的 Moq，以明确可替换协作者的交互。对于流式 framing、竞争、
 时序或有状态协议协作，保留小型专用 fake 比堆叠 Mock 更清晰时可以例外。
+
+测试方法采用 Microsoft 推荐的
+[`MemberOrBehavior_Scenario_ExpectedOutcome` 三段式命名](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices#naming-your-tests)。
+每段内部使用 PascalCase，段间以下划线分隔被测成员或行为、场景和可观察结果。没有单一被测方法的 IT 在第一段
+写工作流名称。名称不添加 `Test` 前缀或 `Should` 套话，让 test runner 输出直接说明行为和失败条件。
 
 可发布的 gRPC 与 Remoting Package 提供 `net8.0` 和 `net10.0` 两个目标。所有单元测试、兼容性测试、集成测试、
 sample 和 BenchmarkDotNet 项目统一使用 `net10.0`；`net8.0` 只作为 Package 的受支持 target 保留。solution build
@@ -118,6 +123,11 @@ route lookup 需要已有 route；普通 subscription group 则由 Broker 自动
 container suite 刻意继续使用专用 topic，且类内方法串行执行，因为这些 case 验证的是共享的 Admin 与 offset
 语义。
 
+single-Broker fixture 会启用 Broker-side assignment 与 timer wheel，同时把消息请求模式默认保持为 PULL。
+Remoting Broker-assigned Push case 仅通过测试管理操作把一个唯一 topic/group 切换为 POP，验证投递、确认、重试、
+续租和死信行为，并在清理时恢复 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产 Consumer
+API。普通 LitePull 与默认 Push 工作流不依赖 Broker 侧 POP 配置。
+
 端口由 Testcontainers 动态映射，测试不会依赖手工环境的固定端口。
 
 Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注册到 NameServer，Proxy 再启动。这既能
@@ -125,10 +135,14 @@ Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注�
 
 多 Broker 覆盖使用两套协议隔离的 fixture：
 
-- Remoting fixture 启动 NameServer 和三个宿主机可达的 master Broker，并在每台 Broker 上显式创建三个读写队列。
-  测试断言完整的九个物理队列 route，逐队列定向发送消息，验证一个 PushConsumer 会提交每个队列的 offset，
-  并验证同组的三个及十个 PushConsumer 的分配。十个 Consumer 多于九个队列时，多出的实例保持未分配，
-  且不会产生重复投递。
+- Remoting fixture 启动两个相互独立的 NameServer 和三个宿主机可达的 master Broker，并在每台 Broker 上显式创建三个读写队列。
+  每台 Broker 都向两个 NameServer 注册。初始化会分别等待两个 NameServer 独立报告三台 Broker 以及完整的九个队列
+  route。普通 multi-Broker Remoting client 使用分号分隔的 NameServer 地址（`NameServerA;NameServerB`）。Remoting 测试
+  断言完整的九个物理队列 route，逐队列定向发送消息，验证一个 PushConsumer 会提交每个队列的 offset，并验证同组的
+  三个及十个 PushConsumer 的分配。专门的故障切换集成测试使用同一个配置了两个地址的 client：先通过 A 和 B 各刷新
+  一次 route，再停止 A，等待 10 毫秒的 route cache 过期，确认客户端对 A 的尝试失败并切换到 B，随后仍能刷新完整 route 并成功
+  发送消息。最后重启 A，等待 A 再次报告三台 Broker 和完整的九个队列 topic route，再完成清理，避免污染共享 collection。
+  Consumer 多于九个队列时，多出的实例保持未分配，且不会产生重复投递。
 - gRPC fixture 在隔离 Docker network 中启动 NameServer、三个 master Broker 和 cluster-mode Proxy。测试通过 Proxy
   发送消息，再查询每台 Broker 的 topic 状态，确认三台 Broker 都有实际写入。
 
@@ -183,7 +197,8 @@ solution build 和发版 pack 负责验证两个可发布库的全部目标框�
 single-Broker 与一个 multi-Broker job。类级别的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；
 single-Broker job 运行其余测试。每个 job 只 restore
 和 build 对应协议的 integration-test 依赖图，使用独立超时预算，并复用仓库的 NuGet 包缓存。Testcontainers
-仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture。single-Broker job 内，已经隔离的测试类
+仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture；多 Broker Remoting fixture 包含两个相互独立的
+NameServer。single-Broker job 内，已经隔离的测试类
 会在 runner 上限内并发执行；legacy Remoting suite 则按设计保持串行。四个 job 都会生成 Cobertura 报告，以不同
 的上传名称归入共享的 `integration-tests` flag；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会排除
 `samples`，不会将 sample 计入覆盖率。
@@ -192,7 +207,8 @@ single-Broker job 运行其余测试。每个 job 只 restore
 
 集成测试只覆盖仓库真正公开且可由目标服务端运行的路径。gRPC 的 Simple、Push 和 LitePush 在匹配的
 Proxy/Broker 配置下覆盖；已移除的 gRPC PullConsumer 没有 sample 或 integration test，因为它不是当前
-可提供的 public role。显式 queue/offset Pull 的真实互操作覆盖属于 Remoting integration tests。
+可提供的 public role。显式 queue/offset 工作流由 Remoting LitePull 的手工 assignment、seek 和 commit 覆盖；
+Broker-assigned PULL/POP 则由 Remoting Push integration test 覆盖。
 
 同样，手工 Compose 环境的初始化文档会列出 Lite、topic 类型、group 和 Proxy 前提。测试失败时先区分
 客户端回归、服务端 feature 未开启、服务端版本不兼容和 Docker/network 环境问题，能显著缩短定位时间。
@@ -214,4 +230,5 @@ Proxy/Broker 配置下覆盖；已移除的 gRPC PullConsumer 没有 sample 或 
 - [协议边界](../architecture/protocol-boundaries.md)
 - [依赖注入与生命周期](../architecture/dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
+- [classic Remoting Consumer 模型](../remoting/consumer-model.md)
 - [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)

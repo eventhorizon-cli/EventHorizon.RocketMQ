@@ -19,10 +19,9 @@ using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Orderly;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
@@ -49,7 +48,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ProducerSendsMessagesToContainerizedBroker()
+    public async Task Producer_ContainerizedBroker_SendsMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await AssertReachableAsync(_fixture.NameServerAddress, cancellationToken);
@@ -97,68 +96,69 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPullConsumerControlsOffsets()
+    public async Task LitePullConsumer_ManualAssignment_ControlsPositionsAndCommits()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var scope = await _fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var group = scope.CreateConsumerGroupName("remoting-manual-lite-pull-consumer");
+        var tag = $"remoting-manual-lite-pull-{Guid.NewGuid():N}";
         var services = new ServiceCollection();
         services
             .AddRocketMQRemoting(options =>
             {
                 options.NamesrvAddr = _fixture.NameServerAddress;
             })
-            .AddRemotingProducer(options => options.GroupName = "legacy-pull-producer-it")
-            .AddRemotingPullConsumer(options =>
+            .AddRemotingProducer(options =>
+                options.GroupName = scope.CreateProducerGroupName("remoting-manual-lite-pull-producer"))
+            .AddRemotingLitePullConsumer(options =>
             {
-                options.GroupName = "remoting-pull-consumer-it";
-                options.LongPollingTimeout = TimeSpan.FromSeconds(3);
-                options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression("remoting-pull"));
+                options.GroupName = group;
+                options.InitialPosition = ConsumeFromPosition.End;
+                options.EnableAutoCommit = false;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+                options.PollTimeout = TimeSpan.FromSeconds(2);
             });
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         var producer = provider.GetRequiredService<IRemotingProducer>();
-        var consumer = provider.GetRequiredService<IRemotingPullConsumer>();
+        var consumer = provider.GetRequiredService<IRemotingLitePullConsumer>();
         await producer.StartAsync(cancellationToken);
         await consumer.StartAsync(cancellationToken);
         try
         {
             var queues = await consumer.GetMessageQueuesAsync(
-                RocketMQSingleBrokerContainerFixture.TestTopic,
+                scope.Topic,
                 cancellationToken);
-            var endOffsets = new Dictionary<(string Broker, int QueueId), long>();
-            foreach (var candidate in queues)
+            await consumer.AssignAsync(
+                queues,
+                new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
+                {
+                    [scope.Topic] = new(tag)
+                },
+                cancellationToken);
+            foreach (var assignedQueue in queues)
             {
-                endOffsets[(candidate.BrokerName, candidate.QueueId)] =
-                    await consumer.QueryOffsetAsync(
-                        candidate,
-                        QueryOffsetPolicy.End,
-                        cancellationToken: cancellationToken);
+                await consumer.SeekToEndAsync(assignedQueue, cancellationToken);
             }
 
-            var body = $"remoting-pull-{Guid.NewGuid():N}";
-            var sent = await producer.SendAsync(new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body))
+            var body = $"remoting-manual-lite-pull-{Guid.NewGuid():N}";
+            var sent = await producer.SendAsync(new Message(scope.Topic, Encoding.UTF8.GetBytes(body))
             {
-                Tag = "remoting-pull"
+                Tag = tag
             }, cancellationToken);
             var queue = queues.Single(value => value.QueueId == sent.MessageQueue.QueueId && value.BrokerName == sent.MessageQueue.BrokerName);
-            var offset = endOffsets[(queue.BrokerName, queue.QueueId)];
 
-            RemotingPullResult? matching = null;
+            RemotingMessageView? matching = null;
             for (var attempt = 0; attempt < 10 && matching is null; attempt++)
             {
-                var result = await consumer.PullAsync(
-                    queue,
-                    offset,
-                    cancellationToken: cancellationToken);
-                offset = result.NextOffset;
-                if (result.Messages.Any(message => Encoding.UTF8.GetString(message.Body) == body))
-                {
-                    matching = result;
-                }
+                var messages = await consumer.PollAsync(cancellationToken: cancellationToken);
+                matching = messages.SingleOrDefault(message => Encoding.UTF8.GetString(message.Body) == body);
             }
 
-            Assert.NotNull(matching);
-            await consumer.UpdateOffsetAsync(queue, matching.NextOffset, cancellationToken);
-            Assert.Equal(matching.NextOffset, await consumer.GetOffsetAsync(queue, cancellationToken));
+            var message = Assert.IsType<RemotingMessageView>(matching);
+            Assert.Equal(message.QueueOffset + 1, consumer.Position(queue));
+            await consumer.CommitAsync(queue, cancellationToken);
+            Assert.Equal(message.QueueOffset + 1, await consumer.GetCommittedOffsetAsync(queue, cancellationToken));
         }
         finally
         {
@@ -169,7 +169,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyLitePullConsumerPollsAndExplicitlyCommitsMessage()
+    public async Task LitePullConsumer_Subscription_PollsAndCommitsExplicitly()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -183,7 +183,9 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
             .AddRemotingLitePullConsumer(options =>
             {
                 options.GroupName = $"legacy-lite-pull-consumer-{suffix}";
+                options.EnableAutoCommit = false;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(3);
+                options.PollTimeout = TimeSpan.FromSeconds(3);
                 options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression("remoting-lite-pull"));
             });
 
@@ -201,14 +203,11 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
                 Tag = "remoting-lite-pull"
             }, cancellationToken);
 
-            RemotingPullResult? matching = null;
+            RemotingMessageView? matching = null;
             for (var attempt = 0; attempt < 10 && matching is null; attempt++)
             {
-                var result = await consumer.PollAsync(cancellationToken: cancellationToken);
-                if (result.Messages.Any(message => Encoding.UTF8.GetString(message.Body) == body))
-                {
-                    matching = result;
-                }
+                var messages = await consumer.PollAsync(cancellationToken: cancellationToken);
+                matching = messages.SingleOrDefault(message => Encoding.UTF8.GetString(message.Body) == body);
             }
 
             Assert.NotNull(matching);
@@ -223,83 +222,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPopConsumerRenewsAndAcknowledgesBrokerReceipt()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var suffix = Guid.NewGuid().ToString("N");
-        var group = $"legacy-pop-consumer-{suffix}";
-        var tag = $"legacy-pop-{suffix}";
-        var body = $"legacy-pop-message-{suffix}";
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options =>
-            {
-                options.NamesrvAddr = _fixture.NameServerAddress;
-            })
-            .AddRemotingProducer(options => options.GroupName = $"legacy-pop-producer-{suffix}")
-            .AddRemotingPopConsumer(options =>
-            {
-                options.GroupName = group;
-                options.BatchSize = 1;
-                options.InvisibleDuration = TimeSpan.FromSeconds(5);
-                options.LongPollingTimeout = TimeSpan.FromSeconds(2);
-            });
-
-        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
-        var producer = provider.GetRequiredService<IRemotingProducer>();
-        var consumer = provider.GetRequiredService<IRemotingPopConsumer>();
-        await producer.StartAsync(cancellationToken);
-        await consumer.StartAsync(cancellationToken);
-        try
-        {
-            var queues = await consumer.GetMessageQueuesAsync(
-                RocketMQSingleBrokerContainerFixture.TestTopic,
-                cancellationToken);
-            var sent = await producer.SendAsync(
-                new Message(RocketMQSingleBrokerContainerFixture.TestTopic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
-                cancellationToken);
-            var queue = queues.Single(value =>
-                value.QueueId == sent.MessageQueue.QueueId && value.BrokerName == sent.MessageQueue.BrokerName);
-
-            RemotingPopMessage? received = null;
-            for (var attempt = 0; attempt < 10 && received is null; attempt++)
-            {
-                var result = await consumer.PopAsync(
-                    queue,
-                    maxMessages: 1,
-                    filter: new FilterExpression(tag),
-                    cancellationToken: cancellationToken);
-                received = result.Messages.SingleOrDefault(message =>
-                    Encoding.UTF8.GetString(message.Message.Body) == body);
-            }
-
-            var message = Assert.IsType<RemotingPopMessage>(received);
-            var renewed = await consumer.ChangeInvisibleTimeAsync(
-                message.Receipt,
-                TimeSpan.FromSeconds(5),
-                cancellationToken);
-            await consumer.AcknowledgeAsync(renewed, cancellationToken);
-
-            var afterAcknowledgement = await consumer.PopAsync(
-                queue,
-                maxMessages: 1,
-                invisibleDuration: TimeSpan.FromSeconds(1),
-                filter: new FilterExpression(tag),
-                cancellationToken: cancellationToken);
-            Assert.DoesNotContain(
-                afterAcknowledgement.Messages,
-                message => Encoding.UTF8.GetString(message.Message.Body) == body);
-        }
-        finally
-        {
-            await consumer.StopAsync(CancellationToken.None);
-            await producer.StopAsync(CancellationToken.None);
-        }
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task LegacyPushConsumerDispatchesAndCommitsMessage()
+    public async Task LegacyPushConsumer_Message_DispatchesAndCommits()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var consumed = new TaskCompletionSource<(string MessageId, int DeliveryAttempt)>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -384,7 +307,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task MultipleLegacyPushConsumersUnderOneRegistrationConsumeIndependentTopics()
+    public async Task LegacyPushConsumers_OneRegistration_ConsumeIndependentTopics()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var orders = await _fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
@@ -532,7 +455,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task MultipleLegacyPushConsumersWithSameGroupShareMessagesWithoutDuplicates()
+    public async Task LegacyPushConsumers_SameGroup_ShareMessagesWithoutDuplicates()
     {
         const int messageCount = 16;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -654,7 +577,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPushConsumerDispatchesConfiguredMessageBatch()
+    public async Task LegacyPushConsumer_ConfiguredMessageBatch_DispatchesMessages()
     {
         const int messageCount = 3;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -676,7 +599,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
-                options.BatchSize = messageCount;
+                options.PullBatchSize = messageCount;
                 options.ConsumeMessageBatchSize = messageCount;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
@@ -733,7 +656,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPushConsumerAcknowledgesBatchPrefixAndRetriesRemainingMessages()
+    public async Task LegacyPushConsumer_BatchPrefixAndRemainingMessages_AcknowledgesAndRetries()
     {
         const int messageCount = 3;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -760,10 +683,10 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
             {
                 options.GroupName = group;
                 options.InitialPosition = ConsumeFromPosition.Beginning;
-                options.BatchSize = messageCount;
+                options.PullBatchSize = messageCount;
                 options.ConsumeMessageBatchSize = messageCount;
                 options.MaxConcurrency = 1;
-                options.MaxCachedMessages = messageCount;
+                options.PullMaxCachedMessages = messageCount;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.RetryDelay = TimeSpan.FromSeconds(1);
                 options.Subscribe(RocketMQSingleBrokerContainerFixture.TestTopic, new FilterExpression(tag));
@@ -857,7 +780,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyOrderlyPushConsumerWaitsForBrokerQueueLock()
+    public async Task LegacyOrderlyPushConsumer_BrokerQueueLock_WaitsForLock()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -998,7 +921,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPushConsumersInSameGroupShareQueuesWithoutDuplicates()
+    public async Task LegacyPushConsumers_SameGroup_ShareQueuesWithoutDuplicates()
     {
         const int messageCount = 16;
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -1103,7 +1026,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyPushConsumerBeginningConsumesBacklogForFreshGroup()
+    public async Task LegacyPushConsumer_FreshGroupBacklog_ConsumesFromBeginning()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");
@@ -1169,7 +1092,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LegacyBroadcastConsumersEachReceiveTheSameMessage()
+    public async Task LegacyBroadcastConsumers_SameMessage_EachReceive()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var suffix = Guid.NewGuid().ToString("N");

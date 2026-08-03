@@ -23,7 +23,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol;
 public sealed class GrpcChannelPoolTests
 {
     [Fact]
-    public async Task GetClient_ConcurrentCallsForTheSameEndpointCreateOneChannel()
+    public async Task GetClient_SameEndpoint_CreatesOneChannelConcurrently()
     {
         await using var pool = new GrpcChannelPool();
         var endpoint = new Uri("http://127.0.0.1:8081");
@@ -43,7 +43,7 @@ public sealed class GrpcChannelPoolTests
     }
 
     [Fact]
-    public async Task DisposingSharedClients_DoesNotDisposeTheirChannelPool()
+    public async Task DisposingSharedClients_SharedChannelPool_RemainsUsable()
     {
         var options = Options.Create(new GrpcClientOptions { Endpoint = "127.0.0.1:8081" });
         await using var pool = new GrpcChannelPool();

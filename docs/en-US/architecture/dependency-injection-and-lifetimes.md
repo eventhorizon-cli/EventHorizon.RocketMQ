@@ -38,7 +38,8 @@ Remoting starts at
 
 Each client registration exposes only its protocol-specific roles. For example, a gRPC client registration can add
 `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, or `IGrpcLitePushConsumer`; a
-Remoting client registration can add `IRemotingProducer`, `IRemotingAdmin`, Pull, LitePull, POP, or Push roles.
+Remoting client registration can add `IRemotingProducer`, `IRemotingAdmin`, `IRemotingLitePullConsumer`, or
+`IRemotingPushConsumer` roles.
 There is no common `IProducer` or `IConsumer` registration.
 
 ## How It Works
@@ -78,9 +79,9 @@ the same group uses its isolated physical client and therefore a separate Rebala
 Heartbeats belong to a logical group session, not to the physical `RemotingClient`: an active Push or LitePull instance
 sends its own heartbeat through its assigned client during initial and periodic coordination. LitePull begins this
 maintenance when it has subscriptions or manual queue assignments. A shared client can therefore maintain several
-distinct groups, while isolated same-group members maintain their own Broker membership separately. Direct Pull and
-POP are explicit, application-driven APIs; they do not register background consumer-group membership or heartbeat
-loops. Producers maintain their own producer heartbeat lifecycle.
+distinct groups, while isolated same-group members maintain their own Broker membership separately. Low-level PULL
+and POP operations remain internal to LitePull and Push and do not create additional public roles or group sessions.
+Producers maintain their own producer heartbeat lifecycle.
 
 Push and LitePull keep queue-allocation decisions in their own Consumer implementations. Their shared classic group
 protocol operations are owned by `RemotingConsumerGroupSession`; orderly Push queue-lock wire operations are owned by
@@ -100,8 +101,9 @@ combinations are:
 | Different groups and different topics | Independent consumption. |
 | Same group and different topics or filters | Invalid for ordinary Push; use consistent subscriptions or different groups. |
 
-Classic Remoting also requires same-group Push instances to use the same clustering/broadcasting mode, orderly mode,
-and initial position, and same-group LitePull instances to use the same initial offset policy. Push and LitePull cannot
+Classic Remoting also requires same-group Push instances to use the same assignment mode,
+clustering/broadcasting mode, orderly mode, and initial position, and same-group LitePull instances to use the same
+initial position. Push and LitePull cannot
 share a group because they advertise different classic Broker consumption types. Instance-local settings such as
 concurrency, timeouts, and handlers may still differ. These are group-wide configuration rules, but registration can
 only fail fast for members declared in the same process and client registration. Deployments must keep members in
@@ -155,7 +157,7 @@ already-started Generic Host must not invoke those role lifecycle methods a seco
 ### Consumer engines
 
 The reusable receive machinery is internal and protocol-owned. A gRPC Push or Simple role receives
-one `IGrpcReceiveConsumerEngine`; a classic consumer role receives one
+one `IGrpcReceiveConsumerEngine`; each Remoting LitePull or Push role receives one
 `IRemotingConsumerEngine`. The builder constructs that engine at the protocol composition root and
 injects it into the consumer implementation. It is not a global DI service, and the consumer does
 not instantiate it itself.
@@ -220,5 +222,6 @@ orderly delivery remain excluded to preserve ordering guarantees.
 
 - [Protocol Boundaries and Type Ownership](protocol-boundaries.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
+- [Classic Remoting consumer model](../remoting/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
 - [Keyed client-registration examples](../../../samples/README.md#producer-web-api-and-swagger)

@@ -84,7 +84,7 @@ docker compose exec broker sh mqadmin updateTopic \
   -n nameserver:9876 -c DefaultCluster -t eventhorizon-test-topic
 
 docker compose exec broker sh mqadmin updateSubGroup \
-  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-pull
+  -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-lite-pull
 
 docker compose exec broker sh mqadmin updateSubGroup \
   -n nameserver:9876 -c DefaultCluster -g rocketmq-dotnet-push
@@ -92,6 +92,12 @@ docker compose exec broker sh mqadmin updateSubGroup \
 docker compose exec broker sh mqadmin topicRoute \
   -n nameserver:9876 -t eventhorizon-test-topic
 ```
+
+本环境把普通 Broker request mode 保持为 PULL。Remoting LitePull 示例，以及采用 `QueueAssignmentMode` 默认值
+`Client` 或 sample 中 `Broker` 值的 Push 都不要求 POP 配置；Broker assignment 默认返回 PULL。若要验证 POP，
+运维人员必须为目标 topic/group 配置 POP request mode。运行时 Consumer 不会发送
+`SET_MESSAGE_REQUEST_MODE`。需要可重复的本地 POP 验证时，应运行隔离的 Remoting integration test，不要修改
+这套共享 sample 环境的默认模式。
 
 如果要在这个通用环境中手动验证 gRPC LitePush，需要创建专用 LITE parent Topic，并为 Consumer Group 配置
 bind topic。仓库提供的 LitePush 示例使用 [`rocketmq-litepush`](../rocketmq-litepush) 时不需要这些命令，因为专用环境
@@ -114,7 +120,7 @@ docker compose exec broker sh mqadmin updateSubGroup \
 
 | 客户端路径 | 连接地址 |
 | --- | --- |
-| classic Remoting Producer/Consumer | NameServer：`localhost:9876` |
+| classic Remoting Producer、LitePull 或 Push | NameServer：`localhost:9876` |
 | RocketMQ 5 gRPC Producer/Consumer | Proxy：`localhost:8081` |
 | RocketMQ Dashboard | 浏览器：`http://localhost:8082` |
 

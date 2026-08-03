@@ -26,12 +26,12 @@ using GrpcFilterExpression = EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressio
 using GrpcFilterExpressionType = EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType;
 using GrpcMessage = EventHorizon.RocketMQ.Grpc.Producer.Message;
 using GrpcRocketMQClientException = EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException;
+using RemotingConsumeFromPosition = EventHorizon.RocketMQ.Remoting.Consumer.ConsumeFromPosition;
 using RemotingConsumeResult = EventHorizon.RocketMQ.Remoting.Consumer.ConsumeResult;
 using RemotingConsumerOptions = EventHorizon.RocketMQ.Remoting.Consumer.ConsumerOptions;
 using RemotingFilterExpression = EventHorizon.RocketMQ.Remoting.Consumer.FilterExpression;
 using RemotingFilterExpressionType = EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType;
 using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
-using RemotingQueryOffsetPolicy = EventHorizon.RocketMQ.Remoting.Consumer.QueryOffsetPolicy;
 using RemotingRocketMQClientException = EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException;
 
 namespace EventHorizon.RocketMQ.Compatibility.Tests;
@@ -39,7 +39,7 @@ namespace EventHorizon.RocketMQ.Compatibility.Tests;
 public sealed class ProtocolTypeIsolationTests
 {
     [Fact]
-    public void ProtocolTypes_AreOwnedByTheirProtocolAssemblies()
+    public void ProtocolTypes_ProtocolAssemblies_AreOwned()
     {
         Type[] grpcTypes =
         [
@@ -58,7 +58,7 @@ public sealed class ProtocolTypeIsolationTests
             typeof(RemotingConsumerOptions),
             typeof(RemotingFilterExpression),
             typeof(RemotingFilterExpressionType),
-            typeof(RemotingQueryOffsetPolicy),
+            typeof(RemotingConsumeFromPosition),
             typeof(RemotingMessage),
             typeof(RemotingRocketMQClientException)
         ];
@@ -74,7 +74,7 @@ public sealed class ProtocolTypeIsolationTests
             Assert.Equal(typeof(IRemotingProducer).Assembly, type.Assembly);
         });
         Assert.Empty(grpcTypes.Select(type => type.FullName).Intersect(remotingTypes.Select(type => type.FullName)));
-        Assert.Null(typeof(IGrpcProducer).Assembly.GetType("EventHorizon.RocketMQ.Grpc.Consumer.QueryOffsetPolicy"));
+        Assert.Null(typeof(IGrpcProducer).Assembly.GetType("EventHorizon.RocketMQ.Grpc.Consumer.ConsumeFromPosition"));
         Assert.Null(typeof(IGrpcProducer).Assembly.GetType("EventHorizon.RocketMQ.Grpc.RocketMQClientOptions"));
         Assert.Null(typeof(IRemotingProducer).Assembly.GetType("EventHorizon.RocketMQ.Remoting.RocketMQClientOptions"));
 
@@ -85,7 +85,7 @@ public sealed class ProtocolTypeIsolationTests
             "EventHorizon.RocketMQ.Consumer.ConsumerOptions",
             "EventHorizon.RocketMQ.Consumer.FilterExpression",
             "EventHorizon.RocketMQ.Consumer.FilterExpressionType",
-            "EventHorizon.RocketMQ.Consumer.QueryOffsetPolicy",
+            "EventHorizon.RocketMQ.Consumer.ConsumeFromPosition",
             "EventHorizon.RocketMQ.Producer.Message",
             "EventHorizon.RocketMQ.Exceptions.RocketMQClientException"
         ];
@@ -95,7 +95,7 @@ public sealed class ProtocolTypeIsolationTests
     }
 
     [Fact]
-    public void Messages_CanBeUsedInTheSameApplication()
+    public void Messages_SameApplication_CanBeUsed()
     {
         var grpcMessage = new GrpcMessage("orders", [1]);
         var remotingMessage = new RemotingMessage("orders", [2]);
@@ -106,7 +106,7 @@ public sealed class ProtocolTypeIsolationTests
     }
 
     [Fact]
-    public void ClientOptions_ExposeOnlyProtocolRelevantIdentitySettings()
+    public void ClientOptions_ProtocolRelevantIdentitySettings_ExposeOnly()
     {
         Assert.Equal(typeof(object), typeof(GrpcClientOptions).BaseType);
         Assert.Equal(typeof(object), typeof(RemotingClientOptions).BaseType);
@@ -117,7 +117,7 @@ public sealed class ProtocolTypeIsolationTests
     }
 
     [Fact]
-    public void ProducerContracts_UseTheirProtocolMessageType()
+    public void ProducerContracts_ProtocolMessageType_UseTypedMessage()
     {
         Assert.Contains(
             typeof(IGrpcProducer).GetMethods(),
@@ -130,7 +130,7 @@ public sealed class ProtocolTypeIsolationTests
     }
 
     [Fact]
-    public void DependencyInjectionRegistrations_CanCoexist()
+    public void DependencyInjectionRegistrations_SameServiceCollection_CanCoexist()
     {
         var services = new ServiceCollection();
 

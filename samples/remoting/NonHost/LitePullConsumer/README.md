@@ -14,9 +14,10 @@ loop, and call `StopAsync` in `finally`. Shutdown uses `CancellationToken.None` 
 along with the polling loop.
 The `await using` service provider is asynchronously disposed after the role stops.
 
-The sample configures a `eventhorizon-test-topic` subscription. After startup, the SDK participates in group
-assignment and `PollAsync` selects one active assigned queue. The program processes the returned messages and calls
-`CommitAsync` only afterward. `PollAsync` advances local positions, but it does not persist them by itself.
+The sample configures an `eventhorizon-test-topic` subscription. After startup, the SDK participates in group
+assignment and background receivers fill a bounded local buffer for the assigned queues. `PollAsync` reads available
+messages from that buffer. The program disables auto commit, processes the returned messages, and calls `CommitAsync`
+only afterward; polling advances delivered local positions but does not persist them by itself.
 
 At rebalance boundaries the Consumer can temporarily have no assignment. The sample treats the resulting
 `InvalidOperationException` as a retryable condition and waits before polling again. Processing failures are logged and

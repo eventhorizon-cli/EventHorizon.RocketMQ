@@ -22,7 +22,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class LegacyAclSignerTests
 {
     [Fact]
-    public void CalculateSignature_MatchesApacheClassicGoVector()
+    public void CalculateSignature_ApacheClassicGoVector_Matches()
     {
         var signature = LegacyAclSigner.CalculateSignature(
             "Hello RocketMQ Client ACL Feature"u8,
@@ -32,7 +32,7 @@ public sealed class LegacyAclSignerTests
     }
 
     [Fact]
-    public void Sign_CanonicalizesFieldsAndIncludesBody()
+    public void Sign_FieldsAndBody_Canonicalizes()
     {
         var signer = new LegacyAclSigner(Options.Create(new RemotingClientOptions
         {
@@ -60,7 +60,7 @@ public sealed class LegacyAclSignerTests
     }
 
     [Fact]
-    public void Sign_ReplacesPreviousAuthenticationFields()
+    public void Sign_PreviousAuthenticationFields_Replaces()
     {
         var signer = new LegacyAclSigner(Options.Create(new RemotingClientOptions
         {
@@ -88,7 +88,7 @@ public sealed class LegacyAclSignerTests
     }
 
     [Fact]
-    public void Constructor_RejectsPartialCredentials()
+    public void Constructor_PartialCredentials_Rejects()
     {
         Assert.Throws<ArgumentException>(() => new LegacyAclSigner(Options.Create(new RemotingClientOptions
         {

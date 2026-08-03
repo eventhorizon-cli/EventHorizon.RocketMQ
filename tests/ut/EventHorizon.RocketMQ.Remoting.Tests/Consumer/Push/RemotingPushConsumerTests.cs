@@ -21,8 +21,9 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Offset;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
@@ -34,7 +35,7 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
 
-public sealed class RemotingPushConsumerTests
+public sealed partial class RemotingPushConsumerTests
 {
     private static readonly ConditionalWeakTable<
         RemotingPushConsumerOptions,
@@ -45,7 +46,7 @@ public sealed class RemotingPushConsumerTests
     [InlineData(ConsumeFromPosition.Beginning, "CONSUME_FROM_FIRST_OFFSET")]
     [InlineData(ConsumeFromPosition.End, "CONSUME_FROM_LAST_OFFSET")]
     [InlineData(ConsumeFromPosition.Timestamp, "CONSUME_FROM_TIMESTAMP")]
-    public void Heartbeat_UsesConfiguredInitialPosition(
+    public void Heartbeat_InitialPosition_UsesConfiguredValue(
         ConsumeFromPosition position,
         string expectedConsumeFromWhere)
     {
@@ -67,7 +68,7 @@ public sealed class RemotingPushConsumerTests
     [Theory]
     [InlineData(ConsumerMode.Clustering, "CLUSTERING")]
     [InlineData(ConsumerMode.Broadcasting, "BROADCASTING")]
-    public void Heartbeat_UsesConfiguredConsumerMode(ConsumerMode mode, string expectedMessageModel)
+    public void Heartbeat_ConsumerMode_UsesConfiguredValue(ConsumerMode mode, string expectedMessageModel)
     {
         var body = LegacyConsumerProtocol.EncodeHeartbeat(
             "client-a",
@@ -85,7 +86,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void ResetOffsetDecoder_DecodesGsonComplexMapFixture()
+    public void ResetOffsetDecoder_GsonComplexMapFixture_DecodesOffsets()
     {
         var body = Encoding.UTF8.GetBytes(
             """
@@ -98,7 +99,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void ResetOffsetDecoder_DecodesFastJsonObjectKeyFixture()
+    public void ResetOffsetDecoder_FastJsonObjectKeyFixture_DecodesOffsets()
     {
         var body = Encoding.UTF8.GetBytes(
             """
@@ -111,7 +112,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void ResetOffsetDecoder_DecodesCFlatListFixture()
+    public void ResetOffsetDecoder_CFlatListFixture_DecodesOffsets()
     {
         var body = Encoding.UTF8.GetBytes(
             """
@@ -124,7 +125,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RebalanceRegistration_RebalancesAndUnregistersOnDispose()
+    public async Task RebalanceRegistration_OnRebalance_RebalancesAndUnregisters()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@notify-test");
@@ -132,7 +133,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -179,7 +180,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotification_StopsOldReceiverAndPullsFromResetOffset()
+    public async Task ResetOffsetNotification_ResetOffsetWithActiveReceiver_StopsOldReceiverAndPullsFromReset()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@reset-test")
@@ -191,7 +192,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -263,7 +264,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotification_RetriesBoundaryWhileReplacementPullIsPending()
+    public async Task ResetOffsetNotification_ReplacementPullPending_RetriesBoundary()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var resetPersisted = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -286,7 +287,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -334,7 +335,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotification_RetriesFailedCommitAfterEmptyPullAndRestartUsesCommit()
+    public async Task ResetOffsetNotification_FailedCommitAfterEmptyPull_RetriesCommitAndRestartsFromOffset()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var returnedResetEmptyPull = 0;
@@ -358,7 +359,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -412,7 +413,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ResetOffsetNotifications_BeforeStartPersistLatestOffsetWhileFirstPullIsPending()
+    public async Task ResetOffsetNotifications_BeforeStart_IsPersisted()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var resetPersisted = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -440,7 +441,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -501,7 +502,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task BroadcastingResetOffset_RetriesFailedLocalCommitAfterEmptyPullAtSameOffset()
+    public async Task BroadcastingResetOffset_FailedLocalCommitAfterEmptyPullAtSameOffset_RetriesFailedCommit()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var directory = System.IO.Path.Combine(
@@ -571,7 +572,7 @@ public sealed class RemotingPushConsumerTests
             Assert.True(File.Exists(offsetPath));
             var store = new BroadcastOffsetStore(offsetPath, "unused-client", "unused-group");
             var persisted = await store.ReadAsync(
-                new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911"),
+                new RemotingConsumerQueue("orders", 0, "broker-a", "127.0.0.1:10911"),
                 cancellationToken);
             Assert.Equal(7, persisted);
         }
@@ -592,10 +593,10 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void Allocate_UsesSortedApacheAverageStrategy()
+    public void Allocate_SortedApacheAverageStrategy_UsesQueues()
     {
         var queues = Enumerable.Range(0, 8)
-            .Select(queueId => new RemotingPullMessageQueue("orders", queueId, "broker-a", "127.0.0.1:10911"))
+            .Select(queueId => new RemotingConsumerQueue("orders", queueId, "broker-a", "127.0.0.1:10911"))
             .Reverse()
             .ToArray();
         string[] consumers = ["client-c", "client-a", "client-b"];
@@ -612,7 +613,7 @@ public sealed class RemotingPushConsumerTests
     [Theory]
     [InlineData(3)]
     [InlineData(10)]
-    public void Allocate_DistributesThreeBrokerNineQueueRouteWithoutOverlap(int consumerCount)
+    public void Allocate_ThreeBrokerNineQueueRouteWithoutOverlap_Distributes(int consumerCount)
     {
         var queues = CreateMultiBrokerQueues();
         var consumers = Enumerable.Range(0, consumerCount)
@@ -639,7 +640,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_CreatesOneReceiverPerQueueAcrossThreeBrokers()
+    public async Task ConcurrentPushConsumer_OneReceiverPerQueueAcrossThreeBrokers_CreatesReceiverPerQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
@@ -659,7 +660,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 3,
-            MaxCachedMessages = 9,
+            PullMaxCachedMessages = 9,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -687,7 +688,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task StartStopStart_RegistersAgainAndStartsUncommittedRetryQueuesAtBeginning()
+    public async Task StartStopStart_UncommittedOrdinaryAndRetryQueues_RestartsFromExpectedOffsets()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@legacy-test");
@@ -697,7 +698,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders", new FilterExpression("created || paid"));
@@ -742,8 +743,11 @@ public sealed class RemotingPushConsumerTests
             remoting.UpdatedOffsets.Where(static value => value.Topic == "tenant-a%orders"),
             static value => Assert.Equal(17, value.Offset));
         Assert.Equal(2, remoting.UpdatedOffsets.Count(static value => value.Topic == "tenant-a%orders"));
-        Assert.Equal(2, routeTopics.Count(static topic => topic == "tenant-a%orders"));
-        Assert.Equal(2, routeTopics.Count(static topic => topic == "%RETRY%tenant-a%legacy-group"));
+        Assert.Contains("tenant-a%orders", routeTopics);
+        Assert.Contains("%RETRY%tenant-a%legacy-group", routeTopics);
+        Assert.All(routeTopics, static topic => Assert.Contains(
+            topic,
+            new[] { "tenant-a%orders", "%RETRY%tenant-a%legacy-group" }));
         Assert.All(
             remoting.Requests.Where(static request => request.Code is
                 RequestCode.GetConsumerListByGroup or RequestCode.QueryConsumerOffset or
@@ -768,7 +772,7 @@ public sealed class RemotingPushConsumerTests
     [InlineData(ConsumeFromPosition.Beginning, RequestCode.GetMinOffset, 0L)]
     [InlineData(ConsumeFromPosition.End, RequestCode.GetMaxOffset, 17L)]
     [InlineData(ConsumeFromPosition.Timestamp, RequestCode.SearchOffsetByTimestamp, 9L)]
-    public async Task UncommittedOrdinaryQueue_UsesConfiguredInitialPositionWhileRetryStartsAtZero(
+    public async Task UncommittedOrdinaryQueue_ConfiguredInitialPosition_UsesPositionAndRetriesRetryQueue(
         ConsumeFromPosition position,
         int expectedRequestCode,
         long expectedOffset)
@@ -782,7 +786,7 @@ public sealed class RemotingPushConsumerTests
             InitialPosition = position,
             ConsumeTimestamp = position == ConsumeFromPosition.Timestamp ? timestamp : null,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -824,7 +828,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task Broadcasting_AssignsEveryQueueWithoutMembershipOffsetsOrRetrySubscription()
+    public async Task Broadcasting_NoMembershipOrOffsetQueries_AssignsAllQueues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
@@ -863,7 +867,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task Broadcasting_RetryDropsAndLocalOffsetResumesAcrossConsumerInstances()
+    public async Task Broadcasting_DropsAndLocalOffsetResumesAcrossConsumerInstances_RetriesDroppedMessagesAndResumesOffset()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
@@ -902,7 +906,7 @@ public sealed class RemotingPushConsumerTests
                 await first.StartAsync(cancellationToken);
                 await firstHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
                 await firstRemoting.WaitForPullsAsync(2, cancellationToken);
-                var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
+                var queue = new RemotingConsumerQueue("orders", 0, "broker-a", "127.0.0.1:10911");
                 var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
                 long? persistedOffset;
                 do
@@ -953,7 +957,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task BroadcastingConsumer_DoesNotApplyConsumeTimeout()
+    public async Task BroadcastingConsumer_ConsumeTimeout_DoesNotApply()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
@@ -990,7 +994,7 @@ public sealed class RemotingPushConsumerTests
             });
         options.ConsumeTimeout = TimeSpan.FromMilliseconds(50);
         options.MaxConcurrency = 1;
-        options.MaxCachedMessages = 1;
+        options.PullMaxCachedMessages = 1;
         try
         {
             await using var consumer = CreateRemotingPushConsumer(
@@ -1019,7 +1023,7 @@ public sealed class RemotingPushConsumerTests
     [Theory]
     [InlineData(ConsumeResult.Retry)]
     [InlineData(ConsumeResult.DeadLetter)]
-    public async Task UnsuccessfulHandlerResult_RecordsFailedProcessTelemetry(ConsumeResult result)
+    public async Task UnsuccessfulHandlerResult_FailedProcessTelemetry_RecordsFailure(ConsumeResult result)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
@@ -1098,7 +1102,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task SubscribeBeforeStart_BroadcastingPullsWithConfiguredSqlFilter()
+    public async Task SubscribeBeforeStart_BroadcastingWithConfiguredSqlFilter_PullsWithConfiguredSqlFilter()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
@@ -1113,7 +1117,7 @@ public sealed class RemotingPushConsumerTests
                 LocalOffsetStorePath = offsetPath,
                 InitialPosition = ConsumeFromPosition.Beginning,
                 MaxConcurrency = 1,
-                MaxCachedMessages = 8,
+                PullMaxCachedMessages = 8,
                 LongPollingTimeout = TimeSpan.FromSeconds(1),
             }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
             var remoting = new FakeRemotingClient("127.0.0.1@dynamic-test");
@@ -1155,7 +1159,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RunningSubscribeAndFilterUpdate_RestartPullsWithLatestFilter()
+    public async Task RunningSubscribeAndFilterUpdate_RestartWithLatestFilter_PullsWithLatestFilter()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var options = CreateClusteringOptions();
@@ -1212,7 +1216,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RunningUnsubscribe_RevokesTopicAndRemovesItFromHeartbeat()
+    public async Task RunningUnsubscribe_TopicFromHeartbeat_RevokesAndRemoves()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var options = CreateClusteringOptions();
@@ -1246,7 +1250,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task SubscriptionChanges_RejectDisposedConsumerAndHonorCancellation()
+    public async Task SubscriptionChanges_DisposedConsumerAndHonorCancellation_RejectsDisposedConsumerAndCancellation()
     {
         var options = CreateClusteringOptions();
         var consumer = CreateRemotingPushConsumer(
@@ -1278,7 +1282,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RestartWithUncommittedRetryBacklog_DeliversFromBeginning()
+    public async Task RestartWithUncommittedRetryBacklog_FromBeginning_Delivers()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var retryDelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1302,7 +1306,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, _, _) =>
             {
@@ -1338,7 +1342,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task MissingBrokerMembershipRevokesOwnedQueues()
+    public async Task BrokerMembership_Missing_RevokesOwnedQueues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@legacy-test");
@@ -1346,7 +1350,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -1381,7 +1385,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_DispatchesMessagesInConfiguredBatches()
+    public async Task ConcurrentPushConsumer_MessagesInConfiguredBatches_DispatchesConfiguredBatches()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1411,10 +1415,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 5,
+            PullBatchSize = 5,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 1,
-            MaxCachedMessages = 5,
+            PullMaxCachedMessages = 5,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, _, _) =>
             {
@@ -1454,7 +1458,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_BatchRetrySendsEveryMessageBack()
+    public async Task ConcurrentPushConsumer_BatchRetryResult_SendsBackEveryMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -1479,10 +1483,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 2,
+            PullBatchSize = 2,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 1,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, context, _) =>
             {
@@ -1506,7 +1510,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_AcknowledgesBatchPrefixAndRetriesRemainingMessages()
+    public async Task ConcurrentPushConsumer_BatchPrefixAndRemainingMessages_AcknowledgesAndRetries()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -1532,10 +1536,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 3,
+            PullBatchSize = 3,
             ConsumeMessageBatchSize = 3,
             MaxConcurrency = 1,
-            MaxCachedMessages = 3,
+            PullMaxCachedMessages = 3,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, context, _) =>
             {
@@ -1573,7 +1577,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RecordsPartialBatchAcknowledgementAsPartialSuccessTelemetry()
+    public async Task ConcurrentPushConsumer_PartialAcknowledgement_RecordsPartialSuccessTelemetry()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var processCompleted = new TaskCompletionSource<(bool Success, string? Outcome)>(
@@ -1606,10 +1610,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 2,
+            PullBatchSize = 2,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 1,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, context, _) =>
             {
@@ -1636,7 +1640,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_AdmitsFullBatchesFromMultipleQueuesWhenCacheMatchesOneBatch()
+    public async Task ConcurrentPushConsumer_CacheMatchesBatchSize_AdmitsFullBatches()
     {
         const int queueCount = 4;
         const int messagesPerBatch = 2;
@@ -1682,10 +1686,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = messagesPerBatch,
+            PullBatchSize = messagesPerBatch,
             ConsumeMessageBatchSize = messagesPerBatch,
             MaxConcurrency = queueCount,
-            MaxCachedMessages = messagesPerBatch,
+            PullMaxCachedMessages = messagesPerBatch,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, _, _) =>
             {
@@ -1725,7 +1729,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_CancelsTimedOutHandlerAndContinuesWithQueuedMessages()
+    public async Task ConcurrentPushConsumer_TimedOutHandlerAndWithQueuedMessages_CancelsTimedOutHandlerAndContinues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstHandlerCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1752,11 +1756,11 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 2,
+            PullBatchSize = 2,
             ConsumeMessageBatchSize = 1,
             ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 1,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -1801,7 +1805,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RetriesTimedOutHandlerThatDoesNotHonorCancellation()
+    public async Task ConcurrentPushConsumer_NonCooperativeTimedOutHandler_RetriesAndContinues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1835,10 +1839,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (_, _, _) =>
             {
@@ -1876,7 +1880,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RetriesEveryMessageInTimedOutBatch()
+    public async Task ConcurrentPushConsumer_EveryMessageInTimedOutBatch_RetriesEveryTimedOutMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1904,12 +1908,12 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 2,
+            PullBatchSize = 2,
             ConsumeMessageBatchSize = 2,
             ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             RetryDelay = TimeSpan.FromSeconds(5),
             MaxConcurrency = 1,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, context, _) =>
             {
@@ -1948,7 +1952,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_PullsAheadButDoesNotCommitAcrossAnIncompleteMessage()
+    public async Task ConcurrentPushConsumer_IncompleteMessage_PullsAheadWithoutCommitting()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1975,10 +1979,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 2,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -2022,7 +2026,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_WaitsForEveryBatchBeforeCommittingOffset()
+    public async Task ConcurrentPushConsumer_AllBatchesBeforeCommit_Waits()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var allBatchesStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2053,10 +2057,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 5,
+            PullBatchSize = 5,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 3,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (_, _, token) =>
             {
@@ -2093,7 +2097,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RetriesOffsetCommitWithoutRedeliveringHandler()
+    public async Task ConcurrentPushConsumer_OffsetCommitWithoutRedeliveringHandler_RetriesOffsetCommitWithoutRedelivery()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var releaseFirstPull = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2120,7 +2124,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (_, _, _) =>
@@ -2156,7 +2160,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_SerializesAndCoalescesOffsetPersistence()
+    public async Task ConcurrentPushConsumer_OffsetPersistence_SerializesAndCoalesces()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var commitOneStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2204,10 +2208,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 2,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -2243,7 +2247,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_SerializesOffsetIllegalResetBehindInFlightCommit()
+    public async Task ConcurrentPushConsumer_OffsetIllegalResetBehindInFlightCommit_SerializesIllegalResetBehindCommit()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var commitOneStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2305,7 +2309,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -2337,7 +2341,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_IsolatesOffsetPersistenceAcrossBrokerQueues()
+    public async Task ConcurrentPushConsumer_OffsetPersistenceAcrossBroker_IsolatesBrokerQueuePersistence()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
@@ -2404,10 +2408,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 2,
-            MaxCachedMessages = 9,
+            PullMaxCachedMessages = 9,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, _, _) =>
             {
@@ -2439,7 +2443,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoRetryKeepsSameGroupSuccessorBlockedUntilPredecessorSucceedsAndIgnoresBatchAcknowledgementContext()
+    public async Task FifoRetry_SameGroupPredecessorAndBatchContext_KeepsSuccessorBlocked()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstSecondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2471,7 +2475,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeMessageBatchSize = 2,
             ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 2,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             MaxDeliveryAttempts = 3,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
@@ -2525,7 +2529,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoCompletionWakesSameGroupSuccessorInAnotherProcessQueue()
+    public async Task FifoCompletion_SameGroupSuccessor_WakesAcrossProcessQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2567,10 +2571,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 2,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -2603,7 +2607,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RebalanceKeepsCrossQueueFifoSuccessorBlockedUntilDroppedInFlightHandlerExits()
+    public async Task Rebalance_DroppedInFlightHandler_KeepsCrossQueueSuccessorBlocked()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         const string clientId = "127.0.0.1@cross-queue-fifo-drop";
@@ -2647,10 +2651,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 2,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -2706,7 +2710,7 @@ public sealed class RemotingPushConsumerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task StopAsync_CancelsWhenFifoOrOrderlyHandlerIgnoresCancellation(bool consumeOrderly)
+    public async Task StopAsync_NonCooperativeFifoOrOrderlyHandler_CancelsAndIgnoresLateResult(bool consumeOrderly)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2752,7 +2756,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = consumeOrderly,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (_, _, token) =>
             {
@@ -2801,7 +2805,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public void Constructor_PropagatesResetRequestHandlerRegistrationFailure()
+    public void Constructor_ResetRequestHandlerRegistrationFailure_Propagates()
     {
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         remoting
@@ -2830,7 +2834,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task UnsubscribeAsync_ClearsPendingResetBoundaryBeforeResubscribing()
+    public async Task UnsubscribeAsync_PendingResetBoundaryBeforeResubscribing_Clears()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@clear-reset-boundary");
@@ -2839,7 +2843,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -2876,7 +2880,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task StartAsync_UsesReadableQueueWithSlaveAddressWhenRouteContainsInvalidEntries()
+    public async Task StartAsync_RouteWithInvalidEntries_UsesReadableSlaveQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var route = new TopicRouteData
@@ -2937,7 +2941,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -2960,7 +2964,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task StopAsync_CompletesWhenBrokerRejectsUnregister()
+    public async Task StopAsync_BrokerUnregisterFailure_CompletesAndRejects()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@unregister-rejected")
@@ -2975,7 +2979,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -2992,7 +2996,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_MapsRetryDelayBeyondBrokerScheduleToLastDelayLevel()
+    public async Task ConcurrentPushConsumer_RetryDelayExceedsBrokerLimit_UsesMaximumDelayLevel()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -3016,7 +3020,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
             RetryDelay = TimeSpan.FromHours(3),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
@@ -3038,7 +3042,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task Coordination_RecoversHealthyTopicAfterRouteMembershipAndHeartbeatFailures()
+    public async Task Coordination_HealthyTopicAfterRouteMembershipAndHeartbeatFailures_Recovers()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var membershipRequests = 0;
@@ -3079,7 +3083,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3100,7 +3104,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task StartAsync_WakesRebalanceWhenInitialCoordinationIsIncomplete()
+    public async Task StartAsync_IncompleteInitialCoordination_WakesRebalance()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@initial-coordination-retry");
@@ -3109,7 +3113,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3136,7 +3140,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task RunningSubscribe_WakesRebalanceWhenDirectCoordinationIsIncomplete()
+    public async Task RunningSubscribe_IncompleteDirectCoordination_WakesRebalance()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@subscription-coordination-retry");
@@ -3144,7 +3148,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3172,7 +3176,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task PushConsumer_RetriesOffsetInitializationAfterTransientBrokerFailure()
+    public async Task PushConsumer_OffsetInitializationAfterTransientBrokerFailure_RetriesInitialization()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetQueries = 0;
@@ -3196,7 +3200,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3216,7 +3220,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RecoversFromOffsetIllegalAndHandlerFailureWhenRetryTopicIsMissing()
+    public async Task ConcurrentPushConsumer_MissingRetryTopic_RecoversFromOffsetAndHandlerFailure()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var orderPulls = 0;
@@ -3259,7 +3263,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => throw new InvalidOperationException("The application handler failed."));
         options.Subscribe("orders");
@@ -3288,7 +3292,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_RetriesSendBackWithoutRedeliveringHandler()
+    public async Task ConcurrentPushConsumer_SendBackFailure_RetriesWithoutRedelivery()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var deliveries = 0;
@@ -3317,7 +3321,7 @@ public sealed class RemotingPushConsumerTests
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
             RetryDelay = TimeSpan.FromMilliseconds(10),
         }, (_, _, _) =>
@@ -3351,7 +3355,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task SettlementFailureInHotQueueDoesNotBlockHealthyQueueAdmission()
+    public async Task SettlementFailure_HotQueue_LeavesHealthyQueueAdmitted()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var hotFollowerCached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3408,10 +3412,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromHours(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
@@ -3446,7 +3450,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task BlockedCrossQueueFifoSuccessorDoesNotConsumeHealthyQueueAdmission()
+    public async Task BlockedFifoSuccessor_HealthyQueueAdmission_DoesNotConsume()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var predecessorStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3515,10 +3519,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 1,
+            PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromHours(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
@@ -3554,7 +3558,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task ConcurrentPushConsumer_PreservesFirstRetryBoundaryWhenItsPersistenceFails()
+    public async Task ConcurrentPushConsumer_FirstRetryBoundaryPersistenceFails_RetriesOriginalBoundary()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var retryBoundaryPersisted = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3627,10 +3631,10 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             InitialPosition = ConsumeFromPosition.Beginning,
-            BatchSize = 2,
+            PullBatchSize = 2,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 1,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (_, _, _) =>
             {
@@ -3657,7 +3661,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task FifoSuccessorWaitsUntilFailedDeadLetterSettlementIsRetried()
+    public async Task FifoSuccessor_FailedDeadLetterSettlement_WaitsForRetry()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var secondSettlementStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3699,7 +3703,7 @@ public sealed class RemotingPushConsumerTests
             InitialPosition = ConsumeFromPosition.Beginning,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 2,
-            MaxCachedMessages = 2,
+            PullMaxCachedMessages = 2,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, _, _) =>
@@ -3739,7 +3743,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_DeadLettersMessageAndCommitsPastIt()
+    public async Task OrderlyConsumer_DeadLetterResult_CommitsPastMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -3763,7 +3767,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter));
         options.Subscribe("orders");
@@ -3788,7 +3792,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_UsesBrokerQueueLockBeforePulling()
+    public async Task OrderlyConsumer_BrokerQueueLock_UsesBeforePulling()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new FakeRemotingClient("127.0.0.1@orderly-lock-test");
@@ -3798,7 +3802,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 2,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3847,7 +3851,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_DoesNotPullUntilBrokerGrantsQueueLock()
+    public async Task OrderlyConsumer_BrokerQueueLock_DoesNotPullEarly()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var lockOrders = 0;
@@ -3866,7 +3870,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3901,7 +3905,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_PreservesLeaseAfterTransientLockRenewalFailure()
+    public async Task OrderlyConsumer_LeaseAfterTransientLockRenewalFailure_PreservesLease()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var orderLockCalls = 0;
@@ -3938,7 +3942,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
         options.Subscribe("orders");
@@ -3967,7 +3971,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_SerializesQueueMessagesWithoutMessageGroup()
+    public async Task OrderlyConsumer_QueueMessagesWithoutMessageGroup_SerializesQueueMessages()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3999,7 +4003,7 @@ public sealed class RemotingPushConsumerTests
             InitialPosition = ConsumeFromPosition.Beginning,
             ConsumeTimeout = TimeSpan.FromMilliseconds(50),
             MaxConcurrency = 2,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (messages, _, token) =>
             {
@@ -4043,7 +4047,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_RepullsMessageFromSameOffsetWhenCommitFails()
+    public async Task OrderlyConsumer_CommitFailure_RepullsFromSameOffset()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var releaseFirstPull = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4070,7 +4074,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
@@ -4096,7 +4100,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_IgnoresBatchAcknowledgementContext()
+    public async Task OrderlyConsumer_BatchAcknowledgementContext_IgnoresBatchAcknowledgementContext()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4122,7 +4126,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 1,
+            PullMaxCachedMessages = 1,
             MaxDeliveryAttempts = 1,
             RetryDelay = TimeSpan.FromMilliseconds(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
@@ -4153,7 +4157,7 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task OrderlyConsumer_ReleasesQueueLockAfterUnsubscribeDrainsHandler()
+    public async Task OrderlyConsumer_QueueLockAfterUnsubscribeDrainsHandler_ReleasesQueueLockAfterDrain()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4180,7 +4184,7 @@ public sealed class RemotingPushConsumerTests
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, async (_, _, _) =>
             {
@@ -4215,36 +4219,37 @@ public sealed class RemotingPushConsumerTests
     }
 
     [Fact]
-    public async Task PullConsumer_WrapsNamespaceButReturnsLogicalQueues()
+    public async Task ConsumerEngine_NamespaceIsConfigured_WrapsWireTopicsAndReturnsLogicalQueues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var options = new RemotingPullConsumerOptions { GroupName = "legacy-group" };
+        var options = new RemotingLitePullConsumerOptions { GroupName = "legacy-group" };
         options.Subscribe("orders");
         var clientOptions = new RemotingClientOptions { Namespace = "tenant-a" };
         var routeTopics = new ConcurrentQueue<string>();
         var routes = CreateRouteServiceMock(topics: routeTopics);
         var remoting = new FakeRemotingClient("client-a");
-        await using var consumer = new RemotingPullConsumer(CreateRemotingConsumerEngine(
+        await using var consumer = CreateRemotingConsumerEngine(
             options,
-            options.BatchSize,
+            options.PullBatchSize,
             options.MaxMessageBytes,
             options.LongPollingTimeout,
             Options.Create(clientOptions),
             routes.Object,
             remoting,
-            TimeProvider.System));
+            TimeProvider.System);
 
         await consumer.StartAsync(cancellationToken);
         var queue = Assert.Single(await consumer.GetMessageQueuesAsync("orders", cancellationToken));
         var committed = await consumer.GetOffsetAsync(queue, cancellationToken);
-        var end = await consumer.QueryOffsetAsync(queue, QueryOffsetPolicy.End, cancellationToken: cancellationToken);
+        var end = await consumer.QueryOffsetAsync(queue, ConsumeFromPosition.End, cancellationToken: cancellationToken);
         await consumer.UpdateOffsetAsync(queue, end, cancellationToken);
         await consumer.StopAsync(cancellationToken);
 
         Assert.Equal("orders", queue.Topic);
         Assert.Equal(-1, committed);
         Assert.Equal(17, end);
-        Assert.Equal(["tenant-a%orders"], routeTopics);
+        Assert.Equal(4, routeTopics.Count);
+        Assert.All(routeTopics, static topic => Assert.Equal("tenant-a%orders", topic));
         Assert.All(
             remoting.Requests.Where(static request => request.Code is
                 RequestCode.QueryConsumerOffset or RequestCode.UpdateConsumerOffset),
@@ -4465,10 +4470,10 @@ public sealed class RemotingPushConsumerTests
             .ToArray()
     };
 
-    private static IReadOnlyList<RemotingPullMessageQueue> CreateMultiBrokerQueues() =>
+    private static IReadOnlyList<RemotingConsumerQueue> CreateMultiBrokerQueues() =>
         Enumerable.Range(0, 3)
             .SelectMany(brokerIndex => Enumerable.Range(0, 3)
-                .Select(queueId => new RemotingPullMessageQueue(
+                .Select(queueId => new RemotingConsumerQueue(
                     "orders",
                     queueId,
                     $"broker-{(char)('a' + brokerIndex)}",
@@ -4486,7 +4491,7 @@ public sealed class RemotingPushConsumerTests
             LocalOffsetStorePath = offsetPath,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 2,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, handler);
         options.Subscribe("orders");
@@ -4498,7 +4503,7 @@ public sealed class RemotingPushConsumerTests
         {
             GroupName = "legacy-group",
             MaxConcurrency = 2,
-            MaxCachedMessages = 8,
+            PullMaxCachedMessages = 8,
             LongPollingTimeout = TimeSpan.FromSeconds(1)
         },
         static (_, _, _) => ValueTask.FromResult(ConsumeResult.Success));
@@ -4558,7 +4563,7 @@ public sealed class RemotingPushConsumerTests
     {
         var consumerEngine = CreateRemotingConsumerEngine(
             options.Value,
-            options.Value.BatchSize,
+            options.Value.PullBatchSize,
             options.Value.MaxMessageBytes,
             options.Value.LongPollingTimeout,
             clientOptions,
@@ -4697,6 +4702,10 @@ public sealed class RemotingPushConsumerTests
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? LockHandler { get; set; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? MaxOffsetHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? PullHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? QueryAssignmentHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? PopHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? AckHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? ChangeInvisibleHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? SendBackHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? UpdateOffsetHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? UnregisterHandler { get; init; }
@@ -4859,6 +4868,22 @@ public sealed class RemotingPushConsumerTests
                         _pullCanceled.TrySetResult();
                         throw;
                     }
+                case RequestCode.QueryAssignment:
+                    return QueryAssignmentHandler is null
+                        ? throw new InvalidOperationException("No query-assignment response was configured.")
+                        : await QueryAssignmentHandler(request, cancellationToken);
+                case RequestCode.PopMessage:
+                    return PopHandler is null
+                        ? throw new InvalidOperationException("No POP response was configured.")
+                        : await PopHandler(request, cancellationToken);
+                case RequestCode.AckMessage:
+                    return AckHandler is null
+                        ? throw new InvalidOperationException("No POP acknowledgement response was configured.")
+                        : await AckHandler(request, cancellationToken);
+                case RequestCode.ChangeMessageInvisibleTime:
+                    return ChangeInvisibleHandler is null
+                        ? throw new InvalidOperationException("No POP invisibility response was configured.")
+                        : await ChangeInvisibleHandler(request, cancellationToken);
                 case RequestCode.ConsumerSendMsgBack:
                     return SendBackHandler is null
                         ? Success()

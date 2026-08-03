@@ -33,7 +33,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests;
 public sealed class DependencyInjectionTests
 {
     [Fact]
-    public void AddRocketMQGrpc_RegistersTelemetryWithTheDefaultServiceProvider()
+    public void AddRocketMQGrpc_TelemetryWithTheDefaultServiceProvider_RegistersTelemetry()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options => options.Endpoint = "127.0.0.1:8081");
@@ -44,7 +44,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsBlankEndpoint()
+    public void AddRocketMQGrpc_BlankEndpoint_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options => options.Endpoint = " ");
@@ -57,7 +57,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsRegistrationNameContainingNullCharacter()
+    public void AddRocketMQGrpc_RegistrationNameContainingNullCharacter_Rejects()
     {
         var services = new ServiceCollection();
 
@@ -69,7 +69,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcProducer_RegistersProtocolSpecificProducerAsSingleton()
+    public async Task AddGrpcProducer_ProtocolSpecificProducerAsSingleton_RegistersSingletonProducer()
     {
         var services = new ServiceCollection();
         services
@@ -90,7 +90,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsIncompleteCredentials()
+    public void AddRocketMQGrpc_IncompleteCredentials_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options =>
@@ -107,7 +107,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsSecurityTokenWithoutCredentials()
+    public void AddRocketMQGrpc_SecurityTokenWithoutCredentials_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options =>
@@ -124,7 +124,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task GrpcSimpleConsumer_CanSubscribeAfterResolutionBeforeStartup()
+    public async Task GrpcSimpleConsumer_BeforeStartup_CanSubscribe()
     {
         var services = new ServiceCollection();
         services
@@ -143,7 +143,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcSimpleConsumer_RegistersMultipleConsumersWithIsolatedOptionsAndLifecycles()
+    public async Task AddGrpcSimpleConsumer_MultipleConsumersWithOptionsAndLifecycles_RegistersWithIsolatedOptions()
     {
         var services = new ServiceCollection();
         services
@@ -192,7 +192,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
+    public async Task AddGrpcPushConsumer_ProtocolSpecificConsumerAndLifecycle_RegistersConsumerAndLifecycle()
     {
         var services = new ServiceCollection();
         services
@@ -213,7 +213,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_RegistersMultipleConsumersWithIsolatedOptionsAndLifecycles()
+    public async Task AddGrpcPushConsumer_MultipleConsumersWithOptionsAndLifecycles_RegistersWithIsolatedOptions()
     {
         var services = new ServiceCollection();
         services
@@ -264,7 +264,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_IsolatesOptionsFromRegistrationNameMatchingLegacyDerivedOptionsName()
+    public async Task AddGrpcPushConsumer_OptionsFromRegistrationNameMatchingLegacyDerivedOptionsName_Isolates()
     {
         var services = new ServiceCollection();
         services
@@ -315,7 +315,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_RegistersMultipleConsumersWithMatchingGroupAndSubscriptions()
+    public async Task AddGrpcPushConsumer_MultipleConsumersWithMatchingGroupAndSubscriptions_RegistersMatchingConsumers()
     {
         var services = new ServiceCollection();
         services
@@ -353,7 +353,7 @@ public sealed class DependencyInjectionTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task AddGrpcPushConsumer_RejectsRuntimeSubscriptionChangesWhenGroupHasLocalPeer(bool subscribe)
+    public async Task AddGrpcPushConsumer_RuntimeSubscriptionChangesWhenGroupHasLocalPeer_Rejects(bool subscribe)
     {
         var services = new ServiceCollection();
         services
@@ -385,7 +385,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_AllowsRuntimeSubscriptionChangesForDifferentGroups()
+    public async Task AddGrpcPushConsumer_RuntimeSubscriptionChangesForDifferentGroups_AllowsRuntimeSubscriptionChanges()
     {
         var services = new ServiceCollection();
         services
@@ -411,7 +411,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcPushConsumer_UsesDistinctLogicalClientsAndSharedChannelPool()
+    public async Task AddGrpcPushConsumer_DistinctClientsAndSharedPool_UsesDistinctClientsAndSharedPool()
     {
         var services = new ServiceCollection();
         services
@@ -451,7 +451,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcLitePushConsumer_RegistersMultipleKeyedConsumersWithIsolatedOptionsAndLifecycles()
+    public async Task AddGrpcLitePushConsumer_MultipleKeyedConsumersWithOptionsAndLifecycles_RegistersWithIsolatedOptions()
     {
         var services = new ServiceCollection();
         services
@@ -506,7 +506,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddGrpcLitePushConsumer_AllowsDifferentLiteTopicsForSameGroupAndBindTopic()
+    public async Task AddGrpcLitePushConsumer_DifferentLiteTopicsForSameGroupAndBindTopic_AllowsDistinctTopics()
     {
         var services = new ServiceCollection();
         services
@@ -535,7 +535,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddGrpcLitePushConsumer_RejectsDifferentBindTopicsForSameGroup()
+    public void AddGrpcLitePushConsumer_DifferentBindTopicsForSameGroup_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -560,7 +560,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task NamedGrpcClientRegistrationsUseDistinctChannelPools()
+    public async Task NamedGrpcClientRegistrations_DistinctChannelPools_UseSeparatePools()
     {
         var services = new ServiceCollection();
         services
@@ -581,7 +581,7 @@ public sealed class DependencyInjectionTests
     [Theory]
     [InlineData("payments", "created")]
     [InlineData("orders", "updated")]
-    public void AddGrpcPushConsumer_RejectsMismatchedSubscriptionsForSameGroup(
+    public void AddGrpcPushConsumer_MismatchedSubscriptionsForSameGroup_Rejects(
         string secondTopic,
         string secondFilter)
     {
@@ -608,7 +608,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddGrpcPushConsumer_RejectsNonPositiveConsumeTimeout()
+    public void AddGrpcPushConsumer_NonPositiveConsumeTimeout_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -628,7 +628,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddGrpcLitePushConsumer_RejectsNonPositiveConsumeTimeout()
+    public void AddGrpcLitePushConsumer_NonPositiveConsumeTimeout_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -648,7 +648,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsNonPositiveRequestTimeout()
+    public void AddRocketMQGrpc_NonPositiveRequestTimeout_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options =>
@@ -665,7 +665,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsNonPositiveRouteCacheDuration()
+    public void AddRocketMQGrpc_NonPositiveRouteCacheDuration_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options =>
@@ -682,7 +682,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_RejectsNonPositiveHeartbeatInterval()
+    public void AddRocketMQGrpc_NonPositiveHeartbeatInterval_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQGrpc(options =>
@@ -699,7 +699,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQGrpc_DoesNotReplaceRegisteredTimeProvider()
+    public void AddRocketMQGrpc_RegisteredTimeProvider_DoesNotReplace()
     {
         var services = new ServiceCollection();
         var timeProvider = TimeProvider.System;
@@ -711,7 +711,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddGrpcProducer_RejectsDuplicateRoleForDefaultClientRegistration()
+    public void AddGrpcProducer_RoleForDefaultClientRegistration_RejectsAndDuplicate()
     {
         var services = new ServiceCollection();
         var builder = services
@@ -725,7 +725,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task GrpcRolesUseDistinctClientIdentitiesAndRouteServices()
+    public async Task GrpcRoles_ClientIdentitiesAndRouteServices_UseDistinctIdentitiesAndRoutes()
     {
         var services = new ServiceCollection();
         services
@@ -760,7 +760,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task KeyedClientRegistrationsRegisterMultipleGrpcProducersWithIndependentOptionsAndLifecycle()
+    public async Task KeyedClientRegistrations_IndependentOptionsAndLifecycle_RegisterMultipleGrpcProducers()
     {
         var services = new ServiceCollection();
         services

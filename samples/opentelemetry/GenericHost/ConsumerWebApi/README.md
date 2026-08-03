@@ -57,7 +57,7 @@ builder.Services
     .AddRemotingPushConsumer<RemotingConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         options.GroupName = "eventhorizon-otel-remoting-consumer";
-        options.BatchSize = 16;
+        options.PullBatchSize = 16;
         options.ConsumeMessageBatchSize = 4;
         options.MaxConcurrency = 4;
         options.ConsumeTimeout = TimeSpan.FromMinutes(15);

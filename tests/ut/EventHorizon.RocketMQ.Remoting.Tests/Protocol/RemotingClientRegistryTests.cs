@@ -23,7 +23,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Protocol;
 public sealed class RemotingClientRegistryTests
 {
     [Fact]
-    public async Task GetGroupMemberClient_SharesDistinctGroupsAndIsolatesSameGroupReplicas()
+    public async Task GetGroupMemberClient_DistinctGroupsAndSameGroupReplicas_SharesAndIsolates()
     {
         await using var registry = new RemotingClientRegistry(
             new RemoteCommandSerializer(),

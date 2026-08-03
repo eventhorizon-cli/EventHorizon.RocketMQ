@@ -17,8 +17,8 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Admin;
+using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
-using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,12 +31,13 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Admin;
 public sealed class RemotingAdminTests
 {
     [Fact]
-    public async Task GetMessageQueuesAsync_ReturnsLogicalWritableQueues()
+    public async Task GetMessageQueuesAsync_RouteContainsReadOnlyBroker_ReturnsLogicalReadableQueues()
     {
         var route = CreateRoute(
             ("broker-b", 2, 2, 6, [(0L, "127.0.0.1:20911")]),
             ("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")]),
-            ("read-only", 1, 0, 4, [(0L, "127.0.0.1:30911")]));
+            ("read-only", 1, 0, 4, [(0L, "127.0.0.1:30911")]),
+            ("write-only", 0, 1, 2, [(0L, "127.0.0.1:40911")]));
         var routes = CreateRouteServiceMock(route);
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         var admin = CreateAdmin(
@@ -46,9 +47,9 @@ public sealed class RemotingAdminTests
 
         var queues = await admin.GetMessageQueuesAsync("orders", TestContext.Current.CancellationToken);
 
-        Assert.Equal(3, queues.Count);
+        Assert.Equal(4, queues.Count);
         Assert.Equal(
-            [("broker-a", 0), ("broker-b", 0), ("broker-b", 1)],
+            [("broker-a", 0), ("broker-b", 0), ("broker-b", 1), ("read-only", 0)],
             queues.Select(static queue => (queue.BrokerName, queue.QueueId)));
         Assert.All(queues, static queue => Assert.Equal("orders", queue.Topic));
         routes.Verify(value => value.GetAsync(
@@ -58,7 +59,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task OffsetAndTimeOperations_UseMasterAndEncodeClassicHeaders()
+    public async Task OffsetAndTimeOperations_MasterAndClassicHeaders_UsesMasterHeaders()
     {
         var route = CreateRoute(("broker-a", 1, 1, 6,
             [(0L, "127.0.0.1:10911"), (1L, "127.0.0.1:10912")]));
@@ -83,7 +84,7 @@ public sealed class RemotingAdminTests
             new RemotingClientOptions { Namespace = "tenant-a" },
             routes.Object,
             remoting.Object);
-        var queue = new RemotingMessageQueue("orders", "broker-a", 3);
+        var queue = new RemotingConsumerQueue("orders", "broker-a", 3);
         var timestamp = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
 
         var minimum = await admin.GetMinOffsetAsync(queue, TestContext.Current.CancellationToken);
@@ -134,7 +135,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task GetEarliestMessageStoreTimeAsync_ReturnsNullWhenBrokerReportsNoMessage()
+    public async Task GetEarliestMessageStoreTimeAsync_NoMessage_ReturnsNullAndReports()
     {
         var routes = CreateRouteServiceMock(CreateRoute(("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")])));
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -152,14 +153,14 @@ public sealed class RemotingAdminTests
         var admin = CreateAdmin(new RemotingClientOptions(), routes.Object, remoting.Object);
 
         var timestamp = await admin.GetEarliestMessageStoreTimeAsync(
-            new RemotingMessageQueue("orders", "broker-a", 0),
+            new RemotingConsumerQueue("orders", "broker-a", 0),
             TestContext.Current.CancellationToken);
 
         Assert.Null(timestamp);
     }
 
     [Fact]
-    public async Task GetEarliestMessageStoreTimeAsync_ThrowsInvalidDataExceptionForOutOfRangeTimestamp()
+    public async Task GetEarliestMessageStoreTimeAsync_InvalidDataExceptionForOutOfRangeTimestamp_Throws()
     {
         var routes = CreateRouteServiceMock(CreateRoute(("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")])));
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -177,12 +178,12 @@ public sealed class RemotingAdminTests
         var admin = CreateAdmin(new RemotingClientOptions(), routes.Object, remoting.Object);
 
         await Assert.ThrowsAsync<InvalidDataException>(() => admin.GetEarliestMessageStoreTimeAsync(
-            new RemotingMessageQueue("orders", "broker-a", 0),
+            new RemotingConsumerQueue("orders", "broker-a", 0),
             TestContext.Current.CancellationToken));
     }
 
     [Fact]
-    public async Task GetEarliestMessageStoreTimeAsync_ThrowsRemotingCommandExceptionForBrokerRejection()
+    public async Task GetEarliestMessageStoreTimeAsync_RemotingCommandExceptionForBrokerRejection_Throws()
     {
         var routes = CreateRouteServiceMock(CreateRoute(("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")])));
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -197,7 +198,7 @@ public sealed class RemotingAdminTests
 
         var exception = await Assert.ThrowsAsync<RemotingCommandException>(() =>
             admin.GetEarliestMessageStoreTimeAsync(
-                new RemotingMessageQueue("orders", "broker-a", 0),
+                new RemotingConsumerQueue("orders", "broker-a", 0),
                 TestContext.Current.CancellationToken));
 
         Assert.Equal(ResponseCodes.ResNoPermission, exception.ResponseCode);
@@ -205,7 +206,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task ViewMessageAsync_DirectlyUsesOffsetMessageIdAndDecodesMessage()
+    public async Task ViewMessageAsync_OffsetMessageId_UsesAndDecodesMessage()
     {
         const long commitLogOffset = 1234;
         var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
@@ -255,7 +256,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task ViewMessageAsync_UsesIpv6BrokerEndpointAndPreservesBrokerRejection()
+    public async Task ViewMessageAsync_Ipv6EndpointAndRejection_UsesAndPreserves()
     {
         var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
         EndPoint? endpoint = null;
@@ -290,7 +291,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task ViewMessageAsync_RejectsMalformedOffsetMessageIdWithoutSendingRequest()
+    public async Task ViewMessageAsync_MalformedOffsetMessageIdWithoutSendingRequest_Rejects()
     {
         var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -304,7 +305,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task ViewMessageAsync_RejectsResponseWithoutExactlyOneMessage()
+    public async Task ViewMessageAsync_ResponseWithoutExactlyOneMessage_Rejects()
     {
         var record = CreateViewMessageRecord("orders", 1234);
         var responses = new Queue<RemotingCommand>(
@@ -333,7 +334,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task GetConsumerOffsetAsync_ReturnsNullWhenBrokerHasNoCommittedOffset()
+    public async Task GetConsumerOffsetAsync_NoCommittedOffset_ReturnsNull()
     {
         var routes = CreateRouteServiceMock(CreateRoute(("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")])));
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -348,14 +349,14 @@ public sealed class RemotingAdminTests
 
         var offset = await admin.GetConsumerOffsetAsync(
             "orders-group",
-            new RemotingMessageQueue("orders", "broker-a", 0),
+            new RemotingConsumerQueue("orders", "broker-a", 0),
             TestContext.Current.CancellationToken);
 
         Assert.Null(offset);
     }
 
     [Fact]
-    public async Task GetMinOffsetAsync_RefreshesRouteAndFallsBackWhenMasterIsMissing()
+    public async Task GetMinOffsetAsync_MissingMaster_RefreshesAndFallsBack()
     {
         var staleRoute = CreateRoute(("broker-b", 1, 1, 6, [(0L, "127.0.0.1:20911")]));
         var refreshedRoute = CreateRoute(("broker-a", 1, 1, 6,
@@ -392,7 +393,7 @@ public sealed class RemotingAdminTests
         var admin = CreateAdmin(new RemotingClientOptions(), routes.Object, remoting.Object);
 
         var offset = await admin.GetMinOffsetAsync(
-            new RemotingMessageQueue("orders", "broker-a", 0),
+            new RemotingConsumerQueue("orders", "broker-a", 0),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(7, offset);
@@ -401,7 +402,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task GetMaxOffsetAsync_ThrowsRemotingCommandExceptionForBrokerRejection()
+    public async Task GetMaxOffsetAsync_RemotingCommandExceptionForBrokerRejection_Throws()
     {
         var routes = CreateRouteServiceMock(CreateRoute(("broker-a", 1, 1, 6, [(0L, "127.0.0.1:10911")])));
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
@@ -415,7 +416,7 @@ public sealed class RemotingAdminTests
         var admin = CreateAdmin(new RemotingClientOptions(), routes.Object, remoting.Object);
 
         var exception = await Assert.ThrowsAsync<RemotingCommandException>(() => admin.GetMaxOffsetAsync(
-            new RemotingMessageQueue("orders", "broker-a", 0),
+            new RemotingConsumerQueue("orders", "broker-a", 0),
             cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.Equal(ResponseCodes.ResNoPermission, exception.ResponseCode);
@@ -423,7 +424,7 @@ public sealed class RemotingAdminTests
     }
 
     [Fact]
-    public async Task AddRemotingAdmin_RegistersProtocolSpecificAdminWithoutHostedService()
+    public async Task AddRemotingAdmin_ProtocolSpecificAdminWithoutHostedService_RegistersAdmin()
     {
         var services = new ServiceCollection();
         services

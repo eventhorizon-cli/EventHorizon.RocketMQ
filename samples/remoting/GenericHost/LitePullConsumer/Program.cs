@@ -32,9 +32,10 @@ var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingLitePullConsumer(options =>
 {
     options.GroupName = "remoting-sample-lite-pull-consumer";
-    options.BatchSize = 32;
+    options.PullBatchSize = 32;
     options.LongPollingTimeout = TimeSpan.FromSeconds(5);
-    options.InitialOffset = QueryOffsetPolicy.End;
+    options.InitialPosition = ConsumeFromPosition.End;
+    options.EnableAutoCommit = false;
     options.Subscribe("eventhorizon-test-topic");
 });
 builder.Services.AddHostedService<LitePullConsumer>();

@@ -18,7 +18,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 /// <summary>
 /// Specifies the outcome of a classic remoting POP operation.
 /// </summary>
-public enum RemotingPopStatus
+internal enum RemotingPopStatus
 {
     /// <summary>
     /// One or more messages were made invisible and returned by the broker.

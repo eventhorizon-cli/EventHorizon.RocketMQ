@@ -39,6 +39,17 @@ public abstract class ConsumerOptions
     public string GroupName { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets where the consumer starts when a queue has no committed offset.
+    /// </summary>
+    public ConsumeFromPosition InitialPosition { get; set; } = ConsumeFromPosition.End;
+
+    /// <summary>
+    /// Gets or sets the timestamp used when <see cref="InitialPosition"/> is
+    /// <see cref="ConsumeFromPosition.Timestamp"/>.
+    /// </summary>
+    public DateTimeOffset? ConsumeTimestamp { get; set; }
+
+    /// <summary>
     /// Gets a live, read-only view of the topic subscriptions configured for this consumer.
     /// </summary>
     public IReadOnlyDictionary<string, FilterExpression> Subscriptions => _readOnlySubscriptions;

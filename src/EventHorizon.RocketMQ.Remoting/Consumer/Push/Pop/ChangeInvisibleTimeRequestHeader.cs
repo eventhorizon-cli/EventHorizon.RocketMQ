@@ -26,4 +26,5 @@ internal sealed class ChangeInvisibleTimeRequestHeader : CommandCustomHeader
     public long Offset { get; init; }
     public long InvisibleTime { get; init; }
     public string Bname { get; init; } = string.Empty;
+    public bool Suspend { get; init; }
 }

@@ -17,17 +17,15 @@ starts a real `IHost` or `WebApplication`, the host invokes the registered servi
 | Role | Public API | Core workflow | Project |
 | --- | --- | --- | --- |
 | Producer | `IRemotingProducer` | Start, create and send one tagged message, inspect the result status, stop. | `Producer` |
-| Pull Consumer | `IRemotingPullConsumer` | Start, discover physical queues, resolve and persist one offset per queue, pull and process messages, stop. | `PullConsumer` |
 | Lite Pull Consumer | `IRemotingLitePullConsumer` | Start, poll SDK-assigned queues, process messages, commit local positions, stop. | `LitePullConsumer` |
 | Push Consumer | `IRemotingPushConsumer` | Start, let the SDK dispatch to a scoped handler, return `Success` after processing, stop. | `PushConsumer` |
-| POP Consumer | `IRemotingPopConsumer` | Start, choose a physical queue, POP messages, acknowledge every receipt after processing, stop. | `PopConsumer` |
 
 The consumers run until Ctrl+C. Their shutdown paths deliberately use `CancellationToken.None` after the Ctrl+C token
 is cancelled, so `StopAsync` can finish gracefully. The Producer sends one message and exits.
 
-The category keeps these direct workflows separate because Pull owns queue and offset coordination, Lite Pull owns
-caller-driven polling and commits over SDK assignment, Push owns handler dispatch and retry, and POP owns receipt
-settlement. The projects do not abstract those protocol-specific responsibilities behind a shared sample layer.
+The category keeps these workflows separate because Lite Pull owns caller-driven polling and commits over SDK-managed
+or manual assignment, while Push owns assignment, reception, handler dispatch, and settlement. The projects do not
+abstract those protocol-specific responsibilities behind a shared sample layer.
 
 ## Run a project
 
@@ -41,10 +39,8 @@ Then run one project:
 
 ```shell
 dotnet run --project samples/remoting/NonHost/Producer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.Producer.csproj
-dotnet run --project samples/remoting/NonHost/PullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PullConsumer.csproj
 dotnet run --project samples/remoting/NonHost/LitePullConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.LitePullConsumer.csproj
 dotnet run --project samples/remoting/NonHost/PushConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PushConsumer.csproj
-dotnet run --project samples/remoting/NonHost/PopConsumer/EventHorizon.RocketMQ.Samples.Remoting.NonHost.PopConsumer.csproj
 ```
 
 Each project uses `localhost:9876` by default and accepts standard .NET configuration overrides, such as
@@ -52,7 +48,8 @@ Each project uses `localhost:9876` by default and accepts standard .NET configur
 Broker endpoints advertised by route discovery, create `eventhorizon-test-topic`, and grant the required producer or
 consumer permissions.
 
-For Generic Host counterparts and the role-specific delivery contracts, see the [Remoting Producer](../GenericHost/Producer/README.md),
-[Pull Consumer](../GenericHost/PullConsumer/README.md), [Lite Pull Consumer](../GenericHost/LitePullConsumer/README.md),
-[Push Consumer](../GenericHost/PushConsumer/README.md), [POP Consumer](../GenericHost/PopConsumer/README.md), and the
+For Generic Host counterparts and the role-specific delivery contracts, see the
+[Remoting Producer](../GenericHost/Producer/README.md),
+[Lite Pull Consumer](../GenericHost/LitePullConsumer/README.md),
+[Push Consumer](../GenericHost/PushConsumer/README.md), and the
 [Remoting protocol guide](../../../src/EventHorizon.RocketMQ.Remoting/README.md).

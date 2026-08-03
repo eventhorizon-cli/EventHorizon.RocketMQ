@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol.Telemetry;
 public sealed class GrpcTelemetrySessionTests
 {
     [Fact]
-    public async Task Completion_IsIncompleteBeforeTheSessionStarts()
+    public async Task Completion_BeforeSessionStarts_IsIncomplete()
     {
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();
         var requests = CreateRequestWriter(new ConcurrentQueue<Proto.TelemetryCommand>());
@@ -36,7 +36,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task SessionOutlivesInitializationTokenAndHonorsReconnectCommand()
+    public async Task Session_ReconnectCommand_HonorsAfterInitialization()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();
@@ -83,7 +83,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task StartAsync_FailsWhenTheTelemetryStreamClosesBeforeSettings()
+    public async Task StartAsync_StreamClosesBeforeSettings_FailsStartup()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();
@@ -100,7 +100,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task DisposeAsync_IgnoresUnavailableReaderFailure()
+    public async Task DisposeAsync_UnavailableReaderFailure_IgnoresFailure()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new SequenceStreamReader<Proto.TelemetryCommand>(
@@ -117,7 +117,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task DisposeAsync_IgnoresCancelledReaderFailure()
+    public async Task DisposeAsync_CancelledReaderFailure_IgnoresFailure()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new SequenceStreamReader<Proto.TelemetryCommand>(
@@ -132,7 +132,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task CommandHandlerFailure_DoesNotStopTheTelemetryDispatcher()
+    public async Task CommandHandlerFailure_TelemetryDispatcher_DoesNotStop()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();
@@ -168,7 +168,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task DisposeAsync_CancelsAnActiveTelemetryCommandHandler()
+    public async Task DisposeAsync_ActiveTelemetryCommandHandler_CancelsHandler()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();
@@ -193,7 +193,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public void DiagnosticCommandsPreserveNonceAndReturnExplicitStatus()
+    public void DiagnosticCommands_NonceAndStatus_PreserveAndReturn()
     {
         var stack = GrpcSessionManager.CreateDiagnosticResponse(new Proto.TelemetryCommand
         {
@@ -218,7 +218,7 @@ public sealed class GrpcTelemetrySessionTests
     }
 
     [Fact]
-    public async Task WriteCommandAsyncSerializesDiagnosticReplyOnTelemetryStream()
+    public async Task WriteCommandAsync_TelemetryStream_SerializesDiagnosticReply()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var responses = new ChannelStreamReader<Proto.TelemetryCommand>();

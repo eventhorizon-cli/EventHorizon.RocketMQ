@@ -22,11 +22,9 @@ public sealed class RemotingRocketMQRoleKeyTests
     [Theory]
     [InlineData((int)RemotingRocketMQRole.Admin, "remoting administrator", "remoting-admin")]
     [InlineData((int)RemotingRocketMQRole.Producer, "remoting producer", "remoting-producer")]
-    [InlineData((int)RemotingRocketMQRole.PullConsumer, "remoting pull consumer", "remoting-pull-consumer")]
     [InlineData((int)RemotingRocketMQRole.LitePullConsumer, "remoting lite pull consumer", "remoting-lite-pull-consumer")]
     [InlineData((int)RemotingRocketMQRole.PushConsumer, "remoting push consumer", "remoting-push-consumer")]
-    [InlineData((int)RemotingRocketMQRole.PopConsumer, "remoting POP consumer", "remoting-pop-consumer")]
-    public void RoleKey_UsesTheExpectedKnownRoleLabels(int role, string displayRole, string roleToken)
+    public void RoleKey_KnownRoleLabels_UsesExpectedTokens(int role, string displayRole, string roleToken)
     {
         var key = new RemotingRocketMQRoleKey(string.Empty, (RemotingRocketMQRole)role);
 
@@ -35,19 +33,19 @@ public sealed class RemotingRocketMQRoleKeyTests
     }
 
     [Fact]
-    public void RoleKey_NormalizesNamesAndProvidesStableFallbackForUnknownRoles()
+    public void RoleKey_NamesAndProvidesStableFallbackForUnknownRoles_Normalizes()
     {
-        var known = new RemotingRocketMQRoleKey("west region", RemotingRocketMQRole.PopConsumer);
+        var known = new RemotingRocketMQRoleKey("west region", RemotingRocketMQRole.PushConsumer);
         var unknown = new RemotingRocketMQRoleKey("custom/name", (RemotingRocketMQRole)999);
 
-        Assert.Equal("west-region-remoting-pop-consumer", known.LogicalClientName);
-        Assert.Equal("remoting POP consumer", known.DisplayRole);
+        Assert.Equal("west-region-remoting-push-consumer", known.LogicalClientName);
+        Assert.Equal("remoting push consumer", known.DisplayRole);
         Assert.Equal("999", unknown.DisplayRole);
         Assert.Equal("custom-name-999", unknown.LogicalClientName);
     }
 
     [Fact]
-    public void RoleKey_UsesDistinctOptionsAndLogicalNamesForAdditionalConsumerInstances()
+    public void RoleKey_AdditionalConsumerInstances_UsesDistinctIdentity()
     {
         var first = new RemotingRocketMQRoleKey("east", RemotingRocketMQRole.PushConsumer);
         var second = new RemotingRocketMQRoleKey("east", RemotingRocketMQRole.PushConsumer, 1);

@@ -28,7 +28,7 @@ services
 services
     .AddRocketMQRemoting("analytics", options => options.NamesrvAddr = "nameserver:9876")
     .AddRemotingAdmin()
-    .AddRemotingPullConsumer(ConfigurePullConsumer);
+    .AddRemotingLitePullConsumer(ConfigureLitePullConsumer);
 ```
 
 这个 fluent builder 不是共享的 transport selector。`AddRocketMQGrpc` 和 `AddRocketMQRemoting` 分别建立
@@ -81,8 +81,8 @@ Rebalance service。
 
 heartbeat 属于逻辑 group session，而不属于物理 `RemotingClient`：活跃的 Push 或 LitePull 会在初始和周期协调时，
 经由分配给自己的 Client 发送心跳。LitePull 在拥有订阅或手工分配队列后开始这项维护。因此共享 Client 可以维护多个
-不同 group，而同组的隔离成员会分别维护自己的 Broker membership。直接 Pull 和 POP 是由应用驱动的显式 API，不会注册
-后台消费组成员关系或 heartbeat 循环；Producer 则维护自己的 producer heartbeat 生命周期。
+不同 group，而同组的隔离成员会分别维护自己的 Broker membership。低层 PULL 与 POP 操作只由 LitePull 和 Push
+内部使用，不会形成额外的公开角色或 group session；Producer 则维护自己的 producer heartbeat 生命周期。
 
 Push 与 LitePull 各自在 Consumer 实现中保留队列分配决策。两者共享的经典消费组协议操作由
 `RemotingConsumerGroupSession` 负责，顺序 Push 的队列锁 wire 操作由 `RemotingPushQueueLockManager` 负责，从而
@@ -92,7 +92,7 @@ Push 与 LitePull 各自在 Consumer 实现中保留队列分配决策。两者�
 
 gRPC 的 Push、Simple 与 LitePush 角色会构造内部
 [`IGrpcReceiveConsumerEngine`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/IGrpcReceiveConsumerEngine.cs)；
-Remoting 的 Pull、LitePull、POP 与 Push 角色会构造内部
+Remoting 的 LitePull 与 Push 角色会分别构造内部
 [`IRemotingConsumerEngine`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/IRemotingConsumerEngine.cs)。
 
 Engine 是角色内部的协作对象，负责协议收发、订阅或必要的后台协调。它不应作为应用可注入的公共服务，也
@@ -134,8 +134,9 @@ Consumer，因此除非明确需要该行为，注册多个 Consumer 的代码�
 | 不同 group、不同 topic | 相互隔离地消费。 |
 | 相同 group、不同 topic 或 filter | 普通 PushConsumer 的非法组合；应统一订阅或拆分 group。 |
 
-经典 Remoting 还要求同组 Push 实例使用相同的集群/广播模式、顺序消费模式和初始位点，同组 LitePull 实例使用相同的
-初始位点策略。Push 与 LitePull 会向经典 Broker 上报不同的消费类型，因此不能共用 group。并发度、超时和 handler
+经典 Remoting 还要求同组 Push 实例使用相同的 assignment mode、集群/广播模式、顺序消费模式和初始位点，同组
+LitePull 实例使用相同的初始位点。Push 与 LitePull 会向经典 Broker 上报不同的消费类型，因此不能共用 group。
+并发度、超时和 handler
 等实例本地配置仍可不同。这些是 group 范围的配置规则，但注册层只能对同一进程、同一客户端注册中声明的成员做
 fail-fast。其他进程中的成员仍需由部署配置保证一致；经典 Broker heartbeat 不会携带包括顺序消费模式在内的所有
 客户端本地设置。
@@ -231,5 +232,6 @@ Proxy/Broker 能力和外部网络仍应由部署与健康检查保证。
 
 - [协议边界](protocol-boundaries.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
+- [classic Remoting Consumer 模型](../remoting/consumer-model.md)
 - [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)
 - [本地与集成测试](../testing/local-and-integration-testing.md)

@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Protocol;
 public sealed class RocketMQGrpcClientTests
 {
     [Fact]
-    public async Task QueryRouteAsync_TriesEveryAccessPointAfterTransientFailure()
+    public async Task QueryRouteAsync_TransientFailure_TriesEveryAccessPoint()
     {
         var firstListener = StartListener();
         var secondListener = StartListener();
@@ -63,7 +63,7 @@ public sealed class RocketMQGrpcClientTests
     }
 
     [Fact]
-    public async Task EndpointOperations_PropagateTransportFailure()
+    public async Task EndpointOperations_TransportFailure_PropagateFailure()
     {
         var listener = StartListener();
         using var cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));

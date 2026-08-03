@@ -114,14 +114,14 @@ internal static class RemotingConsumerGroupCompatibilityValidator
 
         if (options is RemotingLitePullConsumerOptions litePull &&
             other is RemotingLitePullConsumerOptions otherLitePull &&
-            (litePull.InitialOffset != otherLitePull.InitialOffset ||
-             litePull.InitialOffset == QueryOffsetPolicy.Timestamp &&
-             litePull.InitialOffsetTimestamp != otherLitePull.InitialOffsetTimestamp))
+            (litePull.InitialPosition != otherLitePull.InitialPosition ||
+             litePull.InitialPosition == ConsumeFromPosition.Timestamp &&
+             litePull.ConsumeTimestamp != otherLitePull.ConsumeTimestamp))
         {
             ThrowGroupOptionsValidation(
                 roleKey,
                 options,
-                "Lite Pull consumers in the same consumer group must use the same initial offset policy.");
+                "Lite Pull consumers in the same consumer group must use the same initial consume position.");
         }
     }
 

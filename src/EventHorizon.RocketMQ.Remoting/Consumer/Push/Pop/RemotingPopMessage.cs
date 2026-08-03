@@ -18,7 +18,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 /// <summary>
 /// Represents a message returned by a classic remoting POP operation and its broker-issued receipt.
 /// </summary>
-public sealed class RemotingPopMessage
+internal sealed class RemotingPopMessage
 {
     internal RemotingPopMessage(RemotingMessageView message, RemotingPopReceipt receipt)
     {

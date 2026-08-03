@@ -29,7 +29,7 @@ public sealed class RocketMQTransactionIntegrationTests(RocketMQSingleBrokerCont
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcTransactionRollbackKeepsMessageInvisible()
+    public async Task GrpcTransaction_MessageInvisible_KeepsAfterRollback()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

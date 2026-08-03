@@ -33,7 +33,7 @@ flowchart LR
 
     application -->|"classic Remoting：查询 route"| nameserver
     nameserver -->|"Broker 地址"| application
-    application -->|"classic Remoting：send、pull、admin"| broker
+    application -->|"classic Remoting：send、consume、admin"| broker
 
     application -->|"RocketMQ 5 gRPC"| proxy
     proxy -->|"查询 route"| nameserver
@@ -46,8 +46,8 @@ flowchart LR
 ### classic Remoting：NameServer 发现，Broker 直连
 
 classic Remoting 的 `NamesrvAddr` 不是消息收发端点，而是 route 查询入口。客户端先获取目标 topic 的 route，
-再向其中的 Broker 建立 TCP 连接。发送、拉取、POP、经典 Push、Admin 查询及 Broker 回调均保留在这条
-协议路径中。
+再向其中的 Broker 建立 TCP 连接。Producer 发送、LitePull 与 Push 的 PULL/POP 接收、Admin 查询及 Broker
+回调均保留在这条协议路径中。PULL 与 POP 是公开 LitePull 和 Push 角色内部拥有的 wire operation。
 
 ```mermaid
 sequenceDiagram
@@ -57,7 +57,7 @@ sequenceDiagram
 
     App->>NS: 查询 topic route
     NS-->>App: Broker endpoint 与队列元数据
-    App->>Broker: Send、Pull、POP 或 Admin 请求
+    App->>Broker: Send、PULL/POP consume 或 Admin 请求
     Broker-->>App: 结果、消息、receipt 或回调
     Note over App,Broker: Route 元数据可缓存，但 Broker 公布的地址必须可达。
 ```
@@ -125,6 +125,10 @@ sequenceDiagram
 这意味着网络连接、长轮询超时、取消、本地缓存和 handler 并发仍由客户端侧管理。发生进程退出、网络中断或
 确认失败时，至少一次交付仍可能产生重复消息，业务 handler 必须保持幂等。更详细的确认与调度模型见
 [gRPC 消费模型](../grpc/consumer-model.md)。
+
+classic Remoting Push 的网络方向相同。默认 `Client` 分配模式执行客户端队列分配与 PULL；可选的 `Broker`
+分配模式查询 assignment，并允许 Broker 为每条 assignment 选择 PULL 或 POP。这个选择不会创建公开的 POP
+Consumer，也不会让 Broker 主动连接应用。
 
 ## LitePush：额外的订阅控制面
 

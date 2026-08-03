@@ -23,33 +23,33 @@ internal interface IRemotingConsumerEngine : IAsyncDisposable
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<RemotingPullMessageQueue>> GetMessageQueuesAsync(
+    Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
         string topic,
         CancellationToken cancellationToken = default);
 
     Task<RemotingPullResult> PullAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         long offset,
         int? maxMessages = null,
         CancellationToken cancellationToken = default);
 
     Task<long> GetOffsetAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         CancellationToken cancellationToken = default);
 
     Task UpdateOffsetAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         long offset,
         CancellationToken cancellationToken = default);
 
     Task<long> QueryOffsetAsync(
-        RemotingPullMessageQueue queue,
-        QueryOffsetPolicy policy,
+        RemotingConsumerQueue queue,
+        ConsumeFromPosition position,
         DateTimeOffset? timestamp = null,
         CancellationToken cancellationToken = default);
 
     Task SendBackAsync(
-        RemotingPullMessageQueue queue,
+        RemotingConsumerQueue queue,
         RemotingMessageView message,
         int delayLevel,
         int maxReconsumeTimes,

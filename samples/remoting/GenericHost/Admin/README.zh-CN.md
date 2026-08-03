@@ -28,7 +28,7 @@ service，也不需要 Producer group 或 consumer group。
 
 | SDK API | 结果与用途 |
 | --- | --- |
-| `GetMessageQueuesAsync(topic)` | 返回 Topic 当前可写的物理队列，并按 Broker 和队列 ID 排序。后续单队列查询应使用这里返回的值。 |
+| `GetMessageQueuesAsync(topic)` | 以 `RemotingConsumerQueue` 返回 Topic 当前可读的物理队列，并按 Broker 和队列 ID 排序；后续单队列查询可直接使用这些值。 |
 | `GetMinOffsetAsync(queue)` | 返回队列中仍可读取的最早位点；受保留策略影响，该值不一定为零。 |
 | `GetMaxOffsetAsync(queue, committed)` | 默认返回已提交且可消费的最高位点。传入 `false` 时，在 Broker 支持的情况下请求当前在途位点。 |
 | `GetEarliestMessageStoreTimeAsync(queue)` | 返回最早可用消息的 UTC 存储时间；Broker 报告没有可用消息时返回 `null`。 |
@@ -36,7 +36,7 @@ service，也不需要 Producer group 或 consumer group。
 | `GetConsumerOffsetAsync(group, queue)` | 返回该 group 在一个物理队列上的已提交位置；尚未提交时返回 `null`。 |
 | `ViewMessageAsync(topic, offsetMessageId)` | 使用 `RemotingSendResult.OffsetMessageId` 中的物理 ID 读取一条已存储消息。 |
 
-`RemotingMessageQueue` 由 Topic、Broker 名称和队列 ID 共同标识。位点只属于对应的物理队列，不是 Topic 全局位点，
+`RemotingConsumerQueue` 由 Topic、Broker 名称和队列 ID 共同标识。位点只属于对应的物理队列，不是 Topic 全局位点，
 也不能把不同队列的位点当作同一个序列比较。
 
 ## 物理消息查询

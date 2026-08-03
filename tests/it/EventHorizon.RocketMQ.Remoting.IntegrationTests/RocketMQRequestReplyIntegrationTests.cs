@@ -27,7 +27,7 @@ public sealed class RocketMQRequestReplyIntegrationTests(RocketMQSingleBrokerCon
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ProducerReceivesReplyFromPushConsumer()
+    public async Task Producer_PushConsumer_ReceivesReply()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

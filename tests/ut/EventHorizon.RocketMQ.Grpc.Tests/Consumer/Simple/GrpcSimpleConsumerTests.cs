@@ -25,7 +25,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.Simple;
 public sealed class GrpcSimpleConsumerTests
 {
     [Fact]
-    public async Task ReceiveAsync_UsesAssignmentAndConfiguredDurations()
+    public async Task ReceiveAsync_AssignmentAndDurations_UsesConfiguredValues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var filter = new FilterExpression("created");
@@ -62,7 +62,7 @@ public sealed class GrpcSimpleConsumerTests
     }
 
     [Fact]
-    public async Task ReceiveAsync_ReturnsEmptyWhenNoAssignments()
+    public async Task ReceiveAsync_NoAssignments_ReturnsEmpty()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
@@ -84,7 +84,7 @@ public sealed class GrpcSimpleConsumerTests
     }
 
     [Fact]
-    public async Task ReceiveAsync_RejectsInvalidArgumentsAndMissingSubscription()
+    public async Task ReceiveAsync_InvalidArgumentsAndMissingSubscription_Rejects()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
@@ -107,7 +107,7 @@ public sealed class GrpcSimpleConsumerTests
     }
 
     [Fact]
-    public async Task MessageOperations_ValidateAndForward()
+    public async Task MessageOperations_MessageValidation_ValidateAndForward()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var message = Message();
@@ -144,7 +144,7 @@ public sealed class GrpcSimpleConsumerTests
     }
 
     [Fact]
-    public async Task LifecycleAndSubscriptions_AreForwardedAndDisposeIsIdempotent()
+    public async Task LifecycleAndSubscriptions_ForwardingAndDisposal_RemainIdempotent()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var filter = new FilterExpression("created");

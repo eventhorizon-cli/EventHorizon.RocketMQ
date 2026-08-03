@@ -24,7 +24,7 @@ public sealed class GrpcRocketMQRoleKeyTests
     [InlineData((int)GrpcRocketMQRole.SimpleConsumer, "gRPC simple consumer", "grpc-simple-consumer")]
     [InlineData((int)GrpcRocketMQRole.PushConsumer, "gRPC push consumer", "grpc-push-consumer")]
     [InlineData((int)GrpcRocketMQRole.LitePushConsumer, "gRPC lite push consumer", "grpc-lite-push-consumer")]
-    public void RoleKey_UsesTheExpectedKnownRoleLabels(int role, string displayRole, string roleToken)
+    public void RoleKey_KnownRoleLabels_UsesExpectedTokens(int role, string displayRole, string roleToken)
     {
         var key = new GrpcRocketMQRoleKey(string.Empty, (GrpcRocketMQRole)role);
 
@@ -33,7 +33,7 @@ public sealed class GrpcRocketMQRoleKeyTests
     }
 
     [Fact]
-    public void RoleKey_NormalizesNamesAndProvidesStableFallbackForUnknownRoles()
+    public void RoleKey_UnknownRoleNames_NormalizesAndProvidesFallback()
     {
         var known = new GrpcRocketMQRoleKey("west region", GrpcRocketMQRole.LitePushConsumer);
         var unknown = new GrpcRocketMQRoleKey("custom/name", (GrpcRocketMQRole)999);

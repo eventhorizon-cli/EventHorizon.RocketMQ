@@ -15,10 +15,8 @@
 
 using System.Reflection;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
@@ -33,7 +31,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests;
 public sealed class DependencyInjectionTests
 {
     [Fact]
-    public void AddRocketMQRemoting_RegistersTelemetryWithTheDefaultServiceProvider()
+    public void AddRocketMQRemoting_TelemetryWithTheDefaultServiceProvider_RegistersTelemetryWithDefaultProvider()
     {
         var services = new ServiceCollection();
         services.AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876");
@@ -44,7 +42,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRocketMQRemoting_ValidatesClientOptions()
+    public async Task AddRocketMQRemoting_ClientOptions_Validates()
     {
         var services = new ServiceCollection();
         services.AddRocketMQRemoting(options =>
@@ -72,7 +70,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQRemoting_RejectsSecurityTokenWithoutCredentials()
+    public void AddRocketMQRemoting_SecurityTokenWithoutCredentials_Rejects()
     {
         var services = new ServiceCollection();
         services.AddRocketMQRemoting(options =>
@@ -89,7 +87,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRocketMQRemoting_PreservesRegisteredTimeProvider()
+    public async Task AddRocketMQRemoting_RegisteredTimeProvider_PreservesRegisteredTimeProvider()
     {
         var services = new ServiceCollection();
         var timeProvider = new TestTimeProvider();
@@ -102,7 +100,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingProducer_RejectsDuplicateRoleForRegistrationName()
+    public void AddRemotingProducer_RoleForRegistrationName_RejectsDuplicateRole()
     {
         var builder = new ServiceCollection()
             .AddRocketMQRemoting("orders", options => options.NamesrvAddr = "127.0.0.1:9876")
@@ -115,7 +113,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingAdmin_RejectsDuplicateRole()
+    public void AddRemotingAdmin_Role_RejectsDuplicateRole()
     {
         var builder = new ServiceCollection()
             .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
@@ -128,7 +126,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingProducer_RejectsMessageSizeAboveClassicFrameBudget()
+    public async Task AddRemotingProducer_MessageSizeAboveClassicFrameBudget_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -151,7 +149,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingProducer_RegistersProducerAndHostedLifecycle()
+    public async Task AddRemotingProducer_ProducerAndHostedLifecycle_RegistersProducerAndLifecycle()
     {
         var services = new ServiceCollection();
         services
@@ -175,31 +173,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPullConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options =>
-            {
-                options.NamesrvAddr = "127.0.0.1:9876";
-            })
-            .AddRemotingPullConsumer(options =>
-            {
-                options.GroupName = "orders";
-                options.Subscribe("orders");
-            });
-        await using var provider = services.BuildServiceProvider();
-
-        var consumer = provider.GetRequiredService<IRemotingPullConsumer>();
-        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
-
-        Assert.IsType<RemotingPullConsumer>(consumer);
-        Assert.IsType<RemotingPullConsumerHostedService>(hostedService);
-        Assert.Same(consumer, provider.GetRequiredService<IRemotingPullConsumer>());
-    }
-
-    [Fact]
-    public async Task AddRemotingLitePullConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
+    public async Task AddRemotingLitePullConsumer_ProtocolSpecificConsumerAndLifecycle_RegistersConsumerAndLifecycle()
     {
         var services = new ServiceCollection();
         services
@@ -223,7 +197,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingLitePullConsumer_RejectsTimestampOffsetWithoutTimestamp()
+    public async Task AddRemotingLitePullConsumer_TimestampOffsetWithoutTimestamp_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -234,18 +208,18 @@ public sealed class DependencyInjectionTests
             .AddRemotingLitePullConsumer(options =>
             {
                 options.GroupName = "orders";
-                options.InitialOffset = QueryOffsetPolicy.Timestamp;
+                options.InitialPosition = ConsumeFromPosition.Timestamp;
             });
         await using var provider = services.BuildServiceProvider();
 
         var exception = Assert.Throws<OptionsValidationException>(
             provider.GetRequiredService<IRemotingLitePullConsumer>);
 
-        Assert.Contains("initial offset timestamp", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("initial consume position", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
+    public async Task AddRemotingPushConsumer_ProtocolSpecificConsumerAndLifecycle_RegistersConsumerAndLifecycle()
     {
         var services = new ServiceCollection();
         services
@@ -269,7 +243,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RegistersMultipleConsumersWithIsolatedOptionsAndLifecycles()
+    public async Task AddRemotingPushConsumer_MultipleConsumersWithOptionsAndLifecycles_RegistersWithIsolatedOptions()
     {
         var services = new ServiceCollection();
         var rocketMQ = services.AddRocketMQRemoting(options =>
@@ -338,11 +312,9 @@ public sealed class DependencyInjectionTests
     }
 
     [Theory]
-    [InlineData((int)RemotingRocketMQRole.PullConsumer, "primary:remoting-pull-consumer:2")]
     [InlineData((int)RemotingRocketMQRole.LitePullConsumer, "primary:remoting-lite-pull-consumer:2")]
     [InlineData((int)RemotingRocketMQRole.PushConsumer, "primary:remoting-push-consumer:2")]
-    [InlineData((int)RemotingRocketMQRole.PopConsumer, "primary:remoting-pop-consumer:2")]
-    public async Task AddRemotingConsumer_IsolatesOptionsFromARegistrationNamedLikeADerivedRoleOptionsName(
+    public async Task AddRemotingConsumer_OptionsFromARegistrationNamedLikeADerivedRoleOptionsName_Isolates(
         int roleValue,
         string collidingRegistrationName)
     {
@@ -373,7 +345,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRocketMQRemoting_RejectsRegistrationNameContainingNullCharacter()
+    public void AddRocketMQRemoting_RegistrationNameContainingNullCharacter_Rejects()
     {
         var services = new ServiceCollection();
 
@@ -385,7 +357,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RegistersMultipleConsumersWithMatchingGroupAndSubscriptions()
+    public async Task AddRemotingPushConsumer_MultipleConsumersWithMatchingGroupAndSubscriptions_RegistersMatchingConsumers()
     {
         var services = new ServiceCollection();
         services
@@ -437,7 +409,7 @@ public sealed class DependencyInjectionTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task AddRemotingPushConsumer_SameGroupMembersRejectRuntimeSubscriptionChanges(bool subscribe)
+    public async Task AddRemotingPushConsumer_SameGroupMembersRuntimeSubscriptionChanges_Rejects(bool subscribe)
     {
         var services = new ServiceCollection();
         services
@@ -464,7 +436,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_DifferentGroupMembersAllowRuntimeSubscriptionChanges()
+    public async Task AddRemotingPushConsumer_GroupMembers_AllowsRuntimeSubscriptionChangesForDifferentGroups()
     {
         var services = new ServiceCollection();
         services
@@ -489,7 +461,7 @@ public sealed class DependencyInjectionTests
     [Theory]
     [InlineData("payments", "created")]
     [InlineData("orders", "updated")]
-    public void AddRemotingPushConsumer_RejectsMismatchedSubscriptionsForSameGroup(
+    public void AddRemotingPushConsumer_MismatchedSubscriptionsForSameGroup_Rejects(
         string secondTopic,
         string secondFilter)
     {
@@ -518,7 +490,7 @@ public sealed class DependencyInjectionTests
     [Theory]
     [InlineData(ConsumerMode.Broadcasting, ConsumeFromPosition.End, "consumer mode")]
     [InlineData(ConsumerMode.Clustering, ConsumeFromPosition.Beginning, "initial consume position")]
-    public void AddRemotingPushConsumer_RejectsMismatchedBrokerGroupSettings(
+    public void AddRemotingPushConsumer_MismatchedBrokerGroupSettings_Rejects(
         ConsumerMode secondMode,
         ConsumeFromPosition secondPosition,
         string expectedFailure)
@@ -548,7 +520,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RejectsMismatchedOrderlyModeForSameGroupWithinOneRegistration()
+    public async Task AddRemotingPushConsumer_MismatchedOrderlyModeForSameGroupWithinOneRegistration_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -574,7 +546,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingLitePullConsumer_RejectsMismatchedSubscriptionsForSameGroup()
+    public void AddRemotingLitePullConsumer_MismatchedSubscriptionsForSameGroup_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -599,7 +571,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingLitePullConsumer_RejectsMismatchedInitialOffsetForSameGroup()
+    public void AddRemotingLitePullConsumer_MismatchedInitialOffsetForSameGroup_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -612,7 +584,7 @@ public sealed class DependencyInjectionTests
             .AddRemotingLitePullConsumer(options =>
             {
                 options.GroupName = "orders";
-                options.InitialOffset = QueryOffsetPolicy.Beginning;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
                 options.Subscribe("orders");
             });
         using var provider = services.BuildServiceProvider();
@@ -621,13 +593,13 @@ public sealed class DependencyInjectionTests
             () => provider.GetServices<IRemotingLitePullConsumer>().ToArray());
 
         Assert.Contains("same consumer group", exception.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("initial offset policy", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("initial consume position", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task AddRemotingLitePullConsumer_SameGroupMembersRejectRuntimeSubscriptionChanges(bool subscribe)
+    public async Task AddRemotingLitePullConsumer_SameGroupMembersRuntimeSubscriptionChanges_Rejects(bool subscribe)
     {
         var services = new ServiceCollection();
         services
@@ -654,7 +626,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingLitePullConsumer_DifferentGroupMembersAllowRuntimeSubscriptionChanges()
+    public async Task AddRemotingLitePullConsumer_GroupMembers_AllowsRuntimeSubscriptionChangesForDifferentGroups()
     {
         var services = new ServiceCollection();
         services
@@ -677,7 +649,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingLitePullConsumer_IsolatesRepeatedGroupMembersWhileSharingDifferentGroups()
+    public async Task AddRemotingLitePullConsumer_RepeatedGroupMembersWhileSharingDifferentGroups_IsolatesRepeatedGroupMembers()
     {
         var services = new ServiceCollection();
         services
@@ -721,7 +693,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingConsumers_ShareTransportAcrossPushAndLitePullInDifferentGroups()
+    public async Task AddRemotingConsumers_TransportAcrossPushAndLitePullInDifferentGroups_ShareTransportAcrossGroups()
     {
         var services = new ServiceCollection();
         services
@@ -751,7 +723,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddRemotingConsumers_RejectsPushAndLitePullInTheSameGroup()
+    public void AddRemotingConsumers_PushAndLitePullInTheSameGroup_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -776,44 +748,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPassiveConsumers_RegistersMultipleInstancesAndLifecycles()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
-            .AddRemotingPullConsumer(options =>
-            {
-                options.GroupName = "orders";
-                options.Subscribe("orders");
-            })
-            .AddRemotingPullConsumer(options =>
-            {
-                options.GroupName = "payments";
-                options.Subscribe("payments");
-            })
-            .AddRemotingPopConsumer(options => options.GroupName = "orders")
-            .AddRemotingPopConsumer(options => options.GroupName = "payments");
-        await using var provider = services.BuildServiceProvider(
-            new ServiceProviderOptions { ValidateOnBuild = true });
-
-        var pullConsumers = provider.GetServices<IRemotingPullConsumer>().ToArray();
-        var popConsumers = provider.GetServices<IRemotingPopConsumer>().ToArray();
-        var hostedServices = provider.GetServices<IHostedService>().ToArray();
-
-        Assert.Equal(2, pullConsumers.Length);
-        Assert.Equal(2, popConsumers.Length);
-        Assert.All(pullConsumers, consumer => Assert.Contains(
-            hostedServices.OfType<RemotingPullConsumerHostedService>()
-                .Select(GetSingleInstanceField<IRemotingPullConsumer>),
-            candidate => ReferenceEquals(candidate, consumer)));
-        Assert.All(popConsumers, consumer => Assert.Contains(
-            hostedServices.OfType<RemotingPopConsumerHostedService>()
-                .Select(GetSingleInstanceField<IRemotingPopConsumer>),
-            candidate => ReferenceEquals(candidate, consumer)));
-    }
-
-    [Fact]
-    public async Task AddRemotingPushConsumer_KeyedRegistrationEnumeratesAllConsumers()
+    public async Task AddRemotingPushConsumer_RegistrationEnumeratesAllConsumers_EnumeratesAllConsumers()
     {
         var services = new ServiceCollection();
         services
@@ -843,66 +778,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPopConsumer_RegistersProtocolSpecificConsumerAndLifecycle()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
-            .AddRemotingPopConsumer(options => options.GroupName = "orders");
-        await using var provider = services.BuildServiceProvider();
-
-        var consumer = provider.GetRequiredService<IRemotingPopConsumer>();
-        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
-        var options = provider.GetRequiredService<IOptions<RemotingPopConsumerOptions>>().Value;
-
-        Assert.Equal("orders", options.GroupName);
-        Assert.IsType<RemotingPopConsumer>(consumer);
-        Assert.IsType<RemotingPopConsumerHostedService>(hostedService);
-        Assert.Same(consumer, provider.GetRequiredService<IRemotingPopConsumer>());
-        await hostedService.StartAsync(CancellationToken.None);
-        await hostedService.StopAsync(CancellationToken.None);
-    }
-
-    [Fact]
-    public async Task AddRemotingPopConsumer_RejectsNonPositiveInvisibleDuration()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
-            .AddRemotingPopConsumer(options =>
-            {
-                options.GroupName = "orders";
-                options.InvisibleDuration = TimeSpan.Zero;
-            });
-        await using var provider = services.BuildServiceProvider();
-
-        var exception = Assert.Throws<OptionsValidationException>(
-            provider.GetRequiredService<IRemotingPopConsumer>);
-
-        Assert.Contains("Invisible duration", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task AddRemotingPopConsumer_RejectsBatchSizeAboveTheBrokerLimit()
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
-            .AddRemotingPopConsumer(options =>
-            {
-                options.GroupName = "orders";
-                options.BatchSize = 33;
-            });
-        await using var provider = services.BuildServiceProvider();
-
-        var exception = Assert.Throws<OptionsValidationException>(
-            provider.GetRequiredService<IRemotingPopConsumer>);
-
-        Assert.Contains("POP batch size", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task AddRemotingPushConsumer_RejectsTimestampPositionWithoutTimestamp()
+    public async Task AddRemotingPushConsumer_TimestampPositionHasNoTimestamp_RejectsRegistration()
     {
         var services = new ServiceCollection();
         services
@@ -925,7 +801,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RejectsNonPositiveConsumeTimeout()
+    public async Task AddRemotingPushConsumer_ConsumeTimeoutIsNotPositive_RejectsRegistration()
     {
         var services = new ServiceCollection();
         services
@@ -948,7 +824,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RejectsUnknownInitialPosition()
+    public async Task AddRemotingPushConsumer_InitialPositionIsUnknown_RejectsRegistration()
     {
         var services = new ServiceCollection();
         services
@@ -971,7 +847,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RejectsUnknownConsumerMode()
+    public async Task AddRemotingPushConsumer_ConsumerModeIsUnknown_RejectsRegistration()
     {
         var services = new ServiceCollection();
         services
@@ -994,7 +870,91 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task AddRemotingPushConsumer_RejectsInvalidLocalOffsetStorePath()
+    public async Task AddRemotingPushConsumer_BrokerAssignmentWithBroadcasting_AllowsRegistration()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders";
+                options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Broker;
+                options.ConsumerMode = ConsumerMode.Broadcasting;
+                options.Subscribe("orders");
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
+
+        Assert.IsType<RemotingPushConsumer>(consumer);
+    }
+
+    [Fact]
+    public async Task AddRemotingPushConsumer_BrokerAssignmentWithOrderlyConsumption_AllowsRegistration()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders";
+                options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Broker;
+                options.ConsumeOrderly = true;
+                options.Subscribe("orders");
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
+
+        Assert.IsType<RemotingPushConsumer>(consumer);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(33)]
+    public async Task AddRemotingPushConsumer_PopBatchSizeIsOutsideBrokerRange_RejectsRegistration(int batchSize)
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders";
+                options.PopBatchSize = batchSize;
+                options.Subscribe("orders");
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            provider.GetRequiredService<IRemotingPushConsumer>);
+
+        Assert.Contains("POP batch size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(4)]
+    [InlineData(301)]
+    public async Task AddRemotingPushConsumer_PopInvisibleDurationIsOutsideBrokerRange_RejectsRegistration(int seconds)
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders";
+                options.PopInvisibleDuration = TimeSpan.FromSeconds(seconds);
+                options.Subscribe("orders");
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            provider.GetRequiredService<IRemotingPushConsumer>);
+
+        Assert.Contains("POP invisible duration", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AddRemotingPushConsumer_InvalidLocalOffsetStorePath_Rejects()
     {
         var services = new ServiceCollection();
         services
@@ -1018,7 +978,7 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public async Task KeyedClientRegistrationsRegisterIndependentRemotingProducersAndOptions()
+    public async Task KeyedClientRegistrations_IndependentProducerOptions_RegisterIndependentProducers()
     {
         var services = new ServiceCollection();
         services
@@ -1085,13 +1045,6 @@ public sealed class DependencyInjectionTests
     {
         switch (role)
         {
-            case RemotingRocketMQRole.PullConsumer:
-                builder.AddRemotingPullConsumer(options =>
-                {
-                    options.GroupName = groupName;
-                    options.Subscribe(topic);
-                });
-                return;
             case RemotingRocketMQRole.LitePullConsumer:
                 builder.AddRemotingLitePullConsumer(options =>
                 {
@@ -1101,13 +1054,6 @@ public sealed class DependencyInjectionTests
                 return;
             case RemotingRocketMQRole.PushConsumer:
                 builder.AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
-                {
-                    options.GroupName = groupName;
-                    options.Subscribe(topic);
-                });
-                return;
-            case RemotingRocketMQRole.PopConsumer:
-                builder.AddRemotingPopConsumer(options =>
                 {
                     options.GroupName = groupName;
                     options.Subscribe(topic);
@@ -1124,20 +1070,12 @@ public sealed class DependencyInjectionTests
         string registrationName) =>
         role switch
         {
-            RemotingRocketMQRole.PullConsumer => provider
-                .GetKeyedServices<IRemotingPullConsumer>(registrationName)
-                .Select(GetConsumerSettings)
-                .ToArray(),
             RemotingRocketMQRole.LitePullConsumer => provider
                 .GetKeyedServices<IRemotingLitePullConsumer>(registrationName)
                 .Select(GetConsumerSettings)
                 .ToArray(),
             RemotingRocketMQRole.PushConsumer => provider
                 .GetKeyedServices<IRemotingPushConsumer>(registrationName)
-                .Select(GetConsumerSettings)
-                .ToArray(),
-            RemotingRocketMQRole.PopConsumer => provider
-                .GetKeyedServices<IRemotingPopConsumer>(registrationName)
                 .Select(GetConsumerSettings)
                 .ToArray(),
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "The role is not a repeatable consumer.")

@@ -16,7 +16,6 @@
 using System.Net;
 using System.Text;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -27,7 +26,7 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer;
 public sealed class RemotingConsumerGroupSessionTests
 {
     [Fact]
-    public void Constructor_BuildsNamespacedGroupAndConfiguredClientIdentity()
+    public void Constructor_NamespacedGroupAndConfiguredClientIdentity_Builds()
     {
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         var session = CreateSession(remoting.Object);
@@ -37,7 +36,7 @@ public sealed class RemotingConsumerGroupSessionTests
     }
 
     [Fact]
-    public async Task SendHeartbeatsAsync_ContinuesAfterBrokerFailureAndDeduplicatesAddresses()
+    public async Task SendHeartbeatsAsync_BrokerFailure_ContinuesAndDeduplicatesAddresses()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var invocations = new List<(EndPoint Endpoint, RemotingCommand Request, TimeSpan Timeout)>();
@@ -82,7 +81,7 @@ public sealed class RemotingConsumerGroupSessionTests
     }
 
     [Fact]
-    public async Task GetConsumerIdsAsync_UsesNamespacedGroupAndBrokerName()
+    public async Task GetConsumerIdsAsync_NamespacedGroupAndBrokerName_UsesIdentity()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         (EndPoint Endpoint, RemotingCommand Request, TimeSpan Timeout)? invocation = null;
@@ -104,7 +103,7 @@ public sealed class RemotingConsumerGroupSessionTests
                 });
             });
         var session = CreateSession(remoting.Object);
-        var queue = new RemotingPullMessageQueue("orders", 3, "broker-a", "127.0.0.1:10911");
+        var queue = new RemotingConsumerQueue("orders", 3, "broker-a", "127.0.0.1:10911");
 
         var consumerIds = await session.GetConsumerIdsAsync(queue, cancellationToken);
 
@@ -118,7 +117,7 @@ public sealed class RemotingConsumerGroupSessionTests
     }
 
     [Fact]
-    public async Task UnregisterAsync_ContinuesAfterBrokerFailureAndUsesGroupIdentity()
+    public async Task UnregisterAsync_BrokerFailure_ContinuesWithGroupIdentity()
     {
         var invocations = new List<(EndPoint Endpoint, RemotingCommand Request, CancellationToken Token)>();
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);

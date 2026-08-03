@@ -18,18 +18,27 @@ Use the following as the source of truth for detailed, evolving guidance instead
   duplicated models, public API ownership, and folder placement.
 - [Dependency-injection registrations and lifetimes](docs/en-US/architecture/dependency-injection-and-lifetimes.md):
   role composition, keyed registrations, consumer engines, handlers, and hosted lifecycles.
+- [OpenTelemetry instrumentation](docs/en-US/architecture/opentelemetry-instrumentation.md): trace topology,
+  covered operations, semantic attributes, metrics, propagation, and protocol ownership.
 - [gRPC consumer model](docs/en-US/grpc/consumer-model.md) and
-  [classic Remoting transport and roles](docs/en-US/remoting/transport-and-client-roles.md): transport semantics.
+  [classic Remoting consumer model](docs/en-US/remoting/consumer-model.md), plus
+  [classic Remoting transport and roles](docs/en-US/remoting/transport-and-client-roles.md): consumer and transport
+  semantics.
 - [Local and integration testing](docs/en-US/testing/local-and-integration-testing.md): test projects, Testcontainers,
   CI, coverage, and Compose boundaries.
-- [Protocol guides](src/EventHorizon.RocketMQ.Grpc/README.md) and
-  [classic Remoting guide](src/EventHorizon.RocketMQ.Remoting/README.md): public APIs, configuration, compatibility,
-  and examples.
+- [gRPC package user guide](src/EventHorizon.RocketMQ.Grpc/README.md) and
+  [classic Remoting package user guide](src/EventHorizon.RocketMQ.Remoting/README.md): installation, public APIs,
+  configuration, compatibility prerequisites, and examples.
 - [Samples index](samples/README.md) and [test-environment index](test-environments/README.md): runnable local
   setups and their prerequisites.
 
 Read the relevant reference before changing an architectural boundary, transport behavior, DI lifecycle, test
 topology, or manual environment.
+
+For every new or changed Producer or Consumer send, receive, processing, retry, acknowledgement, negative
+acknowledgement, commit, dead-letter, or lease-renewal path, review the OpenTelemetry design and update the
+protocol-owned tracing and metrics together with the behavior and tests. A feature path is not complete when its
+corresponding telemetry success, empty-result, cancellation, and failure semantics are missing.
 
 - When an implementation requires a behavioral or design decision, first consult the corresponding official
   Apache RocketMQ Java and Go client implementations. Use their semantics and underlying approach as a reference,
@@ -68,6 +77,14 @@ topology, or manual environment.
   functionality changes.
 - Keep English and Simplified Chinese README or design-note pairs semantically synchronized. The root READMEs stay
   concise; protocol detail belongs in the protocol guides and design notes.
+- Keep `src/EventHorizon.RocketMQ.Grpc/README*.md` and `src/EventHorizon.RocketMQ.Remoting/README*.md` as concise
+  package user guides. They may cover installation, package selection, public API usage, configuration, deployment
+  prerequisites, common errors, and links to runnable samples. Put architecture, wire commands, internal state
+  machines, queue ownership, DI composition and lifetimes, telemetry topology, and test design only in the matching
+  bilingual articles under `docs`, then link to those articles from the package guide when users need the detail.
+- After changing a Simplified Chinese README, perform a dedicated editorial pass after semantic synchronization.
+  Preserve code, commands, identifiers, links, technical facts, and boundary conditions while removing literal
+  translation, repetitive templates, vague claims, and unnatural wording.
 - Update the matching design note when an architectural, DI-lifecycle, transport, or testing decision changes. Update
   the relevant test-environment guide when a Compose environment changes.
 - Do not change documentation for an internal refactor with no user-visible or architectural effect. State any
@@ -96,6 +113,13 @@ topology, or manual environment.
 
 ## Testing and validation
 
+- For substantial public-API, architectural-boundary, transport-behavior, or consumer-model changes, use this order:
+  first write or update the relevant bilingual design note; next define the public API contract; then add the focused
+  unit and integration tests; finally implement the production behavior. The API-contract phase may include only the
+  minimum compile-only scaffolding needed for tests to express the contract; it must not contain the real behavior.
+  Run the new behavioral tests before implementation and confirm that they fail for the intended missing behavior.
+  Small bug fixes, internal refactors, documentation-only work, and mechanical configuration changes do not require a
+  new design note or a separate API-contract phase unless they actually change one of those boundaries.
 - Prefer test-driven development for behavior changes. Start with the smallest test that expresses the intended
   contract, run it, and confirm that it fails for the expected reason before changing production code. Then implement
   the smallest coherent change that makes the test pass, rerun the focused test, and finish with the affected complete
@@ -110,6 +134,11 @@ topology, or manual environment.
   is not a test assembly and must not reference a production protocol project.
 - Add or update tests for behavior changes. Use xUnit v3 and normally strict Moq mocks. A stateful fake is appropriate
   only when a mock would obscure streaming, framing, or concurrency behavior.
+- Name test methods `MemberOrBehavior_Scenario_ExpectedOutcome`, following the
+  [Microsoft .NET unit-testing guidance](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices#naming-your-tests).
+  Use PascalCase within each segment and underscores between the three segments. For an integration workflow without
+  one method under test, name the workflow in the first segment. Avoid `Test` prefixes, `Should` filler, and
+  sentence-style names.
 - Integration coverage does not replace unit coverage for deterministic client-owned behavior. Even when an
   integration test covers the full workflow, add or retain focused unit tests for the underlying state transitions,
   allocation, scheduling, offset, retry, and failure invariants; use integration tests to complement them at real

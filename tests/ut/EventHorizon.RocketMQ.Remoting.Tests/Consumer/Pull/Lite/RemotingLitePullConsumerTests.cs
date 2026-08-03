@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
@@ -31,484 +33,482 @@ public sealed class RemotingLitePullConsumerTests
     private const string ClientId = "127.0.0.1@lite-client";
 
     [Fact]
-    public async Task StartAsync_HeartbeatsAndAllocatesQueuesForTheActiveConsumer()
+    public void RemotingConsumerQueue_EquivalentLogicalValues_UsesValueEquality()
+    {
+        var first = new RemotingConsumerQueue("orders", "broker-a", 1);
+        var equivalent = new RemotingConsumerQueue("orders", "broker-a", 1);
+        var otherQueue = new RemotingConsumerQueue("orders", "broker-a", 2);
+
+        Assert.Equal(first, equivalent);
+        Assert.True(first == equivalent);
+        Assert.Equal(first.GetHashCode(), equivalent.GetHashCode());
+        Assert.NotEqual(first, otherQueue);
+        Assert.Single(new HashSet<RemotingConsumerQueue> { first, equivalent });
+    }
+
+    [Fact]
+    public async Task StartAsync_ActiveConsumer_HeartbeatsAndAllocatesQueues()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queues = new[]
         {
-            new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911"),
-            new RemotingPullMessageQueue("orders", 1, "broker-a", "127.0.0.1:10911")
+            ResolvedQueue("orders", 0),
+            ResolvedQueue("orders", 1)
         };
-        byte[]? heartbeat = null;
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(queues);
-        engine
-            .Setup(value => value.GetOffsetAsync(It.IsAny<RemotingPullMessageQueue>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                It.IsAny<RemotingPullMessageQueue>(),
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(7L);
+        var heartbeats = new ConcurrentQueue<byte[]>();
+        var engine = new ScriptedConsumerEngine
+        {
+            GetMessageQueuesHandler = (_, _) => Task.FromResult<IReadOnlyList<RemotingConsumerQueue>>(queues)
+        };
         var remoting = CreateRemotingClient(request => request.Code switch
         {
-            RequestCode.HeartBeat => CaptureHeartbeat(request, ref heartbeat),
+            RequestCode.HeartBeat => CaptureHeartbeat(request, heartbeats),
             RequestCode.GetConsumerListByGroup => ConsumerListResponse(ClientId, "peer-client"),
             RequestCode.UnregisterClient => SuccessResponse(),
             _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
         });
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
+        var options = NewOptions();
         options.Subscribe("orders");
 
+        await using (var consumer = CreateConsumer(options, engine, remoting.Object))
         {
-            await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
             await consumer.StartAsync(cancellationToken);
 
             var assigned = Assert.Single(consumer.Assignment);
             Assert.Equal(0, assigned.QueueId);
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                consumer.AssignAsync([queues[0]], cancellationToken));
+                consumer.AssignAsync([queues[0]], cancellationToken: cancellationToken));
             Assert.Contains("subscriptions", exception.Message, StringComparison.OrdinalIgnoreCase);
         }
 
-        Assert.NotNull(heartbeat);
+        var heartbeat = Assert.Single(heartbeats);
         using var document = JsonDocument.Parse(heartbeat);
         var consumerData = Assert.Single(document.RootElement.GetProperty("consumerDataSet").EnumerateArray());
         Assert.Equal("CONSUME_ACTIVELY", consumerData.GetProperty("consumeType").GetString());
         Assert.Equal("CLUSTERING", consumerData.GetProperty("messageModel").GetString());
         Assert.Equal("CONSUME_FROM_LAST_OFFSET", consumerData.GetProperty("consumeFromWhere").GetString());
-        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
-        engine.Verify(value => value.DisposeAsync(), Times.Once);
+        Assert.Equal(1, engine.StopCount);
+        Assert.Equal(1, engine.DisposeCount);
     }
 
     [Fact]
-    public async Task PollAsync_TracksLocalPositionUntilCommitAsync()
+    public async Task BackgroundReceivers_OneQueueIsEmpty_DoesNotBlockReadyQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([queue]);
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        engine
-            .Setup(value => value.PullAsync(queue, 4, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new RemotingPullResult([], 5, RemotingPullStatus.NoNewMessage));
-        engine
-            .Setup(value => value.UpdateOffsetAsync(queue, 5, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-        var remoting = CreateManualAssignmentRemotingClient();
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
-
+        var emptyQueue = Queue(0);
+        var readyQueue = Queue(1);
+        var readyReturned = 0;
+        var engine = new ScriptedConsumerEngine
         {
-            await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
-            await consumer.StartAsync(cancellationToken);
-            var discovered = Assert.Single(await consumer.GetMessageQueuesAsync("orders", cancellationToken));
-            await consumer.AssignAsync([discovered], cancellationToken);
+            PullHandler = async (queue, offset, _, token) =>
+            {
+                if (queue == emptyQueue || Interlocked.Exchange(ref readyReturned, 1) != 0)
+                {
+                    return await WaitForPullCancellationAsync(offset, token).ConfigureAwait(false);
+                }
 
-            consumer.Pause([queue]);
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                consumer.PollAsync(cancellationToken: cancellationToken));
-            consumer.Resume([queue]);
-            consumer.Seek(queue, 4);
+                return Found(Message(readyQueue, offset, "ready"), offset + 1);
+            }
+        };
 
-            var result = await consumer.PollAsync(cancellationToken: cancellationToken);
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([emptyQueue, readyQueue], cancellationToken: cancellationToken);
 
-            Assert.Equal(5, result.NextOffset);
-            engine.Verify(
-                value => value.UpdateOffsetAsync(
-                    It.IsAny<RemotingPullMessageQueue>(),
-                    It.IsAny<long>(),
-                    It.IsAny<CancellationToken>()),
-                Times.Never);
-            await consumer.CommitAsync(queue, cancellationToken);
-        }
+        var messages = await consumer.PollAsync(TimeSpan.FromMilliseconds(500), cancellationToken);
 
-        engine.Verify(value => value.UpdateOffsetAsync(queue, 5, It.IsAny<CancellationToken>()), Times.Once);
-        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
-        engine.Verify(value => value.DisposeAsync(), Times.Once);
+        Assert.Equal("ready", Assert.Single(messages).MessageId);
+        Assert.True(engine.CountPulls(emptyQueue) >= 1);
+        Assert.True(engine.CountPulls(readyQueue) >= 1);
     }
 
     [Fact]
-    public async Task UnsubscribeAsync_CancelsAnActivePollForARevokedQueue()
+    public async Task PollAsync_TimeoutIsZero_DrainsWithoutWaiting()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var pullStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var unregisterCount = 0;
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([queue]);
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        engine
-            .Setup(value => value.PullAsync(queue, 0, null, It.IsAny<CancellationToken>()))
-            .Returns<RemotingPullMessageQueue, long, int?, CancellationToken>(async (_, _, _, token) =>
+        var engine = new ScriptedConsumerEngine();
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([Queue()], cancellationToken: cancellationToken);
+
+        var started = Stopwatch.GetTimestamp();
+        var messages = await consumer.PollAsync(TimeSpan.Zero, cancellationToken);
+
+        Assert.Empty(messages);
+        Assert.True(
+            Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(1),
+            "A zero-timeout poll must be a non-blocking local-buffer drain.");
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            consumer.PollAsync(TimeSpan.FromMilliseconds(-1), cancellationToken));
+    }
+
+    [Fact]
+    public async Task PollAsync_LocalTimeoutExpires_ReturnsEmptyWithoutCancellingBackgroundReceive()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var receiveCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = async (_, offset, _, token) =>
             {
-                pullStarted.TrySetResult();
-                await Task.Delay(Timeout.InfiniteTimeSpan, token);
-                return new RemotingPullResult([], 0);
-            });
-        engine.Setup(value => value.RemoveSubscription("orders"));
+                try
+                {
+                    return await WaitForPullCancellationAsync(offset, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    receiveCancelled.TrySetResult();
+                    throw;
+                }
+            }
+        };
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([Queue()], cancellationToken: cancellationToken);
+
+        var messages = await consumer.PollAsync(TimeSpan.FromMilliseconds(50), cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+
+        Assert.Empty(messages);
+        Assert.False(
+            receiveCancelled.Task.IsCompleted,
+            "A local poll timeout must not cancel the per-assignment Broker receive.");
+    }
+
+    [Fact]
+    public async Task BackgroundReceive_MessageCapacityIsReached_StopsFetching()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var options = NewOptions();
+        options.PullBatchSize = 1;
+        options.MaxCachedMessages = 2;
+        options.MaxCachedMessageBytes = 1024;
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (value, offset, _, token) => offset < 2
+                ? Task.FromResult(Found(Message(value, offset), offset + 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(options, engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await WaitUntilAsync(() => engine.CountPulls(queue) >= 2, "two background pulls", cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+
+        Assert.Equal(2, engine.CountPulls(queue));
+    }
+
+    [Fact]
+    public async Task BackgroundReceive_BodyCapacityIsReached_StopsFetching()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var options = NewOptions();
+        options.PullBatchSize = 1;
+        options.MaxCachedMessages = 10;
+        options.MaxCachedMessageBytes = 4;
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (value, offset, _, token) => offset == 0
+                ? Task.FromResult(Found(Message(value, offset, bodySize: 4), 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(options, engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await WaitUntilAsync(() => engine.CountPulls(queue) >= 1, "the first background pull", cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+
+        Assert.Equal(1, engine.CountPulls(queue));
+    }
+
+    [Fact]
+    public async Task CommitAsync_MessagesArePrefetched_PersistsDeliveredPosition()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (value, offset, _, token) => offset == 0
+                ? Task.FromResult(Found(Message(value, offset), 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await WaitUntilAsync(
+            () => engine.CountPulls(queue, 1) >= 1,
+            "a second fetch after the first message was buffered",
+            cancellationToken);
+
+        Assert.Equal(0, consumer.Position(queue));
+        await consumer.CommitAsync(queue, cancellationToken);
+        Assert.Equal(0, engine.OffsetUpdates.Last().Offset);
+
+        var message = Assert.Single(await consumer.PollAsync(TimeSpan.Zero, cancellationToken));
+        Assert.Equal(0, message.QueueOffset);
+        Assert.Equal(1, consumer.Position(queue));
+        await consumer.CommitAsync(queue, cancellationToken);
+
+        Assert.Equal(new long[] { 0, 1 }, engine.OffsetUpdates.Select(static update => update.Offset).ToArray());
+    }
+
+    [Fact]
+    public async Task Seek_PreviousReceiveCompletes_DiscardsPreviousGenerationResult()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var oldReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeOldReceive = new TaskCompletionSource<RemotingPullResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var freshReturned = 0;
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (value, offset, _, token) => offset switch
+            {
+                0 => ObserveAndReturnAsync(oldReceiveStarted, completeOldReceive.Task),
+                10 when Interlocked.Exchange(ref freshReturned, 1) == 0 =>
+                    Task.FromResult(Found(Message(value, offset, "fresh"), 11)),
+                _ => WaitForPullCancellationAsync(offset, token)
+            }
+        };
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await oldReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+
+        consumer.Seek(queue, 10);
+        completeOldReceive.SetResult(Found(Message(queue, 0, "stale"), 1));
+        await WaitUntilAsync(() => engine.CountPulls(queue, 10) >= 1, "the seek generation", cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+
+        var messages = await consumer.PollAsync(TimeSpan.FromMilliseconds(500), cancellationToken);
+        Assert.Equal("fresh", Assert.Single(messages).MessageId);
+        Assert.Equal(11, consumer.Position(queue));
+    }
+
+    [Fact]
+    public async Task AssignAsync_QueueIsRevoked_DiscardsPreviousGenerationResult()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var revokedQueue = Queue(0);
+        var replacementQueue = Queue(1);
+        var revokedReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var revokedReceiveCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRevokedReceive = new TaskCompletionSource<RemotingPullResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var replacementReturned = 0;
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = async (queue, offset, _, token) =>
+            {
+                if (queue == revokedQueue)
+                {
+                    revokedReceiveStarted.TrySetResult();
+                    using var registration = token.Register(() => revokedReceiveCancelled.TrySetResult());
+                    return await completeRevokedReceive.Task.ConfigureAwait(false);
+                }
+
+                if (Interlocked.Exchange(ref replacementReturned, 1) == 0)
+                {
+                    return Found(Message(replacementQueue, offset, "replacement"), offset + 1);
+                }
+
+                return await WaitForPullCancellationAsync(offset, token).ConfigureAwait(false);
+            }
+        };
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([revokedQueue], cancellationToken: cancellationToken);
+        await revokedReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+
+        var replacement = consumer.AssignAsync([replacementQueue], cancellationToken: cancellationToken);
+        await revokedReceiveCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+        completeRevokedReceive.SetResult(Found(Message(revokedQueue, 0, "revoked"), 1));
+        await replacement;
+
+        var messages = await consumer.PollAsync(TimeSpan.FromMilliseconds(500), cancellationToken);
+        var message = Assert.Single(messages);
+        Assert.Equal("replacement", message.MessageId);
+        Assert.Equal(replacementQueue.QueueId, message.QueueId);
+    }
+
+    [Fact]
+    public async Task Pause_BufferContainsMessages_DrainsBufferWithoutFetchingUntilResume()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var secondReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondMessageAvailable = new TaskCompletionSource<RemotingPullResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = async (value, offset, _, token) =>
+            {
+                if (offset == 0)
+                {
+                    return Found(Message(value, offset, "first"), 1);
+                }
+
+                secondReceiveStarted.TrySetResult();
+                return await secondMessageAvailable.Task.WaitAsync(token).ConfigureAwait(false);
+            }
+        };
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await secondReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+
+        consumer.Pause([queue]);
+        var pullsAtPause = engine.CountPulls(queue);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+        Assert.Equal(pullsAtPause, engine.CountPulls(queue));
+        Assert.Equal("first", Assert.Single(await consumer.PollAsync(TimeSpan.Zero, cancellationToken)).MessageId);
+        Assert.Empty(await consumer.PollAsync(TimeSpan.Zero, cancellationToken));
+
+        consumer.Resume([queue]);
+        secondMessageAvailable.TrySetResult(Found(Message(queue, 1, "second"), 2));
+        Assert.Equal(
+            "second",
+            Assert.Single(await consumer.PollAsync(TimeSpan.FromMilliseconds(500), cancellationToken)).MessageId);
+        Assert.Equal(2, consumer.Position(queue));
+    }
+
+    [Fact]
+    public async Task AutoCommit_MessageIsBuffered_PersistsOnlyAfterDelivery()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var options = NewOptions();
+        options.EnableAutoCommit = true;
+        options.AutoCommitInterval = TimeSpan.FromMilliseconds(25);
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (value, offset, _, token) => offset == 0
+                ? Task.FromResult(Found(Message(value, offset), 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(options, engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+        await WaitUntilAsync(() => engine.CountPulls(queue, 1) >= 1, "a buffered message", cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+        Assert.DoesNotContain(engine.OffsetUpdates, static update => update.Offset == 1);
+
+        Assert.Single(await consumer.PollAsync(TimeSpan.Zero, cancellationToken));
+        await WaitUntilAsync(
+            () => engine.OffsetUpdates.Any(static update => update.Offset == 1),
+            "auto-commit of the delivered position",
+            cancellationToken);
+    }
+
+    [Fact]
+    public async Task RouteRefresh_RouteLookupFails_DoesNotSuppressHeartbeatToKnownBroker()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var routeQueries = 0;
+        var heartbeatCount = 0;
+        var queue = ResolvedQueue("orders", 0);
+        var engine = new ScriptedConsumerEngine
+        {
+            GetMessageQueuesHandler = (_, _) => Interlocked.Increment(ref routeQueries) == 1
+                ? Task.FromResult<IReadOnlyList<RemotingConsumerQueue>>([queue])
+                : Task.FromException<IReadOnlyList<RemotingConsumerQueue>>(
+                    new InvalidOperationException("route refresh failed"))
+        };
         var remoting = CreateRemotingClient(request => request.Code switch
         {
-            RequestCode.HeartBeat => SuccessResponse(),
+            RequestCode.HeartBeat => CountHeartbeat(ref heartbeatCount),
             RequestCode.GetConsumerListByGroup => ConsumerListResponse(ClientId),
-            RequestCode.UnregisterClient => CountUnregister(ref unregisterCount),
+            RequestCode.UnregisterClient => SuccessResponse(),
             _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
         });
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
+        var rebalance = new TestRemotingRebalanceService();
+        var options = NewOptions();
         options.Subscribe("orders");
 
-        {
-            await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
-            await consumer.StartAsync(cancellationToken);
-            var poll = consumer.PollAsync(cancellationToken: cancellationToken);
-            await pullStarted.Task.WaitAsync(cancellationToken);
-
-            await consumer.UnsubscribeAsync("orders", cancellationToken);
-
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poll);
-            Assert.Empty(consumer.Assignment);
-        }
-
-        engine.Verify(value => value.RemoveSubscription("orders"), Times.Once);
-        Assert.Equal(2, unregisterCount);
-        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
-        engine.Verify(value => value.DisposeAsync(), Times.Once);
-    }
-
-    [Fact]
-    public async Task Seek_DoesNotAllowAnEarlierPollToOverwriteTheNewPosition()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var pullStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var completePull = new TaskCompletionSource<RemotingPullResult>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        engine
-            .Setup(value => value.PullAsync(queue, 0, null, It.IsAny<CancellationToken>()))
-            .Returns<RemotingPullMessageQueue, long, int?, CancellationToken>((_, _, _, _) =>
-            {
-                pullStarted.TrySetResult();
-                return completePull.Task;
-            });
-        engine
-            .Setup(value => value.UpdateOffsetAsync(queue, 10, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-        var remoting = CreateManualAssignmentRemotingClient();
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
-
-        {
-            await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
-            await consumer.StartAsync(cancellationToken);
-            await consumer.AssignAsync([queue], cancellationToken);
-            var poll = consumer.PollAsync(cancellationToken: cancellationToken);
-            await pullStarted.Task.WaitAsync(cancellationToken);
-
-            consumer.Seek(queue, 10);
-            completePull.SetResult(new RemotingPullResult([], 3));
-
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poll);
-            await consumer.CommitAsync(queue, cancellationToken);
-        }
-
-        engine.Verify(value => value.UpdateOffsetAsync(queue, 10, It.IsAny<CancellationToken>()), Times.Once);
-        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
-        engine.Verify(value => value.DisposeAsync(), Times.Once);
-    }
-
-    [Fact]
-    public async Task GetMessageQueuesAsync_RequiresAnActiveRunAndDelegatesToTheEngine()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([queue]);
-        var remoting = CreateRemotingClient();
-
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object);
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.GetMessageQueuesAsync("orders", cancellationToken));
-
+        await using var consumer = CreateConsumer(options, engine, remoting.Object, rebalance);
         await consumer.StartAsync(cancellationToken);
-        var discovered = await consumer.GetMessageQueuesAsync("orders", cancellationToken);
+        Assert.Equal(1, Volatile.Read(ref heartbeatCount));
 
-        Assert.Same(queue, Assert.Single(discovered));
-        engine.Verify(
-            value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()),
-            Times.Once);
+        var balanced = await rebalance.RebalanceAsync("orders-consumer", cancellationToken);
+
+        Assert.False(balanced);
+        Assert.Equal(2, Volatile.Read(ref heartbeatCount));
+        Assert.Single(consumer.Assignment);
     }
 
     [Fact]
-    public async Task ManualAssignment_RejectsSubscriptionChangesUntilItIsCleared()
+    public async Task Heartbeat_BrokerCallFails_DoesNotSuppressAssignmentReconciliation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        engine.Setup(value => value.SetSubscription("orders", FilterExpression.All));
-        engine.Setup(value => value.RemoveSubscription("orders"));
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
-        var remoting = CreateManualAssignmentRemotingClient();
+        var heartbeatAttempts = 0;
+        var queue = ResolvedQueue("orders", 0);
+        var engine = new ScriptedConsumerEngine
+        {
+            GetMessageQueuesHandler = (_, _) =>
+                Task.FromResult<IReadOnlyList<RemotingConsumerQueue>>([queue])
+        };
+        var remoting = CreateRemotingClient(request => request.Code switch
+        {
+            RequestCode.HeartBeat => ThrowHeartbeatFailure(ref heartbeatAttempts),
+            RequestCode.GetConsumerListByGroup => ConsumerListResponse(ClientId),
+            RequestCode.UnregisterClient => SuccessResponse(),
+            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
+        });
+        var options = NewOptions();
+        options.Subscribe("orders");
 
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object);
+        await using var consumer = CreateConsumer(options, engine, remoting.Object);
         await consumer.StartAsync(cancellationToken);
-        await consumer.AssignAsync([queue], cancellationToken);
 
+        Assert.Equal(1, Volatile.Read(ref heartbeatAttempts));
+        Assert.Equal(queue, Assert.Single(consumer.Assignment));
+    }
+
+    [Fact]
+    public async Task ManualAssignment_TopicFiltersAreConfigured_AppliesFiltersAndRejectsSubscriptionsUntilCleared()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var orders = new RemotingConsumerQueue("orders", "broker-a", 0);
+        var payments = new RemotingConsumerQueue("payments", "broker-a", 0);
+        var ordersFilter = new FilterExpression("priority");
+        var engine = new ScriptedConsumerEngine();
+
+        await using var consumer = CreateConsumer(NewOptions(), engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync(
+            [orders, payments],
+            new Dictionary<string, FilterExpression> { ["orders"] = ordersFilter },
+            cancellationToken);
+
+        Assert.Equal(ordersFilter, engine.Subscriptions["orders"]);
+        Assert.Equal(FilterExpression.All, engine.Subscriptions["payments"]);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             consumer.SubscribeAsync("orders", cancellationToken: cancellationToken));
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.UnsubscribeAsync("orders", cancellationToken));
 
-        await consumer.AssignAsync([], cancellationToken);
+        await consumer.AssignAsync([], cancellationToken: cancellationToken);
         await consumer.SubscribeAsync("orders", cancellationToken: cancellationToken);
-        await consumer.UnsubscribeAsync("orders", cancellationToken);
-
         Assert.Empty(consumer.Assignment);
-        engine.Verify(value => value.SetSubscription("orders", FilterExpression.All), Times.Once);
-        engine.Verify(value => value.RemoveSubscription("orders"), Times.Once);
     }
 
     [Fact]
-    public async Task ManualAssignment_HeartbeatsImmediatelyAndWhenRebalanced()
+    public async Task RebalanceRegistration_ConsumerRestarts_RecreatesThenRemovesOnDispose()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var heartbeats = new List<byte[]>();
-        var unregisterCount = 0;
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        var remoting = CreateRemotingClient(request => request.Code switch
-        {
-            RequestCode.HeartBeat => CaptureHeartbeat(request, heartbeats),
-            RequestCode.UnregisterClient => CountUnregister(ref unregisterCount),
-            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
-        });
+        var engine = new ScriptedConsumerEngine();
         var rebalance = new TestRemotingRebalanceService();
 
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object,
-            rebalance);
-        await consumer.StartAsync(cancellationToken);
-        await consumer.AssignAsync([queue], cancellationToken);
-
-        var initialHeartbeat = Assert.Single(heartbeats);
-        using (var document = JsonDocument.Parse(initialHeartbeat))
-        {
-            var consumerData = Assert.Single(document.RootElement.GetProperty("consumerDataSet").EnumerateArray());
-            Assert.Equal("CONSUME_ACTIVELY", consumerData.GetProperty("consumeType").GetString());
-            Assert.Empty(consumerData.GetProperty("subscriptionDataSet").EnumerateArray());
-        }
-
-        Assert.True(await rebalance.RebalanceAsync("orders-consumer", cancellationToken));
-
-        Assert.Equal(2, heartbeats.Count);
-
-        await consumer.AssignAsync([], cancellationToken);
-
-        Assert.Equal(1, unregisterCount);
-    }
-
-    [Fact]
-    public async Task SeekOperations_QueryTheRequestedPositionAndUpdateTheNextPoll()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.Beginning,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(3L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(9L);
-        engine
-            .Setup(value => value.PullAsync(queue, 9L, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new RemotingPullResult([], 10L, RemotingPullStatus.NoNewMessage));
-        var remoting = CreateManualAssignmentRemotingClient();
-
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object);
-        await consumer.StartAsync(cancellationToken);
-        await consumer.AssignAsync([queue], cancellationToken);
-
-        await consumer.SeekToBeginningAsync(queue, cancellationToken);
-        await consumer.SeekToEndAsync(queue, cancellationToken);
-        var result = await consumer.PollAsync(cancellationToken: cancellationToken);
-
-        Assert.Equal(10, result.NextOffset);
-        engine.Verify(
-            value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.Beginning,
-                null,
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-        engine.Verify(
-            value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task PollAsync_RejectsInvalidTimeoutAndCancelsThePullWhenItExpires()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var pullStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetOffsetAsync(queue, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(-1L);
-        engine
-            .Setup(value => value.QueryOffsetAsync(
-                queue,
-                QueryOffsetPolicy.End,
-                null,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(0L);
-        engine
-            .Setup(value => value.PullAsync(queue, 0L, null, It.IsAny<CancellationToken>()))
-            .Returns<RemotingPullMessageQueue, long, int?, CancellationToken>(async (_, _, _, token) =>
-            {
-                pullStarted.TrySetResult();
-                await Task.Delay(Timeout.InfiniteTimeSpan, token);
-                return new RemotingPullResult([], 0L, RemotingPullStatus.NoNewMessage);
-            });
-        var remoting = CreateManualAssignmentRemotingClient();
-
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object);
-
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            consumer.PollAsync(TimeSpan.Zero, cancellationToken));
-
-        await consumer.StartAsync(cancellationToken);
-        await consumer.AssignAsync([queue], cancellationToken);
-        var poll = consumer.PollAsync(TimeSpan.FromMilliseconds(50), cancellationToken);
-        await pullStarted.Task.WaitAsync(cancellationToken);
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poll);
-    }
-
-    [Fact]
-    public async Task StartAsync_RollsBackWhenInitialCoordinationFails()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("route lookup failed"));
-        var remoting = CreateRemotingClient();
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
-        options.Subscribe("orders");
-
-        await using var consumer = CreateConsumer(options, engine.Object, remoting.Object);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.StartAsync(cancellationToken).AsTask());
-
-        Assert.Equal("route lookup failed", exception.Message);
-        Assert.Empty(consumer.Assignment);
-        engine.Verify(value => value.StopAsync(CancellationToken.None), Times.Once);
-    }
-
-    [Fact]
-    public async Task RebalanceRegistration_IsRecreatedAfterRestartAndRemovedOnDispose()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var engine = CreateEngine();
-        var remoting = CreateRemotingClient();
-        var rebalance = new TestRemotingRebalanceService();
-
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object,
-            rebalance);
-
+        await using var consumer = CreateConsumer(NewOptions(), engine, rebalanceService: rebalance);
         await consumer.StartAsync(cancellationToken);
         Assert.Equal(1, rebalance.ActiveRegistrations);
         await consumer.StopAsync(cancellationToken);
@@ -518,120 +518,85 @@ public sealed class RemotingLitePullConsumerTests
         Assert.Equal(1, rebalance.ActiveRegistrations);
     }
 
-    [Fact]
-    public async Task StartAsync_ContinuesWhenTheHeartbeatFailsAndThisClientIsNotInTheBrokerMembership()
+    private static RemotingLitePullConsumerOptions NewOptions() => new()
     {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([queue]);
-        var remoting = CreateRemotingClient(request => request.Code switch
-        {
-            RequestCode.HeartBeat => throw new InvalidOperationException("heartbeat failed"),
-            RequestCode.GetConsumerListByGroup => ConsumerListResponse(),
-            RequestCode.UnregisterClient => SuccessResponse(),
-            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
-        });
-        var options = new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" };
-        options.Subscribe("orders");
-        var registration = new Mock<IRemotingRebalanceRegistration>(MockBehavior.Strict);
-        registration.Setup(value => value.Wakeup());
-        registration.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
-        var rebalance = new Mock<IRemotingRebalanceService>(MockBehavior.Strict);
-        rebalance
-            .Setup(value => value.Register(
-                "orders-consumer",
-                It.IsAny<Func<CancellationToken, Task<bool>>>()))
-            .Returns(registration.Object);
+        GroupName = "orders-consumer",
+        EnableAutoCommit = false,
+        PollTimeout = TimeSpan.FromMilliseconds(250),
+        LongPollingTimeout = TimeSpan.FromSeconds(1)
+    };
 
-        await using var consumer = CreateConsumer(options, engine.Object, remoting.Object, rebalance.Object);
-        await consumer.StartAsync(cancellationToken);
+    private static RemotingConsumerQueue Queue(int queueId = 0) =>
+        new("orders", "broker-a", queueId);
 
-        Assert.Empty(consumer.Assignment);
-        registration.Verify(value => value.Wakeup(), Times.Once);
+    private static RemotingConsumerQueue ResolvedQueue(string topic, int queueId) =>
+        new(topic, queueId, "broker-a", "127.0.0.1:10911");
+
+    private static RemotingPullResult Found(RemotingMessageView message, long nextOffset) =>
+        new([message], nextOffset, RemotingPullStatus.Found);
+
+    private static RemotingMessageView Message(
+        RemotingConsumerQueue queue,
+        long offset,
+        string? messageId = null,
+        int bodySize = 1) =>
+        new(
+            queue.Topic,
+            new byte[bodySize],
+            messageId ?? $"message-{queue.QueueId}-{offset}",
+            $"offset-{queue.QueueId}-{offset}",
+            null,
+            [],
+            new Dictionary<string, string>(),
+            1,
+            null,
+            queue.QueueId,
+            queue.BrokerName,
+            offset,
+            offset,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+    private static async Task<RemotingPullResult> WaitForPullCancellationAsync(
+        long offset,
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+        return new RemotingPullResult([], offset, RemotingPullStatus.NoNewMessage);
     }
 
-    [Fact]
-    public async Task RunningSubscribe_WakesRebalanceWhenDirectCoordinationIsIncomplete()
+    private static async Task<RemotingPullResult> ObserveAndReturnAsync(
+        TaskCompletionSource observed,
+        Task<RemotingPullResult> result)
     {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var queue = new RemotingPullMessageQueue("orders", 0, "broker-a", "127.0.0.1:10911");
-        var engine = CreateEngine();
-        engine
-            .Setup(value => value.SetSubscription("orders", FilterExpression.All));
-        engine
-            .Setup(value => value.GetMessageQueuesAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([queue]);
-        var remoting = CreateRemotingClient(request => request.Code switch
-        {
-            RequestCode.HeartBeat => SuccessResponse(),
-            RequestCode.GetConsumerListByGroup => ConsumerListResponse(),
-            RequestCode.UnregisterClient => SuccessResponse(),
-            _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
-        });
-        var registration = new Mock<IRemotingRebalanceRegistration>(MockBehavior.Strict);
-        registration.Setup(value => value.Wakeup());
-        registration.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
-        var rebalance = new Mock<IRemotingRebalanceService>(MockBehavior.Strict);
-        rebalance
-            .Setup(value => value.Register(
-                "orders-consumer",
-                It.IsAny<Func<CancellationToken, Task<bool>>>()))
-            .Returns(registration.Object);
-
-        await using var consumer = CreateConsumer(
-            new RemotingLitePullConsumerOptions { GroupName = "orders-consumer" },
-            engine.Object,
-            remoting.Object,
-            rebalance.Object);
-        await consumer.StartAsync(cancellationToken);
-
-        await consumer.SubscribeAsync("orders", cancellationToken: cancellationToken);
-
-        Assert.Empty(consumer.Assignment);
-        registration.Verify(value => value.Wakeup(), Times.Once);
+        observed.TrySetResult();
+        return await result.ConfigureAwait(false);
     }
 
-    private static Mock<IRemotingConsumerEngine> CreateEngine()
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
+        string description,
+        CancellationToken cancellationToken)
     {
-        var engine = new Mock<IRemotingConsumerEngine>(MockBehavior.Strict);
-        engine.Setup(value => value.StartAsync(It.IsAny<CancellationToken>())).Returns(ValueTask.CompletedTask);
-        engine.Setup(value => value.StopAsync(CancellationToken.None)).Returns(ValueTask.CompletedTask);
-        engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
-        return engine;
-    }
-
-    private static Mock<IRemotingClient> CreateRemotingClient(
-        Func<RemotingCommand, RemotingCommand>? invoke = null)
-    {
-        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
-        if (invoke is not null)
+        var started = Stopwatch.GetTimestamp();
+        while (!condition())
         {
-            remoting
-                .Setup(value => value.InvokeAsync(
-                    It.IsAny<System.Net.EndPoint>(),
-                    It.IsAny<RemotingCommand>(),
-                    It.IsAny<TimeSpan>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns<System.Net.EndPoint, RemotingCommand, TimeSpan, CancellationToken>(
-                    (_, request, _, _) => Task.FromResult(invoke(request)));
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(1))
+            {
+                throw new TimeoutException($"Timed out waiting for {description}.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);
         }
-
-        return remoting;
     }
-
-    private static Mock<IRemotingClient> CreateManualAssignmentRemotingClient() =>
-        CreateRemotingClient(DefaultMaintenanceResponse);
 
     private static RemotingLitePullConsumer CreateConsumer(
         RemotingLitePullConsumerOptions options,
         IRemotingConsumerEngine engine,
-        IRemotingClient remoting,
-        IRemotingRebalanceService? rebalanceService = null)
-    {
-        return new RemotingLitePullConsumer(
+        IRemotingClient? remoting = null,
+        IRemotingRebalanceService? rebalanceService = null) =>
+        new(
             Options.Create(options),
             Options.Create(new RemotingClientOptions
             {
@@ -639,29 +604,51 @@ public sealed class RemotingLitePullConsumerTests
                 InstanceName = "lite-client"
             }),
             engine,
-            remoting,
+            remoting ?? CreateRemotingClient(DefaultMaintenanceResponse).Object,
             rebalanceService ?? new TestRemotingRebalanceService(),
             TimeProvider.System,
             NullLogger<RemotingLitePullConsumer>.Instance);
-    }
 
-    private static RemotingCommand CaptureHeartbeat(RemotingCommand request, ref byte[]? heartbeat)
+    private static Mock<IRemotingClient> CreateRemotingClient(Func<RemotingCommand, RemotingCommand> invoke)
     {
-        heartbeat = request.Body;
-        return SuccessResponse();
-    }
-
-    private static RemotingCommand CaptureHeartbeat(RemotingCommand request, List<byte[]> heartbeats)
-    {
-        heartbeats.Add(Assert.IsType<byte[]>(request.Body));
-        return SuccessResponse();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<System.Net.EndPoint>(),
+                It.IsAny<RemotingCommand>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<System.Net.EndPoint, RemotingCommand, TimeSpan, CancellationToken>(
+                (_, request, _, _) => Task.FromResult(invoke(request)));
+        return remoting;
     }
 
     private static RemotingCommand DefaultMaintenanceResponse(RemotingCommand request) => request.Code switch
     {
         RequestCode.HeartBeat or RequestCode.UnregisterClient => SuccessResponse(),
+        RequestCode.GetConsumerListByGroup => ConsumerListResponse(ClientId),
         _ => throw new InvalidOperationException($"Unexpected request code {request.Code}.")
     };
+
+    private static RemotingCommand CaptureHeartbeat(
+        RemotingCommand request,
+        ConcurrentQueue<byte[]> heartbeats)
+    {
+        heartbeats.Enqueue(Assert.IsType<byte[]>(request.Body));
+        return SuccessResponse();
+    }
+
+    private static RemotingCommand CountHeartbeat(ref int heartbeatCount)
+    {
+        Interlocked.Increment(ref heartbeatCount);
+        return SuccessResponse();
+    }
+
+    private static RemotingCommand ThrowHeartbeatFailure(ref int heartbeatAttempts)
+    {
+        Interlocked.Increment(ref heartbeatAttempts);
+        throw new InvalidOperationException("heartbeat failed");
+    }
 
     private static RemotingCommand ConsumerListResponse(params string[] consumerIds) =>
         new()
@@ -672,9 +659,130 @@ public sealed class RemotingLitePullConsumerTests
 
     private static RemotingCommand SuccessResponse() => new() { Code = ResponseCodes.ResSuccess };
 
-    private static RemotingCommand CountUnregister(ref int unregisterCount)
+    private sealed class ScriptedConsumerEngine : IRemotingConsumerEngine
     {
-        unregisterCount++;
-        return SuccessResponse();
+        public Func<string, CancellationToken, Task<IReadOnlyList<RemotingConsumerQueue>>> GetMessageQueuesHandler
+        {
+            get;
+            set;
+        } = static (_, _) => Task.FromResult<IReadOnlyList<RemotingConsumerQueue>>([]);
+
+        public Func<RemotingConsumerQueue, long, int?, CancellationToken, Task<RemotingPullResult>> PullHandler
+        {
+            get;
+            set;
+        } = static (_, offset, _, token) => WaitForPullCancellationAsync(offset, token);
+
+        public Func<RemotingConsumerQueue, CancellationToken, Task<long>> GetOffsetHandler { get; set; }
+
+        public Func<RemotingConsumerQueue, ConsumeFromPosition, DateTimeOffset?, CancellationToken, Task<long>>
+            QueryOffsetHandler
+        { get; set; } = static (_, _, _, _) => Task.FromResult(0L);
+
+        public ConcurrentDictionary<RemotingConsumerQueue, long> CommittedOffsets { get; } = new();
+
+        public ConcurrentDictionary<string, FilterExpression> Subscriptions { get; } =
+            new(StringComparer.Ordinal);
+
+        public ConcurrentQueue<PullCall> PullCalls { get; } = new();
+
+        public ConcurrentQueue<OffsetUpdate> OffsetUpdates { get; } = new();
+
+        public ConcurrentQueue<QueryCall> QueryCalls { get; } = new();
+
+        public int StopCount => Volatile.Read(ref _stopCount);
+
+        public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+        private int _stopCount;
+        private int _disposeCount;
+
+        public ScriptedConsumerEngine()
+        {
+            GetOffsetHandler = (queue, _) => Task.FromResult(
+                CommittedOffsets.TryGetValue(queue, out var offset) ? offset : 0L);
+        }
+
+        public ValueTask StartAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _stopCount);
+            return ValueTask.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
+            string topic,
+            CancellationToken cancellationToken = default) =>
+            GetMessageQueuesHandler(topic, cancellationToken);
+
+        public Task<RemotingPullResult> PullAsync(
+            RemotingConsumerQueue queue,
+            long offset,
+            int? maxMessages = null,
+            CancellationToken cancellationToken = default)
+        {
+            PullCalls.Enqueue(new PullCall(queue, offset, maxMessages));
+            return PullHandler(queue, offset, maxMessages, cancellationToken);
+        }
+
+        public Task<long> GetOffsetAsync(
+            RemotingConsumerQueue queue,
+            CancellationToken cancellationToken = default) =>
+            GetOffsetHandler(queue, cancellationToken);
+
+        public Task UpdateOffsetAsync(
+            RemotingConsumerQueue queue,
+            long offset,
+            CancellationToken cancellationToken = default)
+        {
+            OffsetUpdates.Enqueue(new OffsetUpdate(queue, offset));
+            CommittedOffsets[queue] = offset;
+            return Task.CompletedTask;
+        }
+
+        public Task<long> QueryOffsetAsync(
+            RemotingConsumerQueue queue,
+            ConsumeFromPosition position,
+            DateTimeOffset? timestamp = null,
+            CancellationToken cancellationToken = default)
+        {
+            QueryCalls.Enqueue(new QueryCall(queue, position, timestamp));
+            return QueryOffsetHandler(queue, position, timestamp, cancellationToken);
+        }
+
+        public Task SendBackAsync(
+            RemotingConsumerQueue queue,
+            RemotingMessageView message,
+            int delayLevel,
+            int maxReconsumeTimes,
+            CancellationToken cancellationToken) =>
+            Task.FromException(new NotSupportedException("LitePull tests do not send messages back."));
+
+        public void SetSubscription(string topic, FilterExpression expression) =>
+            Subscriptions[topic] = expression;
+
+        public void RemoveSubscription(string topic) => Subscriptions.TryRemove(topic, out _);
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposeCount);
+            return ValueTask.CompletedTask;
+        }
+
+        public int CountPulls(RemotingConsumerQueue queue) =>
+            PullCalls.Count(call => call.Queue == queue);
+
+        public int CountPulls(RemotingConsumerQueue queue, long offset) =>
+            PullCalls.Count(call => call.Queue == queue && call.Offset == offset);
+
+        public sealed record PullCall(RemotingConsumerQueue Queue, long Offset, int? MaxMessages);
+
+        public sealed record OffsetUpdate(RemotingConsumerQueue Queue, long Offset);
+
+        public sealed record QueryCall(
+            RemotingConsumerQueue Queue,
+            ConsumeFromPosition Position,
+            DateTimeOffset? Timestamp);
     }
 }

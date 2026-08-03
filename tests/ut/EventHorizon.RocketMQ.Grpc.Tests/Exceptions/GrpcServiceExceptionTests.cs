@@ -21,7 +21,7 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Exceptions;
 public sealed class GrpcServiceExceptionTests
 {
     [Fact]
-    public void IsARocketMQClientException()
+    public void ExceptionType_RocketMQClientException_IsClientException()
     {
         var exception = new GrpcServiceException(401, "unauthorized");
 

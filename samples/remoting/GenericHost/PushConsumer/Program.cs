@@ -31,6 +31,9 @@ var builder = Host.CreateApplicationBuilder(
     });
 // NamesrvAddr discovers routes; this client then long-polls the assigned Brokers directly.
 var remotingSection = builder.Configuration.GetRequiredSection("RocketMQ:Remoting");
+var allMessagesQueueAssignmentMode = builder.Configuration.GetValue(
+    "Sample:AllMessagesQueueAssignmentMode",
+    RemotingPushQueueAssignmentMode.Client);
 
 // A scoped handler is resolved in a new async DI scope for each message delivery.
 builder.Services
@@ -41,8 +44,9 @@ builder.Services
         // Fresh groups start at End. Records published before first offset resolution are existing backlog;
         // use Beginning or Timestamp for replay, or an application readiness handshake for a precise cutover.
         options.InitialPosition = ConsumeFromPosition.End;
+        options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Client;
         options.MaxConcurrency = 4;
-        options.BatchSize = 32;
+        options.PullBatchSize = 32;
         options.ConsumeMessageBatchSize = 4;
         options.Subscribe(Topic, new FilterExpression("sample"));
     })
@@ -50,8 +54,9 @@ builder.Services
     {
         options.GroupName = "remoting-all-messages-push-consumer";
         options.InitialPosition = ConsumeFromPosition.End;
+        options.QueueAssignmentMode = allMessagesQueueAssignmentMode;
         options.MaxConcurrency = 2;
-        options.BatchSize = 8;
+        options.PullBatchSize = 8;
         options.ConsumeMessageBatchSize = 1;
         options.Subscribe(Topic);
     });

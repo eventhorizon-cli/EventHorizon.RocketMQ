@@ -27,7 +27,7 @@ public sealed class GrpcEndpointTests
     [InlineData("broker.example:8081", true, "https://broker.example:8081/")]
     [InlineData("http://broker.example:8081", false, "http://broker.example:8081/")]
     [InlineData("https://broker.example:8081", true, "https://broker.example:8081/")]
-    public void Parse_UsesConsistentTransportSecurity(string value, bool useTls, string expected)
+    public void Parse_ConsistentTransportSecurity_UsesExpectedScheme(string value, bool useTls, string expected)
     {
         Assert.Equal(new Uri(expected), GrpcEndpoint.Parse(value, useTls));
     }
@@ -36,13 +36,13 @@ public sealed class GrpcEndpointTests
     [InlineData("http://broker.example:8081", true)]
     [InlineData("https://broker.example:8081", false)]
     [InlineData("ftp://broker.example:8081", false)]
-    public void Parse_RejectsConflictingOrUnsupportedSchemes(string value, bool useTls)
+    public void Parse_ConflictingOrUnsupportedSchemes_Rejects(string value, bool useTls)
     {
         Assert.Throws<ArgumentException>(() => GrpcEndpoint.Parse(value, useTls));
     }
 
     [Fact]
-    public void ParseMany_PreservesEverySemicolonSeparatedAccessPoint()
+    public void ParseMany_SemicolonSeparatedAccessPoints_PreservesAll()
     {
         var endpoints = GrpcEndpoint.ParseMany(
             "127.0.0.1:8081; 127.0.0.2:8082;",
@@ -57,7 +57,7 @@ public sealed class GrpcEndpointTests
     }
 
     [Fact]
-    public async Task GrpcClient_AdvertisesAllConfiguredAccessPoints()
+    public async Task GrpcClient_ConfiguredAccessPoints_AdvertisesAll()
     {
         var options = Options.Create(new GrpcClientOptions
         {
@@ -74,7 +74,7 @@ public sealed class GrpcEndpointTests
     }
 
     [Fact]
-    public void FromProtobuf_RotatesAcrossEveryAdvertisedBrokerAddress()
+    public void FromProtobuf_AdvertisedBrokerAddresses_RotatesAcrossAll()
     {
         var endpoints = GrpcEndpoint.ToProtobuf(
         [
@@ -92,7 +92,7 @@ public sealed class GrpcEndpointTests
     }
 
     [Fact]
-    public void Conversion_RejectsEmptyEndpointCollections()
+    public void Conversion_EmptyEndpointCollections_Rejects()
     {
         Assert.Throws<ArgumentException>(() => GrpcEndpoint.ToProtobuf([]));
         Assert.Throws<InvalidOperationException>(() => GrpcEndpoint.FromProtobufAll(new Proto.Endpoints(), false));

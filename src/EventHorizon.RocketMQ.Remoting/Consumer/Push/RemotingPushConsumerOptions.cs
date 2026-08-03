@@ -20,6 +20,10 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// </summary>
 public sealed class RemotingPushConsumerOptions : ConsumerOptions
 {
+    internal const int MaximumPopBatchSize = 32;
+    internal static readonly TimeSpan MinimumPopInvisibleDuration = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan MaximumPopInvisibleDuration = TimeSpan.FromMinutes(5);
+
     /// <summary>
     /// Gets or sets the maximum number of message-handler batch dispatches that may run concurrently.
     /// </summary>
@@ -33,13 +37,29 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// <summary>
     /// Gets or sets the maximum number of messages requested by each long-poll operation.
     /// </summary>
-    public int BatchSize { get; set; } = 32;
+    public int PullBatchSize { get; set; } = 32;
+
+    /// <summary>
+    /// Gets or sets the maximum number of messages requested by each Broker-assigned POP operation.
+    /// </summary>
+    /// <remarks>RocketMQ Brokers accept values from one through 32.</remarks>
+    public int PopBatchSize { get; set; } = MaximumPopBatchSize;
+
+    /// <summary>
+    /// Gets or sets the initial invisibility lease for a message received through POP.
+    /// </summary>
+    public TimeSpan PopInvisibleDuration { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Gets or sets the maximum number of POP messages awaiting settlement for one Broker assignment.
+    /// </summary>
+    public int PopMaxInflightMessagesPerAssignment { get; set; } = 96;
 
     /// <summary>
     /// Gets or sets the maximum number of messages passed to one batch message-handler invocation.
     /// </summary>
     /// <remarks>
-    /// This setting is independent from <see cref="BatchSize"/>, which controls the maximum number of
+    /// This setting is independent from <see cref="PullBatchSize"/>, which controls the maximum number of
     /// messages requested from the Broker. Batch handling is used only for concurrent dispatch; orderly
     /// consumption and messages with a <c>MessageGroup</c> continue to be delivered one at a time so that
     /// their ordering and retry semantics remain intact.
@@ -54,7 +74,12 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// predecessor do not hold admission capacity. A blocked queue also pauses new admission until it can make
     /// progress, so this is not a strict limit on every message resident in the Consumer process.
     /// </remarks>
-    public int MaxCachedMessages { get; set; } = 1024;
+    public int PullMaxCachedMessages { get; set; } = 1024;
+
+    /// <summary>
+    /// Gets or sets the maximum total message-body bytes waiting for first dispatch in PULL receivers.
+    /// </summary>
+    public int PullMaxCachedMessageBytes { get; set; } = 32 * 1024 * 1024;
 
     /// <summary>
     /// Gets or sets the maximum message payload size, in bytes, requested in a pull response.
@@ -90,6 +115,20 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public TimeSpan ConsumeTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
+    /// Gets or sets whether queue assignments are calculated by the client or queried from the Broker.
+    /// </summary>
+    /// <remarks>
+    /// For concurrent clustered consumption, Broker assignment can return PULL and POP modes independently for each
+    /// topic. The receive mode remains internal and is not selected by this option. Broadcasting and orderly
+    /// consumption always use client assignment and PULL. The consumer never changes the Broker's administrative
+    /// request-mode configuration.
+    /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/RebalancePushImpl.java#L125-L128">
+    /// Apache RocketMQ 5.5.0 effective client-rebalance selection.
+    /// </seealso>
+    public RemotingPushQueueAssignmentMode QueueAssignmentMode { get; set; } = RemotingPushQueueAssignmentMode.Client;
+
+    /// <summary>
     /// Gets or sets whether this consumer shares queues with its group or receives every queue.
     /// </summary>
     public ConsumerMode ConsumerMode { get; set; } =
@@ -110,15 +149,4 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// derived from the client identity and consumer group.
     /// </summary>
     public string? LocalOffsetStorePath { get; set; }
-
-    /// <summary>
-    /// Gets or sets where a classic push consumer starts when no committed offset exists.
-    /// </summary>
-    public ConsumeFromPosition InitialPosition { get; set; } = ConsumeFromPosition.End;
-
-    /// <summary>
-    /// Gets or sets the timestamp used when <see cref="InitialPosition"/> is
-    /// <see cref="ConsumeFromPosition.Timestamp"/>.
-    /// </summary>
-    public DateTimeOffset? ConsumeTimestamp { get; set; }
 }

@@ -50,8 +50,9 @@ Package 版本和发布依赖。
 | 过滤类型 | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | 客户端异常基类 | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-`QueryOffsetPolicy` 只存在于 `EventHorizon.RocketMQ.Remoting.Consumer`，因为显式选择队列位点属于 classic
-Remoting Pull API。
+classic Remoting 的 `ConsumerOptions.InitialPosition` 使用协议自有的 `ConsumeFromPosition` 类型。LitePull 与
+Push 只在已分配队列不存在消费组已提交位点时应用该配置；从时间戳开始时还会读取
+`ConsumerOptions.ConsumeTimestamp`。
 
 这些类型的完整类型名不同，因此两个 Package 可以在同一个应用中使用。不过，它们也是不同的 CLR 类型：gRPC
 的 `Message`、过滤器、Consumer Options 或异常基类不能直接传给 Remoting API。
@@ -72,7 +73,8 @@ using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 | --- | --- | --- |
 | Producer API 与发送结果 | `IGrpcProducer`、`GrpcSendReceipt` | `IRemotingProducer`、`RemotingSendResult`、`RemotingMessageQueue` |
 | Consumer 消息模型 | `GrpcMessageView` | `RemotingMessageView` |
-| Consumer 类型 | Simple、Push、LitePush | Pull、LitePull、POP、Push |
+| 公开可读队列 identity | 不暴露，由服务端管理 assignment | LitePull 与只读 Admin 查询使用 `RemotingConsumerQueue` |
+| Consumer 类型 | Simple、Push、LitePush | LitePull、Push |
 | 路由与通信基础设施 | `Protocol` 中的 protobuf/gRPC service | `Protocol` 中的 Socket、frame、JSON 和 NameServer route |
 | 协议错误 | `GrpcServiceException` | `RemotingCommandException` |
 
@@ -108,5 +110,6 @@ AddRocketMQRemoting(options => options.NamesrvAddr = "nameserver:9876")
 
 - [依赖注入与生命周期](dependency-injection-and-lifetimes.md)
 - [gRPC 消费模型](../grpc/consumer-model.md)
+- [classic Remoting Consumer 模型](../remoting/consumer-model.md)
 - [Remoting 传输与客户端角色](../remoting/transport-and-client-roles.md)
 - [可运行示例](../../../samples/README.zh-CN.md)

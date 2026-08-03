@@ -57,8 +57,9 @@ The small foundational models are declared separately in each protocol namespace
 | Filter type | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | Client exception base | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-`QueryOffsetPolicy` exists only under `EventHorizon.RocketMQ.Remoting.Consumer` because explicit
-queue-offset selection belongs to the classic Remoting Pull APIs.
+Classic Remoting `ConsumerOptions.InitialPosition` uses the protocol-owned `ConsumeFromPosition` type. LitePull and
+Push apply it only when an assigned queue has no committed group position; a timestamp start also uses
+`ConsumerOptions.ConsumeTimestamp`.
 
 The different fully qualified names let both Packages coexist in one application. They are also
 different CLR types: a gRPC `Message`, filter, Consumer Options, or exception base cannot be passed
@@ -81,7 +82,8 @@ Everything that exposes protocol behavior remains in the owning Project:
 | --- | --- | --- |
 | Producer API and send result | `IGrpcProducer` and `GrpcSendReceipt` | `IRemotingProducer`, `RemotingSendResult`, and `RemotingMessageQueue` |
 | Consumer message view | `GrpcMessageView` | `RemotingMessageView` |
-| Consumer roles | Simple, Push, and LitePush | Pull, LitePull, POP, and Push |
+| Public readable-queue identity | Not exposed; assignments are service-owned | `RemotingConsumerQueue` for LitePull and read-only Admin queries |
+| Consumer roles | Simple, Push, and LitePush | LitePull and Push |
 | Route and wire infrastructure | `Protocol` with protobuf/gRPC services | `Protocol` with sockets, frames, JSON, and NameServer routes |
 | Protocol failure | `GrpcServiceException` | `RemotingCommandException` |
 
@@ -119,5 +121,6 @@ still resolves protocol-specific interfaces, Options, and model types.
 
 - [Dependency-injection client registrations and lifetimes](dependency-injection-and-lifetimes.md)
 - [gRPC consumer model](../grpc/consumer-model.md)
+- [Classic Remoting consumer model](../remoting/consumer-model.md)
 - [Classic Remoting transport and client roles](../remoting/transport-and-client-roles.md)
 - [Runnable samples](../../../samples/README.md)

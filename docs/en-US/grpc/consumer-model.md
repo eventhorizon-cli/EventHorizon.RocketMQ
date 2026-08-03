@@ -141,8 +141,8 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
   decisions for every delivered message.
 - The lack of a public gRPC Pull API is deliberate. Use `IGrpcSimpleConsumer` or
   `IGrpcPushConsumer` when their semantics fit, or use the classic
-  [`IRemotingPullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/IRemotingPullConsumer.cs)
-  when a classic queue-and-offset Pull model is required.
+  [`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/Lite/IRemotingLitePullConsumer.cs)
+  with manual assignment, seek, and explicit commit when a classic queue-and-offset workflow is required.
 - gRPC Push and LitePush are not interchangeable with Remoting Push. They use different route,
   assignment, server, and compatibility paths even though both perform long polling internally.
 

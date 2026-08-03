@@ -36,7 +36,7 @@ flowchart LR
 
     App -->|Classic Remoting: query route| NameServer
     NameServer -->|Broker addresses| App
-    App -->|Classic Remoting: send, pull, admin| Broker
+    App -->|Classic Remoting: send, consume, admin| Broker
 
     App -->|RocketMQ 5 gRPC| Proxy
     Proxy -->|route discovery| NameServer
@@ -50,8 +50,8 @@ flowchart LR
 
 `NamesrvAddr` is a route-query endpoint, not the endpoint that receives messages. The classic
 client retrieves a target topic's route, then opens a TCP connection to the corresponding Broker.
-Sending, pulling, POP, classic Push, Admin operations, and Broker callbacks remain on this
-protocol path.
+Producer sends, LitePull and Push PULL/POP receives, Admin operations, and Broker callbacks remain on this protocol
+path. PULL and POP are internal wire operations owned by the public LitePull and Push roles.
 
 ```mermaid
 sequenceDiagram
@@ -61,7 +61,7 @@ sequenceDiagram
 
     App->>NameServer: Query topic route
     NameServer-->>App: Broker endpoints and queue metadata
-    App->>Broker: Send, Pull, POP, or Admin request
+    App->>Broker: Send, PULL/POP consume, or Admin request
     Broker-->>App: Result, messages, receipt, or callback
     Note over App,Broker: Route data can be cached, but advertised Broker addresses must be reachable.
 ```
@@ -137,6 +137,10 @@ client-initiated long polling. Connection lifetime, long-poll timeout, cancellat
 and handler concurrency remain client concerns. A process exit, network interruption, or failed
 acknowledgement can still result in at-least-once delivery, so handlers must be idempotent. See the
 [gRPC consumer model](../grpc/consumer-model.md) for scheduling and acknowledgement behavior.
+
+Classic Remoting Push follows the same network direction. Its default `Client` assignment mode performs
+client-side allocation and PULL; optional `Broker` assignment queries can select PULL or POP for each assignment.
+That choice does not create a public POP Consumer and does not make the Broker initiate an application connection.
 
 ## LitePush: An Additional Subscription Control Plane
 

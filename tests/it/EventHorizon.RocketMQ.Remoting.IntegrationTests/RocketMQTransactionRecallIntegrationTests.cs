@@ -28,7 +28,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrok
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task CommittedTransactionBecomesVisibleToPushConsumer()
+    public async Task CommittedTransaction_PushConsumer_BecomesVisible()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -93,7 +93,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrok
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task RolledBackTransactionRemainsInvisibleToPushConsumer()
+    public async Task RolledBackTransaction_PushConsumer_RemainsInvisible()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -161,7 +161,7 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrok
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task RecallHandleCancelsDelayedMessageBeforeDelivery()
+    public async Task RecallHandle_DelayedMessageBeforeDelivery_Cancels()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);

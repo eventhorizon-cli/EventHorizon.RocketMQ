@@ -60,6 +60,24 @@ public sealed class RocketMQTestScope
     }
 
     /// <summary>
+    /// Creates an isolated consumer group with a configured maximum retry count.
+    /// </summary>
+    /// <param name="role">The role label included in the group name.</param>
+    /// <param name="retryMaxTimes">The non-negative maximum number of consumption retries.</param>
+    /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
+    /// <returns>The created consumer group name.</returns>
+    public async Task<string> CreateConsumerGroupAsync(
+        string role,
+        int retryMaxTimes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
+        var group = CreateGroupName(role);
+        await _fixture.CreateConsumerGroupAsync(group, null, retryMaxTimes, cancellationToken).ConfigureAwait(false);
+        return group;
+    }
+
+    /// <summary>
     /// Creates and configures an isolated LitePush consumer group bound to this scope's parent topic.
     /// </summary>
     /// <param name="role">The role label included in the group name.</param>
@@ -68,7 +86,7 @@ public sealed class RocketMQTestScope
     public async Task<string> CreateLiteConsumerGroupAsync(string role, CancellationToken cancellationToken = default)
     {
         var group = CreateGroupName(role);
-        await _fixture.CreateConsumerGroupAsync(group, Topic, cancellationToken).ConfigureAwait(false);
+        await _fixture.CreateConsumerGroupAsync(group, Topic, null, cancellationToken).ConfigureAwait(false);
         return group;
     }
 

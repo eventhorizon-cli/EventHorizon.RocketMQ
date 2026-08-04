@@ -41,8 +41,8 @@ Register one client with `AddRocketMQGrpc`, then add one or more roles to the re
 | Priority messages | `Message.Priority` | The destination must support priority messages. |
 | Lite messages | `Message.LiteTopic` | Requires compatible Proxy and Broker support. |
 | Transactional messages | `IGrpcProducer.SendTransactionAsync` | Declare transactional topics and configure a transaction checker before startup. |
-| Explicit receive and settlement | `IGrpcSimpleConsumer` | The application calls `ReceiveAsync`, `AckAsync`, invisibility, and dead-letter APIs. |
-| Automatic dispatch | `IGrpcPushConsumer` | Typed handlers return `Success`, `Retry`, or `DeadLetter`. |
+| Explicit receive and settlement | `IGrpcSimpleConsumer` | The application calls `ReceiveAsync`, `AckAsync`, and invisibility APIs. |
+| Automatic dispatch | `IGrpcPushConsumer` | Typed handlers return `Success` or `Failure`. |
 | Lite automatic dispatch | `IGrpcLitePushConsumer` | Dispatches LiteTopics under one configured bind topic. |
 | Tag and SQL filters | `FilterExpression` | SQL filtering requires matching server configuration. |
 | Runtime subscriptions | `SubscribeAsync` / `UnsubscribeAsync` and Lite equivalents | Supported by the applicable Consumer role. |
@@ -189,16 +189,17 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 ```
 
 Call `SubscribeAsync` or `UnsubscribeAsync` to change subscriptions after startup. `ReceiveAsync` does not acknowledge
-messages and does not enable automatic renewal; acknowledge only after durable processing, extend invisibility for
-long-running work, or call
-`ForwardToDeadLetterQueueAsync` when the application chooses to dead-letter a message. RocketMQ 5.5.0 Proxy requires a
-five-second minimum receive long-poll interval.
+messages and does not enable automatic renewal; acknowledge only after durable processing and extend invisibility for
+long-running work. An unsettled message becomes visible again after its current invisible duration. RocketMQ 5.5.0
+Proxy requires a five-second minimum receive long-poll interval.
 
 ## PushConsumer
 
 Use `IGrpcPushConsumer` for automatic receive, handler dispatch, and settlement. Register a typed
 `IGrpcPushMessageHandler`; `Scoped` is appropriate when the handler uses scoped application services.
-Push also manages message invisibility while the handler is active; applications do not renew receipts themselves.
+Push requests Proxy-managed message invisibility while the handler is active; applications do not renew receipts
+themselves. The target Proxy must support and enable automatic renewal (`enableProxyAutoRenew`, enabled by default in
+compatible RocketMQ 5 Proxy releases).
 
 ```csharp
 using System.Text;
@@ -225,8 +226,8 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 }
 ```
 
-Return `ConsumeResult.Success` to acknowledge, `Retry` for redelivery, or `DeadLetter` to forward to the consumer
-group's dead-letter queue. Handlers should be idempotent because retries and duplicate delivery are possible.
+Return `ConsumeResult.Success` to acknowledge or `Failure` to let the effective retry policy schedule another
+delivery. Handlers should be idempotent because retries and duplicate delivery are possible.
 `SubscribeAsync` and `UnsubscribeAsync` update ordinary Push subscriptions at runtime.
 
 ## LitePushConsumer
@@ -234,7 +235,7 @@ group's dead-letter queue. Handlers should be idempotent because retries and dup
 Use `IGrpcLitePushConsumer` for automatic dispatch from LiteTopics under one LITE parent (bind) topic:
 
 ```csharp
-using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using Microsoft.Extensions.DependencyInjection;
 

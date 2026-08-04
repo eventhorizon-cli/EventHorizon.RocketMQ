@@ -15,7 +15,7 @@
 
 using Proto = Apache.Rocketmq.V2;
 
-namespace EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 
 /// <summary>
 /// Selects the initial offset used when a LiteTopic subscription is created.

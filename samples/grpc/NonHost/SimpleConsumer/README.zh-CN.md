@@ -3,7 +3,7 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 此控制台示例不构造 Generic Host，而是直接驱动 gRPC `IGrpcSimpleConsumer`。它构建普通 `ServiceProvider`，显式启动
-Consumer，对 Proxy 执行长轮询，确认正常消息，将损坏消息转入死信队列，显式停止 Consumer，并异步释放 service provider。
+Consumer，对 Proxy 执行长轮询，确认正常消息，不结算损坏消息，显式停止 Consumer，并异步释放 service provider。
 
 ## 何时使用这种形式
 
@@ -16,8 +16,8 @@ Consumer，对 Proxy 执行长轮询，确认正常消息，将损坏消息转�
 ## 接收与结算
 
 `ReceiveAsync` 会长轮询 RocketMQ 5 Proxy，返回暂时不可见的 `GrpcMessageView`，但不会确认它们。示例记录每条正常消息后调用
-`AckAsync`；真实应用只能在业务效果已持久化后确认。它会在读取 body 前检查 `IsCorrupted`，并对损坏 payload 调用
-`ForwardToDeadLetterQueueAsync`。结算失败或未结算时，消息会在不可见窗口结束后再次可见，因此处理必须是幂等的。
+`AckAsync`；真实应用只能在业务效果已持久化后确认。它会在读取 body 前检查 `IsCorrupted`，并让损坏 payload 保持
+未结算。结算失败或未结算时，消息会在不可见窗口结束后再次可见，因此处理必须是幂等的。
 
 SimpleConsumer 由应用驱动：进程控制接收批量、接收并发和结算。需要 handler 风格的自动分发和结算时，应选择
 `IGrpcPushConsumer`。
@@ -35,5 +35,5 @@ dotnet run --project samples/grpc/NonHost/SimpleConsumer
 按 Ctrl+C 会取消接收循环。Ctrl+C token 已被取消，因此示例使用未取消的 token 调用 `StopAsync`。可以使用正常 .NET 配置覆盖
 Proxy 端点，例如 `RocketMQ__Client__Endpoint=proxy.example:8081`。
 
-运行时订阅变更、不可见时间续期和完整 SimpleConsumer 契约请参阅
+运行时订阅变更、不可见时间调整和完整 SimpleConsumer 契约请参阅
 [gRPC 协议指南](../../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)。

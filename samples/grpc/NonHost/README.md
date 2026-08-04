@@ -15,7 +15,7 @@ same role lifecycle.
 | Sample | Public role | Demonstrated workflow |
 | --- | --- | --- |
 | [Producer](Producer/README.md) | `IGrpcProducer` | Start, send one tagged message, await the receipt, stop. |
-| [SimpleConsumer](SimpleConsumer/README.md) | `IGrpcSimpleConsumer` | Start, long-poll, acknowledge valid messages, dead-letter corrupted messages, stop. |
+| [SimpleConsumer](SimpleConsumer/README.md) | `IGrpcSimpleConsumer` | Start, long-poll, acknowledge valid messages, leave failed messages unsettled, stop. |
 | [PushConsumer](PushConsumer/README.md) | `IGrpcPushConsumer` | Start, dispatch messages to a scoped handler until Ctrl+C, then stop. |
 | [LitePushConsumer](LitePushConsumer/README.md) | `IGrpcLitePushConsumer` | Start, synchronize LiteTopics, dispatch to a scoped handler until Ctrl+C, then stop. |
 

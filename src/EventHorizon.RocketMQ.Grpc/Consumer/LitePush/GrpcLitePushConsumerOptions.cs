@@ -15,7 +15,7 @@
 
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
-namespace EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 
 /// <summary>
 /// Configures a RocketMQ gRPC Lite Push consumer.

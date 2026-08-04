@@ -19,7 +19,7 @@ The gRPC project exposes the consumer models that the supported Proxy path can p
 
 | API | Application controls | Receive model |
 | --- | --- | --- |
-| `IGrpcSimpleConsumer` | Receive timing, acknowledgement, invisible duration, dead-letter forwarding, and subscriptions | The caller invokes `ReceiveAsync`. |
+| `IGrpcSimpleConsumer` | Receive timing, acknowledgement, invisible duration, and subscriptions | The caller invokes `ReceiveAsync`. |
 | `IGrpcPushConsumer` | Subscription and handler configuration; the client manages dispatch and completion | Assignment queries plus repeated `ReceiveMessage` long polls. |
 | `IGrpcLitePushConsumer` | LiteTopic subscriptions under a configured bind topic | The same client-initiated long-poll dispatcher, with Lite subscription synchronization. |
 
@@ -60,8 +60,8 @@ gRPC endpoint and is not a substitute for a Proxy.
 SimpleConsumer is the explicit-control model. After it starts and has at least one subscription,
 `ReceiveAsync` selects a subscription and assignment, issues a long-poll receive request, and gives
 the returned `GrpcMessageView` values to the application. The application decides when to call
-`AckAsync`, whether to extend invisibility, and when to forward a failed message to the dead-letter
-queue.
+`AckAsync` and whether to change invisibility. Leaving a message unsettled allows it to become visible again after its
+current invisible duration.
 
 This is often the right model when application code needs to control batching, commit timing, or
 retry boundaries. It is not classic queue Pull: it uses the gRPC receive and acknowledgement
@@ -77,7 +77,7 @@ subscriptions
     -> ReceiveMessage long poll
     -> bounded client dispatch queue
     -> concurrent or FIFO message handler
-    -> acknowledgement, retry, dead-letter action, or invisibility renewal
+    -> acknowledgement or failure handling
 ```
 
 The implementation in
@@ -87,16 +87,17 @@ dispatches work according to the configured concurrency and FIFO settings. It is
 long polling from end to end. Calling it protocol-level Broker push would give the wrong operational
 model.
 
-Ordinary Push receive requests set `AutoRenew=true`, asking a compatible Proxy to own receipt renewal for the client
-connection. SimpleConsumer sets `AutoRenew=false`; its caller owns the initial invisible duration and any explicit
-`ChangeInvisibleDurationAsync` call. The current .NET Push dispatcher also starts a client-side half-lease renewal loop
-while its handler is active. Proxy renewal and client-side renewal are two distinct owners of the same receipt lifetime;
-the gRPC follow-up refactor must consolidate that ownership and its telemetry rather than copying either mechanism into
-classic Remoting. Apache's Java gRPC Push client requests Proxy auto-renewal, while classic Remoting Push uses a fixed
-POP deadline.
+Ordinary Push and LitePush receive requests set `AutoRenew=true`. A compatible Proxy with `enableProxyAutoRenew`
+enabled owns receipt renewal through the client connection while a handler is active; the .NET dispatcher does not
+run a second client-side renewal timer. SimpleConsumer sets `AutoRenew=false`, so its caller owns the initial invisible
+duration and every explicit `ChangeInvisibleDurationAsync` call. This follows the
+[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278),
+while the [Proxy registers auto-renew receipts](https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)
+only when both its configuration and the request enable the feature. Classic Remoting Push remains a separate model
+with a fixed POP deadline.
 
 For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. When it expires, the dispatcher cancels the handler
-token, stops client-side invisibility renewal, and requests retry; a late successful result is ignored. This recovers
+token and requests retry; a late successful result is ignored. This recovers
 consume-loop capacity even when application code ignores cancellation, but the client cannot forcibly terminate that code.
 Retried delivery can overlap an invocation that ignored cancellation, so handlers must be idempotent. FIFO message
 groups are intentionally excluded because detaching a timed-out handler could break their ordering.
@@ -122,10 +123,19 @@ method. There is no delegate handler on the options object. A `Scoped` or `Trans
 async DI scope for each handling attempt, allowing normal scoped application dependencies such as database contexts;
 a `Singleton` handler is owned by its Consumer instance and must be safe for concurrent calls.
 
+The handler returns only `ConsumeResult.Success` or `ConsumeResult.Failure`, matching the public outcomes in the
+[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java).
+For concurrent non-FIFO delivery, `Failure` changes invisibility according to the effective retry policy and leaves
+retry and dead-letter progression to the service. For FIFO delivery, the client retries the handler locally and uses
+the protocol's dead-letter RPC internally after the maximum attempts are exhausted, matching the
+[Java process-queue behavior](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445).
+Neither the handler result nor SimpleConsumer exposes that internal RPC. The OpenTelemetry settlement operation for
+retry scheduling remains `nack`; that telemetry term is not a RocketMQ handler result.
+
 ### LitePushConsumer
 
 LitePush wraps the automatic dispatcher with a
-[`GrpcLiteSubscriptionManager`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Lite/GrpcLiteSubscriptionManager.cs).
+[`GrpcLiteSubscriptionManager`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/LitePush/GrpcLiteSubscriptionManager.cs).
 It receives LiteTopic messages under one configured bind topic and synchronizes the Lite
 subscriptions with the Proxy.
 
@@ -144,7 +154,7 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
 - gRPC consumer capability depends on Proxy behavior as well as client code. Test against the exact
   Proxy deployment used in production.
 - Push reduces application orchestration but does not remove acknowledgement, invisibility, retry,
-  dead-letter, concurrency, or FIFO decisions. Those remain operational choices.
+  concurrency, or FIFO decisions. Those remain operational choices.
 - SimpleConsumer exposes explicit control but requires the caller to make completion and failure
   decisions for every delivered message.
 - The lack of a public gRPC Pull API is deliberate. Use `IGrpcSimpleConsumer` or

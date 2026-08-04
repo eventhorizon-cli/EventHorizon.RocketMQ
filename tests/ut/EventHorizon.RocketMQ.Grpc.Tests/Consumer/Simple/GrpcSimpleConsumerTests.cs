@@ -118,8 +118,6 @@ public sealed class GrpcSimpleConsumerTests
                 TimeSpan.FromSeconds(20),
                 cancellationToken))
             .Returns(Task.CompletedTask);
-        engine.Setup(value => value.ForwardToDeadLetterQueueAsync(message, 5, cancellationToken))
-            .Returns(Task.CompletedTask);
         engine.Setup(value => value.DisposeAsync()).Returns(ValueTask.CompletedTask);
         var consumer = new GrpcSimpleConsumer(
             Options.Create(new GrpcSimpleConsumerOptions()),
@@ -130,14 +128,8 @@ public sealed class GrpcSimpleConsumerTests
             () => consumer.ChangeInvisibleDurationAsync(null!, TimeSpan.FromSeconds(1), cancellationToken));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => consumer.ChangeInvisibleDurationAsync(message, TimeSpan.Zero, cancellationToken));
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => consumer.ForwardToDeadLetterQueueAsync(null!, 1, cancellationToken));
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => consumer.ForwardToDeadLetterQueueAsync(message, 0, cancellationToken));
-
         await consumer.AckAsync(message, cancellationToken);
         await consumer.ChangeInvisibleDurationAsync(message, TimeSpan.FromSeconds(20), cancellationToken);
-        await consumer.ForwardToDeadLetterQueueAsync(message, 5, cancellationToken);
         await consumer.DisposeAsync();
         engine.VerifyAll();
         engine.VerifyNoOtherCalls();

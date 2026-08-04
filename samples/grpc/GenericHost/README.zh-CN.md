@@ -9,8 +9,8 @@
 | --- | --- | --- |
 | [Producer](Producer/README.zh-CN.md) | `IGrpcProducer` | 通过小型 HTTP API 经 RocketMQ 5 Proxy 发送消息。 |
 | [LiteProducer](LiteProducer/README.zh-CN.md) | `IGrpcProducer` | 通过小型 HTTP API 向 LITE parent topic 和逻辑 LiteTopic 发布 Lite message。 |
-| [SimpleConsumer](SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 在应用自有接收循环中接收、确认和转入死信。 |
-| [PushConsumer](PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | 由 SDK 负责分配轮询、handler 分发、不可见期续期和结算。 |
+| [SimpleConsumer](SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 在应用自有接收循环中接收、确认和调整不可见时间。 |
+| [PushConsumer](PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | 由 SDK 负责分配轮询、handler 分发、请求 Proxy 续期和结算。 |
 | [LitePushConsumer](LitePushConsumer/README.zh-CN.md) | `IGrpcLitePushConsumer` | 在启用 LITE 的部署中同步 LiteTopic 并分发消息。 |
 
 只构造普通 `ServiceProvider` 的进程应使用同级[非 Host 示例](../NonHost/README.zh-CN.md)，其中展示了必需的显式

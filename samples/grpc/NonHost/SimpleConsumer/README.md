@@ -4,7 +4,7 @@
 
 This console sample drives gRPC `IGrpcSimpleConsumer` directly without constructing a Generic Host. It builds an
 ordinary `ServiceProvider`, explicitly starts the Consumer, long-polls the Proxy, acknowledges normal messages,
-forwards corrupted messages to the dead-letter queue, explicitly stops the Consumer, and asynchronously disposes the
+leaves corrupted messages unsettled, explicitly stops the Consumer, and asynchronously disposes the
 service provider.
 
 ## When to use this shape
@@ -21,9 +21,9 @@ manual lifecycle calls in this sample are required.
 
 `ReceiveAsync` long-polls a RocketMQ 5 Proxy and returns temporarily invisible `GrpcMessageView` values. It does not
 acknowledge them. The sample logs each valid message and calls `AckAsync`; real applications must acknowledge only
-after the business effect is durable. It checks `IsCorrupted` before reading the body and calls
-`ForwardToDeadLetterQueueAsync` for corrupted payloads. A failed or omitted settlement lets the message become visible
-again after its invisibility window, so processing must be idempotent.
+after the business effect is durable. It checks `IsCorrupted` before reading the body and leaves corrupted payloads
+unsettled. A failed or omitted settlement lets the message become visible again after its invisibility window, so
+processing must be idempotent.
 
 SimpleConsumer is application-driven: the process controls receive batch size, receive concurrency, and settlement.
 Choose `IGrpcPushConsumer` when handler-oriented automatic dispatch and settlement are the better fit.
@@ -43,4 +43,4 @@ already been cancelled. The configured Proxy endpoint can be overridden with nor
 `RocketMQ__Client__Endpoint=proxy.example:8081`.
 
 See the [gRPC protocol guide](../../../../src/EventHorizon.RocketMQ.Grpc/README.md) for live subscription changes,
-invisibility renewal, and the complete SimpleConsumer contract.
+invisibility changes, and the complete SimpleConsumer contract.

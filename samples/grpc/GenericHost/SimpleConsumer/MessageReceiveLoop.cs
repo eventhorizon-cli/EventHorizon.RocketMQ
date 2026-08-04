@@ -34,7 +34,7 @@ internal sealed class MessageReceiveLoop(
             try
             {
                 // ReceiveAsync long-polls the Proxy. Each result remains invisible for the configured duration
-                // unless it is acknowledged or forwarded to the DLQ.
+                // unless it is acknowledged.
                 messages = await consumer.ReceiveAsync(16, cancellationToken: stoppingToken)
                     .ConfigureAwait(false);
             }
@@ -56,16 +56,10 @@ internal sealed class MessageReceiveLoop(
                 {
                     if (message.IsCorrupted)
                     {
-                        // SimpleConsumer never auto-settles messages; explicitly forward unsafe payloads to the DLQ.
                         logger.LogWarning(
-                            "Forwarding corrupted message {MessageId} to the dead-letter queue: {Reason}",
+                            "Leaving corrupted message {MessageId} unsettled so the service retry policy can handle it: {Reason}",
                             message.MessageId,
                             message.CorruptionReason);
-                        await consumer.ForwardToDeadLetterQueueAsync(
-                                message,
-                                16,
-                                stoppingToken)
-                            .ConfigureAwait(false);
                         continue;
                     }
 

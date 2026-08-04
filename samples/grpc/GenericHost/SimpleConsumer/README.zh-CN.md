@@ -42,7 +42,6 @@ Generic Host 集成会启动和停止已注册的角色。不使用 Host 时，�
 | `ReceiveAsync` | 向 Proxy 发起长轮询，最多返回请求数量的 `GrpcMessageView`；返回空集合是正常结果。 |
 | `AckAsync` | 在业务副作用已经持久化后确认一条消息。 |
 | `ChangeInvisibleDurationAsync` | 处理需要更多时间时，替换消息当前的不可见时长。 |
-| `ForwardToDeadLetterQueueAsync` | 使用传入的投递次数阈值，将消息显式转入该 consumer group 的死信队列。 |
 
 读取消息体前应检查 `GrpcMessageView.IsCorrupted`。损坏的 payload 仍需由应用明确决定如何处理，SimpleConsumer 不会自动
 确认它。
@@ -52,8 +51,8 @@ Generic Host 集成会启动和停止已注册的角色。不使用 Host 时，�
 `ReceiveAsync` 只会让消息暂时不可见，不会确认消息。如果业务处理失败、进程停止，或者 `AckAsync` 没有成功完成，消息可能在
 不可见时长结束后再次可见。因此，应用必须保证处理逻辑幂等，并且只在持久化处理完成后确认。
 
-如果任务可能超过当前不可见窗口，应在窗口到期前调用 `ChangeInvisibleDurationAsync`。转入死信队列同样是应用的显式决定；
-普通处理异常不会让 SDK 代替应用调用 `ForwardToDeadLetterQueueAsync`。
+如果任务可能超过当前不可见窗口，应在窗口到期前调用 `ChangeInvisibleDurationAsync`。处理无法完成时，不要结算该消息；
+当前不可见时间结束后，消息会重新可见。
 
 consumer group 保存确认和重试状态。使用同一个 group 的多个实例会分摊消息；使用不同 group 才会独立观察同一个 topic。
 

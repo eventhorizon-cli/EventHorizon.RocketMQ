@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Globalization;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -283,7 +284,7 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
                      "legacy-push-cluster-it"
                  })
         {
-            await CreateConsumerGroupAsync(group, null, CancellationToken.None).ConfigureAwait(false);
+            await CreateConsumerGroupAsync(group, null, null, CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -305,6 +306,7 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
     internal async Task CreateConsumerGroupAsync(
         string group,
         string? liteParentTopic,
+        int? retryMaxTimes,
         CancellationToken cancellationToken)
     {
         await _administrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -321,6 +323,12 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
             {
                 createGroupCommand.Add("--attributes");
                 createGroupCommand.Add($"+lite.bind.topic={liteParentTopic}");
+            }
+
+            if (retryMaxTimes is not null)
+            {
+                createGroupCommand.Add("--retryMaxTimes");
+                createGroupCommand.Add(retryMaxTimes.Value.ToString(CultureInfo.InvariantCulture));
             }
 
             var createGroup = await _broker.ExecAsync(createGroupCommand, cancellationToken).ConfigureAwait(false);

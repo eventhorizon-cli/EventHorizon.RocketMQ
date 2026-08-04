@@ -34,10 +34,16 @@ public sealed class ProtocolModelParityTests
     public void ProtocolNeutralModelCopies_PublicApiParity_Matches()
     {
         AssertEquivalentPublicApi(typeof(GrpcMessage), typeof(RemotingMessage));
-        AssertEquivalentPublicApi(typeof(GrpcConsumeResult), typeof(RemotingConsumeResult));
         AssertEquivalentPublicApi(typeof(GrpcFilterExpression), typeof(RemotingFilterExpression));
         AssertEquivalentPublicApi(typeof(GrpcFilterExpressionType), typeof(RemotingFilterExpressionType));
         AssertEquivalentPublicApi(typeof(GrpcRocketMQClientException), typeof(RemotingRocketMQClientException));
+    }
+
+    [Fact]
+    public void ConsumeResults_ProtocolSpecificSemantics_ExposeExpectedOutcomes()
+    {
+        Assert.Equal(["Success", "Failure"], Enum.GetNames<GrpcConsumeResult>());
+        Assert.Equal(["Success", "Retry", "DeadLetter"], Enum.GetNames<RemotingConsumeResult>());
     }
 
     [Theory]

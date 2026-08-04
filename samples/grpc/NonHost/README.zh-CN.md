@@ -13,7 +13,7 @@ Host 会拥有同一角色的生命周期。
 | 示例 | 公开角色 | 演示的工作流 |
 | --- | --- | --- |
 | [Producer](Producer/README.zh-CN.md) | `IGrpcProducer` | 启动，发送一条带 tag 的消息，等待回执，停止。 |
-| [SimpleConsumer](SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 启动，长轮询，确认正常消息，将损坏消息转入死信队列，停止。 |
+| [SimpleConsumer](SimpleConsumer/README.zh-CN.md) | `IGrpcSimpleConsumer` | 启动，长轮询，确认正常消息，不结算失败消息，停止。 |
 | [PushConsumer](PushConsumer/README.zh-CN.md) | `IGrpcPushConsumer` | 启动，持续向 scoped handler 分发消息直到 Ctrl+C，再停止。 |
 | [LitePushConsumer](LitePushConsumer/README.zh-CN.md) | `IGrpcLitePushConsumer` | 启动，同步 LiteTopic，持续向 scoped handler 分发消息直到 Ctrl+C，再停止。 |
 

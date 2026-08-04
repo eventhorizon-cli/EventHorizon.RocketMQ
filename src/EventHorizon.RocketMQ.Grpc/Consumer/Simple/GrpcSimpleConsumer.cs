@@ -109,17 +109,6 @@ internal sealed class GrpcSimpleConsumer : IGrpcSimpleConsumer
         return _engine.ChangeInvisibleDurationAsync(message, invisibleDuration, cancellationToken);
     }
 
-    public Task ForwardToDeadLetterQueueAsync(GrpcMessageView message, int maxDeliveryAttempts, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(message);
-        if (maxDeliveryAttempts <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxDeliveryAttempts), "Maximum delivery attempts must be positive.");
-        }
-
-        return _engine.ForwardToDeadLetterQueueAsync(message, maxDeliveryAttempts, cancellationToken);
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

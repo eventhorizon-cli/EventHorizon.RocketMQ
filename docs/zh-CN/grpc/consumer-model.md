@@ -20,7 +20,7 @@ gRPC Project 公开以下 Consumer 角色：
 
 | 角色 | 由谁驱动接收 | 适用场景 |
 | --- | --- | --- |
-| `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync` | 应用需要自行决定批量、确认、不可见时间和死信时机。 |
+| `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync` | 应用需要自行决定批量、确认和不可见时间。 |
 | `IGrpcPushConsumer` | 客户端后台循环 | 应用希望自动接收、并发/FIFO 分发、重试和死信处理。 |
 | `IGrpcLitePushConsumer` | 客户端后台循环与 Lite 订阅同步 | 使用 LiteTopic，且部署已配置 bind topic 和 Lite 能力。 |
 
@@ -58,8 +58,7 @@ SimpleConsumer 的调用流程是：
 1. 使用 `SubscribeAsync` 建立主题订阅和过滤表达式。
 2. 调用 `ReceiveAsync` 获取一批 `GrpcMessageView`。
 3. 在消息持久化或业务副作用完成后调用 `AckAsync`。
-4. 工作时间超过不可见期时调用 `ChangeInvisibleDurationAsync`；不能继续处理时可调用
-   `ForwardToDeadLetterQueueAsync`。
+4. 工作时间超过不可见期时调用 `ChangeInvisibleDurationAsync`；消息未结算时，会在当前不可见时间结束后重新可见。
 
 这种方式适合需要将确认与本地事务、批处理或自定义并发调度绑定的应用。它不替调用方处理异常、重复
 投递或幂等性。收到的 `GrpcMessageView` 还可能标记为损坏消息，应用应先决定是否跳过或转入死信，而不是
@@ -79,29 +78,36 @@ PushConsumer 启动后大致执行如下循环：
                   有界消息缓存与消费循环
                          │
                          ▼
-              handler 返回 Success / Retry / DeadLetter
+                  handler 返回 Success / Failure
                          │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                ▼
-       确认             重试             转发死信
+                    ┌────┴────┐
+                    ▼         ▼
+                   确认      失败处理
 ```
 
-`ConsumeResult.Success` 表示可以确认；`Retry` 表示应交给重试策略；`DeadLetter` 表示转发到死信队列。
-只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认失败仍可能造成重复投递，因此 handler
-必须具备幂等性。
+handler 只返回 `ConsumeResult.Success` 或 `ConsumeResult.Failure`，与
+[Apache Java gRPC 客户端的公开结果](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java)
+一致。对于并发、非 FIFO 投递，`Failure` 会按当前重试策略调整不可见时间，后续重试和死信推进由服务端负责。
+对于 FIFO 投递，客户端会在本地重试 handler，并在达到最大次数后通过内部协议 RPC 转入死信队列；这一行为与
+[Java process queue](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445)
+一致。handler 结果和 SimpleConsumer 都不暴露内部死信 RPC。重试调度对应的 OpenTelemetry 结算 operation 仍为
+`nack`，但它不是 RocketMQ handler 结果。只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认
+失败仍可能造成重复投递，因此 handler 必须具备幂等性。
 
-普通 Push 的 receive request 会设置 `AutoRenew=true`，让兼容的 Proxy 通过客户端连接托管 receipt 续期。
-SimpleConsumer 设置 `AutoRenew=false`，初始不可见时间和显式 `ChangeInvisibleDurationAsync` 都由调用方负责。
-当前 .NET Push dispatcher 还会在 handler 执行期间启动客户端侧的半租期续期循环。Proxy 续期和客户端侧续期是同一
-receipt 生命周期的两个不同 owner；后续 gRPC 重构必须合并这两个 owner 及对应 telemetry，不能把任一机制照搬到
-classic Remoting。Apache Java gRPC Push 会请求 Proxy 自动续约，而 classic Remoting Push 使用固定 POP deadline。
+普通 Push 与 LitePush 的 receive request 会设置 `AutoRenew=true`。目标 Proxy 启用 `enableProxyAutoRenew` 后，会在
+handler 执行期间通过客户端连接托管 receipt 续期；.NET dispatcher 不再额外启动一套客户端续期定时器。
+SimpleConsumer 设置 `AutoRenew=false`，因此初始不可见时间以及每次显式 `ChangeInvisibleDurationAsync` 都由调用方负责。
+这一职责划分与
+[Apache Java gRPC 客户端](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278)
+一致；[Proxy 只有在配置和请求都启用自动续期时才会登记 receipt](https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)。
+classic Remoting Push 仍使用固定 POP deadline，不沿用这套续期机制。
 
 `MaxConcurrency` 控制消费循环数量，`MaxCachedMessages` 与 `MaxCachedMessageBytes` 限制本地缓冲。开启
 FIFO 分发时，客户端为同一消息组维持顺序尾链并阻塞同组后续消息；这是应用处理顺序的约束，不应被理解为
 跨消费组、跨队列或跨消费者的全局顺序保证。
 
-对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后 dispatcher 会取消 handler token、停止客户端的
-不可见时间续期并请求重新投递；延迟返回的成功结果会被忽略。即使应用代码忽略取消，dispatcher 也会释放消费循环的并发槽位，
+对于非 FIFO 分发，`ConsumeTimeout` 默认值为 15 分钟。到期后 dispatcher 会取消 handler token 并请求重新投递；
+延迟返回的成功结果会被忽略。即使应用代码忽略取消，dispatcher 也会释放消费循环的并发槽位，
 但客户端无法强制终止这段代码。重新投递可能与仍在执行、但忽略取消的调用重叠，因此 handler 必须具备幂等性。FIFO message
 group 会刻意排除在此机制之外，因为脱离一个超时 handler 可能破坏顺序。
 
@@ -126,7 +132,7 @@ scoped 应用服务；`Singleton` handler 归当前 Consumer 实例所有，并�
 ### LitePush：Push 调度器加上 Lite 订阅控制面
 
 LitePush 复用 Push 的接收和分发机制，但消息来自 LiteTopic。它在普通 dispatcher 外增加
-[`GrpcLiteSubscriptionManager`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Lite/GrpcLiteSubscriptionManager.cs)，
+[`GrpcLiteSubscriptionManager`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/LitePush/GrpcLiteSubscriptionManager.cs)，
 用来同步 LiteTopic 订阅与起始位点。
 
 部署端至少需要满足以下条件：

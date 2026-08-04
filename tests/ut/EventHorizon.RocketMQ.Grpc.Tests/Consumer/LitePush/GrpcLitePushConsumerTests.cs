@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Grpc.Consumer;
-using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Grpc.Exceptions;
 using EventHorizon.RocketMQ.Grpc.Protocol;
@@ -28,7 +28,7 @@ using Moq;
 using Xunit;
 using Proto = Apache.Rocketmq.V2;
 
-namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.LitePush;
 
 public sealed class GrpcLitePushConsumerTests
 {

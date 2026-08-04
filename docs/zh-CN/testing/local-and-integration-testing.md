@@ -66,7 +66,7 @@ dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Remoting.
 - options 验证、默认客户端注册、keyed 客户端注册与重复角色注册；
 - message 编解码、frame 长度限制、ACL 签名和 response correlation；
 - route cache、重试、取消、连接故障和 handler 生命周期；
-- Consumer 对 `Success`、部分批量确认、`Retry`、`DeadLetter` 的处理决策。
+- Consumer 对 gRPC `Success` / `Failure`，以及 Remoting `Success`、部分批量确认、`Retry`、`DeadLetter` 的处理决策。
 
 对于客户端能够确定性验证的行为，IT 覆盖不能替代 UT。即使 IT 已覆盖完整工作流，底层状态转换、分配、调度、
 offset、重试和失败不变量仍必须保留聚焦的 UT；IT 只在此基础上补充真实 Broker、NameServer、Proxy、transport、

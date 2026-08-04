@@ -651,18 +651,14 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         var fifoRetryCancellationToken = fifo
             ? Volatile.Read(ref _fifoRetryCts)?.Token ?? CancellationToken.None
             : CancellationToken.None;
-        using var renewalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var renewal = RenewInvisibleDurationAsync(message, renewalCts.Token);
-        ConsumeResult result;
-        var fifoRetryStopped = false;
+        HandlerCompletion completion;
         try
         {
-            result = await HandleMessageAsync(
+            completion = await HandleMessageAsync(
                 message,
                 fifo,
                 maxDeliveryAttempts,
                 fifoRetryCancellationToken,
-                renewalCts,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -671,44 +667,23 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
         catch (OperationCanceledException) when (fifo && fifoRetryCancellationToken.IsCancellationRequested)
         {
-            fifoRetryStopped = true;
-            result = ConsumeResult.Retry;
-        }
-        finally
-        {
-            renewalCts.Cancel();
-            try
-            {
-                await renewal.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception exception)
-            {
-                _logger.LogWarning(exception, "Failed to renew invisible duration for message {MessageId}; processing will continue", message.MessageId);
-            }
-        }
-
-        if (fifoRetryStopped)
-        {
             return false;
         }
 
         try
         {
-            if (result == ConsumeResult.Success)
+            if (completion.Result == ConsumeResult.Success)
             {
                 await _engine.AckAsync(message, cancellationToken).ConfigureAwait(false);
             }
-            else if (result == ConsumeResult.DeadLetter || message.DeliveryAttempt >= maxDeliveryAttempts)
+            else if (completion.ForwardToDeadLetterQueue)
             {
                 await _engine.ForwardToDeadLetterQueueAsync(message, maxDeliveryAttempts, cancellationToken).ConfigureAwait(false);
             }
             else
             {
                 var retryDelay = _engine.GetRetryDelay(message, _options.RetryDelay);
-                await _engine.ChangeInvisibleDurationAsync(message, retryDelay, cancellationToken).ConfigureAwait(false);
+                await _engine.ScheduleRetryAsync(message, retryDelay, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -720,7 +695,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             _logger.LogWarning(
                 exception,
                 "Failed to complete {ConsumeResult} processing for message {MessageId}; the message may be redelivered",
-                result,
+                completion.Result,
                 message.MessageId);
             return false;
         }
@@ -750,7 +725,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
             else
             {
-                await _engine.ChangeInvisibleDurationAsync(
+                await _engine.ScheduleRetryAsync(
                     message,
                     _engine.GetRetryDelay(message, _options.RetryDelay),
                     cancellationToken).ConfigureAwait(false);
@@ -772,12 +747,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
     }
 
-    private async ValueTask<ConsumeResult> HandleMessageAsync(
+    private async ValueTask<HandlerCompletion> HandleMessageAsync(
         GrpcMessageView message,
         bool fifo,
         int maxDeliveryAttempts,
         CancellationToken fifoRetryCancellationToken,
-        CancellationTokenSource renewalCts,
         CancellationToken cancellationToken)
     {
         var attempt = Math.Max(1, message.DeliveryAttempt);
@@ -799,7 +773,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 {
                     execution = await InvokeConcurrentMessageHandlerAsync(
                         message,
-                        renewalCts,
                         cancellationToken).ConfigureAwait(false);
                 }
 
@@ -822,21 +795,21 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             {
                 CompleteMessageProcessingTelemetry(telemetry, message, exception);
                 _logger.LogError(exception, "Message handler failed for message {MessageId}", message.MessageId);
-                result = ConsumeResult.Retry;
+                result = ConsumeResult.Failure;
             }
             finally
             {
                 DisposeMessageProcessingTelemetry(telemetry, message);
             }
 
-            if (!fifo || result != ConsumeResult.Retry)
+            if (!fifo || result != ConsumeResult.Failure)
             {
-                return result;
+                return new HandlerCompletion(result, false);
             }
 
             if (attempt >= maxDeliveryAttempts)
             {
-                return ConsumeResult.DeadLetter;
+                return new HandlerCompletion(result, true);
             }
 
             var retryDelay = _engine.GetRetryDelay(message, attempt, _options.RetryDelay);
@@ -946,7 +919,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
     private async ValueTask<HandlerExecution> InvokeConcurrentMessageHandlerAsync(
         GrpcMessageView message,
-        CancellationTokenSource renewalCts,
         CancellationToken cancellationToken)
     {
         var handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -992,12 +964,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
             _ = ObserveTimedOutMessageHandlerAsync(handlerTask, message.MessageId, activeHandlerCancellation);
             handlerCancellation = null;
-            renewalCts.Cancel();
             _logger.LogWarning(
                 "Message handler for message {MessageId} exceeded consume timeout {ConsumeTimeout}; cancellation was requested and the message will be retried",
                 message.MessageId,
                 _options.ConsumeTimeout);
-            return new HandlerExecution(ConsumeResult.Retry, true);
+            return new HandlerExecution(ConsumeResult.Failure, true);
         }
         finally
         {
@@ -1076,19 +1047,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             fifoRetryCancellationToken,
             cancellationToken);
         await Task.Delay(delay, linked.Token).ConfigureAwait(false);
-    }
-
-    private async Task RenewInvisibleDurationAsync(GrpcMessageView message, CancellationToken cancellationToken)
-    {
-        var invisibleDuration = message.InvisibleDuration is { } brokerInvisibleDuration && brokerInvisibleDuration > TimeSpan.Zero
-            ? brokerInvisibleDuration
-            : _options.InvisibleDuration;
-        var delay = TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(1).Ticks, invisibleDuration.Ticks / 2));
-        while (true)
-        {
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-            await _engine.ChangeInvisibleDurationAsync(message, invisibleDuration, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     private Channel<GrpcMessageView> CreateMessageChannel() =>
@@ -1255,6 +1213,8 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         int MessageBytes);
 
     private readonly record struct HandlerExecution(ConsumeResult Result, bool TimedOut);
+
+    private readonly record struct HandlerCompletion(ConsumeResult Result, bool ForwardToDeadLetterQueue);
 
     private sealed class ByteCapacityGate
     {

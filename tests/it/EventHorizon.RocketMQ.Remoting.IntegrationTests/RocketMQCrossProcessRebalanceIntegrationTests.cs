@@ -213,22 +213,14 @@ public sealed class RocketMQCrossProcessRebalanceIntegrationTests(
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var results = await Task.WhenAll(queues.Select(async queue =>
-        {
-            var result = await fixture.WaitForConsumerCommitAsync(
-                group,
-                queue.Topic,
-                queue.BrokerName,
-                queue.QueueId,
-                timeout,
-                cancellationToken);
-            return (Queue: queue, result.Committed, result.Progress);
-        }));
-        Assert.All(
-            results,
-            result => Assert.True(
-                result.Committed,
-                $"Offset for {FormatQueue(result.Queue)} was not committed. {result.Progress}"));
+        var result = await fixture.WaitForConsumerCommitsAsync(
+            group,
+            queues.Select(static queue => (queue.Topic, queue.BrokerName, queue.QueueId)).ToArray(),
+            timeout,
+            cancellationToken);
+        Assert.True(
+            result.Committed,
+            $"Offsets were not committed for [{string.Join(", ", queues.Select(FormatQueue))}]. {result.Progress}");
     }
 
     private static async Task WaitUntilAsync(

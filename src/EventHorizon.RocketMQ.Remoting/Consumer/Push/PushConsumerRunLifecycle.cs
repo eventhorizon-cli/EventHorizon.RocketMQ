@@ -133,6 +133,10 @@ internal sealed class PushConsumerRunLifecycle
             run.Receivers,
             run.PullDeliveryCoordinator,
             run.Stopping.Token,
+            receiver => _assignmentCoordinator.UnlockAsync(
+                [receiver],
+                oneway: true,
+                CancellationToken.None),
             run.GroupSession.Wakeup,
             _logger);
         return run;
@@ -165,7 +169,6 @@ internal sealed class PushConsumerRunLifecycle
             run.MessageHandlerInvoker.AbandonResults);
         Task? detachedTasks = null;
         ExceptionDispatchInfo? failure = null;
-        run.Stopping.Cancel();
         try
         {
             await run.GroupSession.StopRebalanceAsync().ConfigureAwait(false);
@@ -175,6 +178,10 @@ internal sealed class PushConsumerRunLifecycle
             CaptureShutdownFailure(ref failure, exception, "stop rebalance");
         }
 
+        var receiverSupervisor = run.ReceiverSupervisor ?? throw new InvalidOperationException(
+            "The Push receiver supervisor has not been composed for this run.");
+        var receivers = receiverSupervisor.BeginShutdown().ToArray();
+        run.Stopping.Cancel();
         try
         {
             run.PullDeliveryCoordinator?.Complete();
@@ -184,7 +191,6 @@ internal sealed class PushConsumerRunLifecycle
             CaptureShutdownFailure(ref failure, exception, "complete the PULL dispatcher");
         }
 
-        var receivers = run.Receivers.TakeAll().ToArray();
         foreach (var receiver in receivers)
         {
             try
@@ -214,6 +220,15 @@ internal sealed class PushConsumerRunLifecycle
         catch (Exception exception)
         {
             CaptureShutdownFailure(ref failure, exception, "drain receiver and dispatch tasks");
+        }
+
+        try
+        {
+            await receiverSupervisor.DrainOwnedReceiverReleasesAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            CaptureShutdownFailure(ref failure, exception, "drain supervisor-owned receiver releases");
         }
 
         try

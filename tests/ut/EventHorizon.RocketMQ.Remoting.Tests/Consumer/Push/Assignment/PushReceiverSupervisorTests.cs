@@ -33,6 +33,7 @@ public sealed class PushReceiverSupervisorTests
             registry,
             dispatchScheduler: null,
             stopping.Token,
+            static _ => Task.CompletedTask,
             wakeup.SetResult,
             NullLogger.Instance);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -60,6 +61,7 @@ public sealed class PushReceiverSupervisorTests
             registry,
             dispatchScheduler: null,
             stopping.Token,
+            static _ => Task.CompletedTask,
             () => Interlocked.Increment(ref wakeupCount),
             NullLogger.Instance);
         var firstCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -90,6 +92,7 @@ public sealed class PushReceiverSupervisorTests
             registry,
             dispatchScheduler: null,
             stopping.Token,
+            static _ => Task.CompletedTask,
             () => Interlocked.Increment(ref wakeupCount),
             NullLogger.Instance);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -98,17 +101,62 @@ public sealed class PushReceiverSupervisorTests
         Assert.True(registry.TryAdd(key, receiver));
         var observation = supervisor.Observe(key, receiver);
 
+        var stopped = supervisor.BeginShutdown();
         stopping.Cancel();
         completion.TrySetResult();
         await observation;
 
-        Assert.Same(receiver, Assert.Single(registry.Snapshot()));
+        Assert.Same(receiver, Assert.Single(stopped));
+        Assert.Empty(registry.Snapshot());
         Assert.Equal(0, receiver.StopCount);
         Assert.Equal(0, receiver.DisposeCount);
         Assert.Equal(0, Volatile.Read(ref wakeupCount));
 
-        var stopped = registry.StopAll(dispatchScheduler: null);
+        registry.Drop(receiver, dispatchScheduler: null);
         PushReceiverRegistry.DisposeAll(stopped);
+    }
+
+    [Fact]
+    public async Task Observe_SupervisorOwnsReceiverDuringRunStop_ReleasesExactlyOnce()
+    {
+        var registry = new PushReceiverRegistry();
+        using var stopping = new CancellationTokenSource();
+        var releaseStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCount = 0;
+        var wakeupCount = 0;
+        var supervisor = new PushReceiverSupervisor(
+            registry,
+            dispatchScheduler: null,
+            stopping.Token,
+            async _ =>
+            {
+                Interlocked.Increment(ref releaseCount);
+                releaseStarted.SetResult();
+                await allowRelease.Task;
+            },
+            () => Interlocked.Increment(ref wakeupCount),
+            NullLogger.Instance);
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiver = new TestReceiver(CreateTarget(), completion.Task);
+        var key = PushReceiverKey.Create(receiver.Target);
+        Assert.True(registry.TryAdd(key, receiver));
+        var observation = supervisor.Observe(key, receiver);
+
+        completion.TrySetResult();
+        await releaseStarted.Task.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        Assert.Empty(supervisor.BeginShutdown());
+        stopping.Cancel();
+        var releaseDrain = supervisor.DrainOwnedReceiverReleasesAsync();
+        Assert.False(releaseDrain.IsCompleted);
+        allowRelease.SetResult();
+        await observation;
+        await releaseDrain;
+
+        Assert.Equal(1, Volatile.Read(ref releaseCount));
+        Assert.Equal(1, receiver.StopCount);
+        Assert.Equal(1, receiver.DisposeCount);
+        Assert.Equal(0, Volatile.Read(ref wakeupCount));
     }
 
     [Fact]
@@ -121,6 +169,7 @@ public sealed class PushReceiverSupervisorTests
             registry,
             dispatchScheduler: null,
             stopping.Token,
+            static _ => Task.CompletedTask,
             () => Interlocked.Increment(ref wakeupCount),
             NullLogger.Instance);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -132,7 +181,11 @@ public sealed class PushReceiverSupervisorTests
         Assert.True(registry.TryAdd(key, receiver));
         var observation = supervisor.Observe(key, receiver);
 
-        var stopped = registry.StopAll(dispatchScheduler: null);
+        var stopped = supervisor.BeginShutdown();
+        foreach (var ownedReceiver in stopped)
+        {
+            registry.Drop(ownedReceiver, dispatchScheduler: null);
+        }
         await observation;
         PushReceiverRegistry.DisposeAll(stopped);
 

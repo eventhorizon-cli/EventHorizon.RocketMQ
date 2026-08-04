@@ -23,23 +23,31 @@ internal sealed class PushReceiverSupervisor
     private readonly PushReceiverRegistry _registry;
     private readonly PullDeliveryCoordinator? _dispatchScheduler;
     private readonly CancellationToken _stopping;
+    private readonly Func<IRemotingPushReceiver, Task> _releaseReceiver;
     private readonly Action _wakeup;
     private readonly ILogger _logger;
+    // Shutdown and unexpected completion share this gate so exactly one path owns receiver release and disposal.
+    private readonly object _ownershipGate = new();
+    private readonly HashSet<Task> _ownedReceiverReleases = [];
+    private bool _shutdownStarted;
 
     public PushReceiverSupervisor(
         PushReceiverRegistry registry,
         PullDeliveryCoordinator? dispatchScheduler,
         CancellationToken stopping,
+        Func<IRemotingPushReceiver, Task> releaseReceiver,
         Action wakeup,
         ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(releaseReceiver);
         ArgumentNullException.ThrowIfNull(wakeup);
         ArgumentNullException.ThrowIfNull(logger);
 
         _registry = registry;
         _dispatchScheduler = dispatchScheduler;
         _stopping = stopping;
+        _releaseReceiver = releaseReceiver;
         _wakeup = wakeup;
         _logger = logger;
     }
@@ -48,6 +56,23 @@ internal sealed class PushReceiverSupervisor
     {
         ArgumentNullException.ThrowIfNull(receiver);
         return ObserveAsync(key, receiver);
+    }
+
+    public IReadOnlyList<IRemotingPushReceiver> BeginShutdown()
+    {
+        lock (_ownershipGate)
+        {
+            _shutdownStarted = true;
+            return _registry.TakeAll();
+        }
+    }
+
+    public Task DrainOwnedReceiverReleasesAsync()
+    {
+        lock (_ownershipGate)
+        {
+            return Task.WhenAll(_ownedReceiverReleases);
+        }
     }
 
     private async Task ObserveAsync(PushReceiverKey key, IRemotingPushReceiver receiver)
@@ -67,42 +92,77 @@ internal sealed class PushReceiverSupervisor
             receiverFailure = exception;
         }
 
-        if (_stopping.IsCancellationRequested)
+        TaskCompletionSource ownershipCompletion;
+        lock (_ownershipGate)
         {
-            return;
-        }
+            if (_shutdownStarted || _stopping.IsCancellationRequested || !_registry.TryRemove(key, receiver))
+            {
+                return;
+            }
 
-        if (!_registry.TryRemove(key, receiver))
-        {
-            return;
-        }
-
-        try
-        {
-            _registry.Drop(receiver, _dispatchScheduler);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(
-                exception,
-                "Unable to stop an unexpectedly completed legacy Push receiver for {Topic}/{BrokerName}/{QueueId}",
-                receiver.Assignment.Topic,
-                receiver.Assignment.BrokerName,
-                receiver.Assignment.QueueId);
+            ownershipCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _ownedReceiverReleases.Add(ownershipCompletion.Task);
         }
 
         try
         {
-            receiver.Dispose();
+            try
+            {
+                _registry.Drop(receiver, _dispatchScheduler);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to stop an unexpectedly completed legacy Push receiver for {Topic}/{BrokerName}/{QueueId}",
+                    receiver.Assignment.Topic,
+                    receiver.Assignment.BrokerName,
+                    receiver.Assignment.QueueId);
+            }
+
+            try
+            {
+                await _releaseReceiver(receiver).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to release an unexpectedly completed legacy Push receiver for {Topic}/{BrokerName}/{QueueId}",
+                    receiver.Assignment.Topic,
+                    receiver.Assignment.BrokerName,
+                    receiver.Assignment.QueueId);
+            }
+
+            try
+            {
+                receiver.Dispose();
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to dispose an unexpectedly completed legacy Push receiver for {Topic}/{BrokerName}/{QueueId}",
+                    receiver.Assignment.Topic,
+                    receiver.Assignment.BrokerName,
+                    receiver.Assignment.QueueId);
+            }
         }
-        catch (Exception exception)
+        finally
         {
-            _logger.LogWarning(
-                exception,
-                "Unable to dispose an unexpectedly completed legacy Push receiver for {Topic}/{BrokerName}/{QueueId}",
-                receiver.Assignment.Topic,
-                receiver.Assignment.BrokerName,
-                receiver.Assignment.QueueId);
+            ownershipCompletion.TrySetResult();
+            lock (_ownershipGate)
+            {
+                _ownedReceiverReleases.Remove(ownershipCompletion.Task);
+            }
+        }
+
+        lock (_ownershipGate)
+        {
+            if (_shutdownStarted || _stopping.IsCancellationRequested)
+            {
+                return;
+            }
         }
 
         if (receiverFailure is null)

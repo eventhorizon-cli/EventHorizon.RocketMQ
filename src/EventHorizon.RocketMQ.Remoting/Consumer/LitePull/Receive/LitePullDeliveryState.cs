@@ -59,6 +59,7 @@ internal sealed class LitePullDeliveryState
         {
             _desiredTargets = desired;
             var removed = new List<LitePullQueueState>();
+            var revoked = new List<LitePullQueueState>();
             foreach (var key in _assignments.Keys.Except(desired.Keys).ToArray())
             {
                 var state = _assignments[key];
@@ -66,6 +67,7 @@ internal sealed class LitePullDeliveryState
                 _assignments.Remove(key);
                 _buffer.Remove(state);
                 removed.Add(state);
+                revoked.Add(state);
             }
 
             var additions = new List<LitePullReceiveTarget>();
@@ -97,7 +99,7 @@ internal sealed class LitePullDeliveryState
             }
 
             _buffer.SignalStateChanged();
-            return new AssignmentChanges(additions, replacements, removed);
+            return new AssignmentChanges(additions, replacements, removed, revoked);
         }
     }
 
@@ -409,7 +411,8 @@ internal sealed class LitePullDeliveryState
     internal sealed record AssignmentChanges(
         IReadOnlyList<LitePullReceiveTarget> Additions,
         IReadOnlyList<LitePullQueueState> Replacements,
-        IReadOnlyList<LitePullQueueState> Removed);
+        IReadOnlyList<LitePullQueueState> Removed,
+        IReadOnlyList<LitePullQueueState> Revoked);
 
     internal readonly record struct QueuePosition(
         QueueKey Key,

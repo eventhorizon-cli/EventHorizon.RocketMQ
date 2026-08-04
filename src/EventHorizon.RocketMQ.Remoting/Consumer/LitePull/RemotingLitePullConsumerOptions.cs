@@ -51,7 +51,8 @@ public sealed class RemotingLitePullConsumerOptions : ConsumerOptions
     public TimeSpan PollTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Gets or sets whether the consumer periodically commits delivered positions.
+    /// Gets or sets whether the consumer automatically commits delivered positions periodically, when an assignment
+    /// is revoked, and during shutdown.
     /// </summary>
     public bool EnableAutoCommit { get; set; } = true;
 

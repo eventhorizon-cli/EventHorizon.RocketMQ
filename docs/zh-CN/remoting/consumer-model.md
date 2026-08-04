@@ -185,7 +185,10 @@ fetch position 与 delivered position 分开维护。Broker 结果进入本地�
   消息。订阅模式和手动 assignment 模式仍互斥。手工 assignment 及其 filter 会一直作为期望状态保留，直到下一次
   assignment 替换；手工模式下的每次 heartbeat 与 queue/filter receive target 都必须使用对应的 filter。
 - `EnableAutoCommit` 默认 `true`，`AutoCommitInterval` 默认为五秒。自动与显式 commit 都只持久化 delivered
-  position，绝不提交 fetch position。
+  position，绝不提交 fetch position。启用自动提交后，assignment 对账会保留被撤销队列的状态快照，在 receiver
+  排空后持久化 delivered position，再完成本轮对账。这与 Java LitePull 的
+  [`removeUnnecessaryMessageQueue`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/RebalanceLitePullImpl.java#L60-L65)
+  一致。
 - route 刷新、已知 Broker heartbeat 与 assignment 对账彼此隔离失败。NameServer 故障不会阻止客户端向仍
   可达的 Broker 发送 heartbeat。
 
@@ -202,7 +205,7 @@ LitePull 是顶层应用模型，不是内部 PULL wire 操作的子层级。公
 | 根目录 `RemotingLitePullConsumerRun` | 一次启动的 generation、操作准入、取消，以及这一 generation 所拥有的协作者引用。 | 公开配置或跨 generation 的可变状态。 |
 | `Assignment/LitePullSubscriptionState` | 将订阅或手工 assignment 意图、按 topic 配置的 filter 与 subscription version 维护为一个串行化快照。 | route 查询、队列分配或 receiver 启动。 |
 | `Assignment/LitePullAssignmentCoordinator` | Route 刷新、group membership、客户端分配、heartbeat 准备和期望的 queue/filter receive target。 | receiver generation、本地缓存或 offset 推进。 |
-| `Assignment/LitePullAssignmentReconciler` | 比较期望与当前的 queue/filter target，停止并排空已移除的 generation、初始化 offset，并使用 target filter 启动缺失的 generation。 | 分配策略或 heartbeat 内容。 |
+| `Assignment/LitePullAssignmentReconciler` | 比较期望与当前的 queue/filter target，停止并排空已移除的 generation；启用自动提交时持久化已撤销队列的 delivered position；初始化 offset，并使用 target filter 启动缺失的 generation。 | 分配策略或 heartbeat 内容。 |
 | `Receive/LitePullReceiverRegistry` | 为每个已分配的 queue/filter target 提供 generation-aware receiver，负责保留 target filter 的停止、排空和替换，以及观察异常结束。 | 队列分配或应用 position。 |
 | `Receive/LitePullBuffer` | 共享 FIFO 投递缓存，并对等待 `PollAsync` 的已解码 batch 执行条数和字节数的原子准入。 | 进行中的 Broker 请求、Broker offset 或 assignment 策略。 |
 | `Receive/LitePullDeliveryState` | 在同一把锁的保护下维护 assignment generation 及其 queue/filter target、共享 buffer、fetch/delivered position、seek/pause 状态和可提交快照。 | Broker I/O 或定时调度。 |
@@ -245,7 +248,9 @@ Java LitePull 会在 PULL 前检查全局 request cache，以及每队列的条�
 `GetCommittedOffsetAsync` 这类需要调用 engine 的查询也使用同一入口和 run cancellation，不能比它所依赖的 engine
 generation 的生命周期更长。assignment 与订阅变更则继续由外层 lifecycle gate 串行化。关闭时先封闭两个操作入口，取消
 Broker receive 与仍在等待的 poll，再等已经进入的操作退出。这样，最终快照生成后不会再出现新的 delivered
-position 或 receiver generation。
+position 或 receiver generation。调用方取消后，`StopAsync` 会立即停止等待并返回取消，但不会遗弃清理工作；同一个
+shutdown task 会在后台继续排空已准入操作、提交 offset、注销、停止 engine 并释放 run。后续 `StartAsync` 或
+`DisposeAsync` 必须先观察并等待这项清理，不能并行复用或释放该角色独占的 engine。
 
 仅当启用 `EnableAutoCommit` 时，关闭流程才会在注销 group membership 前，对最终 delivered-position 快照执行一次
 best-effort 提交。手动提交模式不会因为 Consumer 停止就推进 Broker offset；只有已经交给 `CommitAsync` 的位置才会

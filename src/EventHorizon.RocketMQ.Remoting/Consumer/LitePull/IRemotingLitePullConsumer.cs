@@ -41,6 +41,10 @@ public interface IRemotingLitePullConsumer : IAsyncDisposable
     /// </summary>
     /// <param name="cancellationToken">The token used to cancel the operation.</param>
     /// <returns>A value task that represents the asynchronous stop operation.</returns>
+    /// <remarks>
+    /// Canceling the wait does not abandon shutdown. Cleanup continues in the background, and a later start or dispose
+    /// waits for that cleanup before using the consumer engine again.
+    /// </remarks>
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

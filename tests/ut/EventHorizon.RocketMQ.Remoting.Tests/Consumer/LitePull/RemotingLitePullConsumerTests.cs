@@ -513,6 +513,61 @@ public sealed class RemotingLitePullConsumerTests
     }
 
     [Fact]
+    public async Task StopAsync_NonCooperativeAdmittedOperationAndCallerCancels_ReturnsCancellationAndEventuallyCleansUp()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseQuery = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var getOffsetCalls = 0;
+        var engine = new ScriptedConsumerEngine
+        {
+            GetOffsetHandler = async (_, token) =>
+            {
+                if (Interlocked.Increment(ref getOffsetCalls) == 1)
+                {
+                    return 0;
+                }
+
+                queryStarted.TrySetResult();
+                using var registration = token.Register(() => queryCancellationRequested.TrySetResult());
+                return await releaseQuery.Task.ConfigureAwait(false);
+            }
+        };
+        var consumer = CreateConsumer(NewOptions(), engine);
+
+        try
+        {
+            await consumer.StartAsync(cancellationToken);
+            await consumer.AssignAsync([queue], cancellationToken: cancellationToken);
+            var query = consumer.GetCommittedOffsetAsync(queue, cancellationToken);
+            await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+
+            using var stopCancellation = new CancellationTokenSource();
+            var stop = consumer.StopAsync(stopCancellation.Token).AsTask();
+            await queryCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+            stopCancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                stop.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken));
+            Assert.Equal(0, engine.StopCount);
+
+            releaseQuery.TrySetResult(5);
+            Assert.Equal(5, await query);
+            await WaitUntilAsync(
+                () => engine.StopCount == 1,
+                "eventual Lite Pull engine cleanup",
+                cancellationToken);
+        }
+        finally
+        {
+            releaseQuery.TrySetResult(5);
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task GetCommittedOffsetAsync_StopBegins_CancelsQueryBeforeEngineStops()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -733,6 +788,61 @@ public sealed class RemotingLitePullConsumerTests
         var message = Assert.Single(messages);
         Assert.Equal("replacement", message.MessageId);
         Assert.Equal(replacementQueue.QueueId, message.QueueId);
+    }
+
+    [Fact]
+    public async Task AssignAsync_AutoCommitEnabledAndQueueIsRevoked_CommitsDeliveredPositionAfterReceiverDrain()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var revokedQueue = Queue(0);
+        var replacementQueue = Queue(1);
+        var options = NewOptions();
+        options.EnableAutoCommit = true;
+        options.AutoCommitInterval = TimeSpan.FromDays(1);
+        var engine = new ScriptedConsumerEngine
+        {
+            PullHandler = (queue, offset, _, token) => queue == revokedQueue && offset == 0
+                ? Task.FromResult(Found(Message(queue, offset), 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(options, engine);
+        await consumer.StartAsync(cancellationToken);
+        await consumer.AssignAsync([revokedQueue], cancellationToken: cancellationToken);
+        Assert.Single(await consumer.PollAsync(TimeSpan.FromSeconds(1), cancellationToken));
+
+        await consumer.AssignAsync([replacementQueue], cancellationToken: cancellationToken);
+
+        var revokedCommit = Assert.Single(engine.OffsetUpdates, update => update.Queue == revokedQueue);
+        Assert.Equal(1, revokedCommit.Offset);
+    }
+
+    [Fact]
+    public async Task UnsubscribeAsync_AutoCommitEnabledAfterDelivery_CommitsRevokedQueuePosition()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var options = NewOptions();
+        options.EnableAutoCommit = true;
+        options.AutoCommitInterval = TimeSpan.FromDays(1);
+        options.Subscribe(queue.Topic);
+        var engine = new ScriptedConsumerEngine
+        {
+            GetMessageQueuesHandler = (_, _) =>
+                Task.FromResult<IReadOnlyList<RemotingConsumerQueue>>([queue]),
+            PullHandler = (value, offset, _, token) => offset == 0
+                ? Task.FromResult(Found(Message(value, offset), 1))
+                : WaitForPullCancellationAsync(offset, token)
+        };
+
+        await using var consumer = CreateConsumer(options, engine);
+        await consumer.StartAsync(cancellationToken);
+        Assert.Single(await consumer.PollAsync(TimeSpan.FromSeconds(1), cancellationToken));
+
+        await consumer.UnsubscribeAsync(queue.Topic, cancellationToken);
+
+        var revokedCommit = Assert.Single(engine.OffsetUpdates, update => update.Queue == queue);
+        Assert.Equal(1, revokedCommit.Offset);
     }
 
     [Fact]

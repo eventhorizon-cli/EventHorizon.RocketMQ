@@ -33,6 +33,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
     private readonly bool _hasLocalGroupPeer;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private RemotingLitePullConsumerRun? _run;
+    private Task _shutdownTask = Task.CompletedTask;
     private int _disposed;
 
     public RemotingLitePullConsumer(
@@ -109,6 +110,7 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
                 return;
             }
 
+            await _shutdownTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             _run = await _runLifecycle.StartAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -123,13 +125,13 @@ internal sealed class RemotingLitePullConsumer : IRemotingLitePullConsumer
         try
         {
             var run = _run;
-            if (run is null)
+            if (run is not null)
             {
-                return;
+                _run = null;
+                _shutdownTask = _runLifecycle.ShutdownAsync(run);
             }
 
-            _run = null;
-            await _runLifecycle.ShutdownAsync(run).ConfigureAwait(false);
+            await _shutdownTask.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {

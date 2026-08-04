@@ -53,6 +53,11 @@ internal sealed class LitePullAssignmentReconciler
         using var operation = await run.OperationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
         var changes = run.DeliveryState.ApplyDesiredTargets(desiredTargets);
         await LitePullReceiverRegistry.AwaitAsync(changes.Removed).ConfigureAwait(false);
+        if (_options.EnableAutoCommit)
+        {
+            await CommitRevokedPositionsAsync(changes.Revoked).ConfigureAwait(false);
+        }
+
         if (!run.OperationGate.IsOpen)
         {
             return;
@@ -75,6 +80,31 @@ internal sealed class LitePullAssignmentReconciler
             if (state is not null)
             {
                 StartReceiver(run, state);
+            }
+        }
+    }
+
+    private async Task CommitRevokedPositionsAsync(IReadOnlyCollection<LitePullQueueState> revoked)
+    {
+        foreach (var state in revoked)
+        {
+            try
+            {
+                await _offsetClient.UpdateOffsetAsync(
+                    state.Queue,
+                    state.DeliveredOffset,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Unable to commit the revoked legacy Lite Pull position for group {GroupName} and " +
+                    "{Topic}/{BrokerName}/{QueueId}",
+                    _options.GroupName,
+                    state.Queue.Topic,
+                    state.Queue.BrokerName,
+                    state.Queue.QueueId);
             }
         }
     }

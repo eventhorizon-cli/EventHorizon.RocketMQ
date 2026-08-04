@@ -205,7 +205,11 @@ The revised LitePull contract has these properties:
   and their filters remain the desired state until replaced; every manual-mode heartbeat and queue/filter receive target
   uses the corresponding filter.
 - `EnableAutoCommit` defaults to `true`; `AutoCommitInterval` defaults to five seconds. Automatic and explicit commits
-  persist delivered positions only, never fetch positions.
+  persist delivered positions only, never fetch positions. When auto commit is enabled, assignment reconciliation
+  retains each revoked queue state through receiver drain and persists its delivered position before completing
+  reconciliation. This follows
+  Java LitePull's
+  [`removeUnnecessaryMessageQueue`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/RebalanceLitePullImpl.java#L60-L65).
 - Route refresh, known-Broker heartbeat, and assignment reconciliation are failure-isolated. A NameServer failure does
   not suppress heartbeats to Brokers that are still reachable.
 
@@ -222,7 +226,7 @@ Like Push, one LitePull start creates per-run collaborators rather than growing 
 | Root `RemotingLitePullConsumerRun` | One started generation, operation admission, cancellation, and references to that generation's owned collaborators. | Public configuration or cross-generation mutable state. |
 | `Assignment/LitePullSubscriptionState` | The subscription or manual-assignment intent, per-topic filters, and the subscription version as one serialized snapshot. | Route lookup, queue allocation, or receiver startup. |
 | `Assignment/LitePullAssignmentCoordinator` | Route refresh, group membership, client allocation, heartbeat preparation, and desired queue/filter receive targets. | Receiver generations, local buffering, or offset advancement. |
-| `Assignment/LitePullAssignmentReconciler` | Diffing desired and current queue/filter targets, stopping and draining removed generations, initializing offsets, and starting missing generations with their target filters. | Allocation policy or heartbeat contents. |
+| `Assignment/LitePullAssignmentReconciler` | Diffing desired and current queue/filter targets, stopping and draining removed generations, committing revoked delivered positions when auto commit is enabled, initializing offsets, and starting missing generations with their target filters. | Allocation policy or heartbeat contents. |
 | `Receive/LitePullReceiverRegistry` | One generation-aware receiver per assigned queue/filter target, stop-drain-replace transitions that preserve target filters, and observation of unexpected completion. | Queue allocation or application positions. |
 | `Receive/LitePullBuffer` | Shared FIFO delivery storage and atomic count-and-byte admission for decoded batches awaiting `PollAsync`. | In-flight Broker requests, Broker offsets, or assignment policy. |
 | `Receive/LitePullDeliveryState` | Under one lock, maintains assignment generations and their queue/filter targets, shared buffer, fetch and delivered positions, seek/pause state, and committable snapshots. | Broker I/O or timer scheduling. |
@@ -274,7 +278,9 @@ run's operation gate. Engine-backed queries such as `GetCommittedOffsetAsync` us
 cancellation so they cannot outlive the engine generation they call. Assignment and subscription changes remain
 serialized by the outer lifecycle gate. Shutdown first closes both admission paths, cancels Broker receives and
 waiting polls, and drains operations that were already admitted, so no delivered position or receiver generation can
-appear after the final snapshot.
+appear after the final snapshot. Caller cancellation stops waiting for shutdown promptly but does not abandon the
+cleanup: the same shutdown task continues to drain admitted work, commit, unregister, stop the engine, and dispose the
+run. A later `StartAsync` or `DisposeAsync` observes that task before it can reuse or dispose the role-owned engine.
 
 When `EnableAutoCommit` is enabled, shutdown then makes one best-effort final commit of that delivered-position
 snapshot before unregistering group membership. Manual-commit mode never advances the Broker offset merely because

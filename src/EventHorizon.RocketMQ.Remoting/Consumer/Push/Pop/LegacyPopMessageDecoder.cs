@@ -34,7 +34,6 @@ internal static class LegacyPopMessageDecoder
     public static RemotingPopResult Decode(
         RemotingCommand response,
         RemotingPushAssignment assignment,
-        string brokerAddress,
         string? @namespace)
     {
         ArgumentNullException.ThrowIfNull(assignment);
@@ -48,14 +47,12 @@ internal static class LegacyPopMessageDecoder
             assignment.Topic,
             assignment.BrokerName,
             assignment.QueueId,
-            brokerAddress,
             @namespace);
     }
 
     public static RemotingPopResult Decode(
         RemotingCommand response,
         RemotingConsumerQueue queue,
-        string brokerAddress,
         string? @namespace)
     {
         ArgumentNullException.ThrowIfNull(queue);
@@ -64,7 +61,6 @@ internal static class LegacyPopMessageDecoder
             queue.Topic,
             queue.BrokerName,
             queue.QueueId,
-            brokerAddress,
             @namespace);
     }
 
@@ -73,13 +69,11 @@ internal static class LegacyPopMessageDecoder
         string topic,
         string brokerName,
         int requestedQueueId,
-        string brokerAddress,
         string? @namespace)
     {
         ArgumentNullException.ThrowIfNull(response);
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
 
         var restNum = GetRestNum(response);
         return response.Code switch
@@ -91,7 +85,6 @@ internal static class LegacyPopMessageDecoder
                         topic,
                         brokerName,
                         requestedQueueId,
-                        brokerAddress,
                         response.ExtFields)
                     : Array.Empty<RemotingPopMessage>(),
                 RemotingPopStatus.Found,
@@ -112,8 +105,7 @@ internal static class LegacyPopMessageDecoder
 
     public static IReadOnlyList<RemotingPopMessage> DecodeMessages(
         IReadOnlyList<RemotingMessageView> messages,
-        RemotingConsumerQueue queue,
-        string brokerAddress)
+        RemotingConsumerQueue queue)
     {
         ArgumentNullException.ThrowIfNull(queue);
         return DecodeMessages(
@@ -121,7 +113,6 @@ internal static class LegacyPopMessageDecoder
             queue.Topic,
             queue.BrokerName,
             queue.QueueId,
-            brokerAddress,
             responseFields: null);
     }
 
@@ -130,11 +121,9 @@ internal static class LegacyPopMessageDecoder
         string topic,
         string brokerName,
         int requestedQueueId,
-        string brokerAddress,
         IReadOnlyDictionary<string, object>? responseFields)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
         if (messages.Count == 0)
         {
             return Array.Empty<RemotingPopMessage>();
@@ -160,7 +149,7 @@ internal static class LegacyPopMessageDecoder
 
                 result[index] = new RemotingPopMessage(
                     message,
-                    DecodeReceipt(message, brokerAddress, extraInfo));
+                    DecodeReceipt(message, extraInfo));
                 continue;
             }
 
@@ -173,7 +162,7 @@ internal static class LegacyPopMessageDecoder
             var receiptOffset = receiptOffsets[index];
             result[index] = new RemotingPopMessage(
                 message,
-                SynthesizeReceipt(message, brokerAddress, responseFields, receiptOffset));
+                SynthesizeReceipt(message, responseFields, receiptOffset));
         }
 
         return Array.AsReadOnly(result);
@@ -181,8 +170,7 @@ internal static class LegacyPopMessageDecoder
 
     public static RemotingPopMessage DecodeMessage(
         RemotingMessageView message,
-        RemotingConsumerQueue queue,
-        string brokerAddress)
+        RemotingConsumerQueue queue)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(queue);
@@ -191,14 +179,12 @@ internal static class LegacyPopMessageDecoder
             queue.Topic,
             queue.BrokerName,
             queue.QueueId,
-            brokerAddress,
             responseFields: null);
         return messages[0];
     }
 
     private static RemotingPopReceipt SynthesizeReceipt(
         RemotingMessageView message,
-        string brokerAddress,
         IReadOnlyDictionary<string, object> responseFields,
         ReceiptOffset receiptOffset)
     {
@@ -229,7 +215,6 @@ internal static class LegacyPopMessageDecoder
             return new RemotingPopReceipt(
                 message.Topic,
                 brokerName,
-                brokerAddress,
                 message.QueueId,
                 receiptOffset.CheckpointOffset,
                 message.QueueOffset,
@@ -505,7 +490,6 @@ internal static class LegacyPopMessageDecoder
 
     private static RemotingPopReceipt DecodeReceipt(
         RemotingMessageView message,
-        string brokerAddress,
         string extraInfo)
     {
         var fields = extraInfo.Split(' ', StringSplitOptions.None);
@@ -551,7 +535,6 @@ internal static class LegacyPopMessageDecoder
             return new RemotingPopReceipt(
                 message.Topic,
                 brokerName,
-                brokerAddress,
                 queueId,
                 checkpointOffset,
                 queueOffset,

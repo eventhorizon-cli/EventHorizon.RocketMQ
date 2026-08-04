@@ -70,11 +70,36 @@ internal sealed class RemotingConsumerRouteResolver
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
+        return await ResolveBrokerAsync(
+            queue.Topic,
+            queue.BrokerName,
+            queue,
+            useSuggestedBroker,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<RemotingBrokerEndpoint> ResolveBrokerAsync(
+        string topic,
+        string brokerName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ArgumentException.ThrowIfNullOrWhiteSpace(brokerName);
+        return ResolveBrokerAsync(topic, brokerName, queue: null, useSuggestedBroker: false, cancellationToken);
+    }
+
+    private async Task<RemotingBrokerEndpoint> ResolveBrokerAsync(
+        string topic,
+        string brokerName,
+        RemotingConsumerQueue? queue,
+        bool useSuggestedBroker,
+        CancellationToken cancellationToken)
+    {
         RemotingConsumerRouteSnapshot? currentRoute = null;
         Exception? refreshException = null;
         try
         {
-            currentRoute = await RefreshAsync(queue.Topic, cancellationToken).ConfigureAwait(false);
+            currentRoute = await RefreshAsync(topic, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -88,12 +113,12 @@ internal sealed class RemotingConsumerRouteResolver
         IReadOnlyDictionary<long, string>? addresses = null;
         if (currentRoute is not null)
         {
-            currentRoute.TryGetBrokerAddresses(queue.BrokerName, out addresses!);
+            currentRoute.TryGetBrokerAddresses(brokerName, out addresses!);
         }
 
         if (addresses is null)
         {
-            _lastBrokerRoutes.TryGetValue(queue.BrokerName, out addresses);
+            _lastBrokerRoutes.TryGetValue(brokerName, out addresses);
         }
 
         if (addresses is null)
@@ -104,11 +129,11 @@ internal sealed class RemotingConsumerRouteResolver
             }
 
             throw new InvalidOperationException(
-                $"No current or previously resolved route for topic '{queue.Topic}' contains Broker '{queue.BrokerName}'.");
+                $"No current or previously resolved route for topic '{topic}' contains Broker '{brokerName}'.");
         }
 
-        var address = SelectAddress(queue, addresses, useSuggestedBroker);
-        return new RemotingBrokerEndpoint(queue.BrokerName, address);
+        var address = SelectAddress(addresses, queue, useSuggestedBroker);
+        return new RemotingBrokerEndpoint(brokerName, address);
     }
 
     public void RecordSuggestedBrokerId(RemotingConsumerQueue queue, long brokerId)
@@ -149,11 +174,12 @@ internal sealed class RemotingConsumerRouteResolver
     }
 
     private string SelectAddress(
-        RemotingConsumerQueue queue,
         IReadOnlyDictionary<long, string> addresses,
+        RemotingConsumerQueue? queue,
         bool useSuggestedBroker)
     {
         if (useSuggestedBroker &&
+            queue is not null &&
             _suggestedBrokerIds.TryGetValue(queue, out var brokerId) &&
             addresses.TryGetValue(brokerId, out var suggested))
         {

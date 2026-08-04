@@ -84,7 +84,6 @@ internal sealed class PopAssignmentReceiver : IRemotingPushReceiver
             {
                 var result = await _popClient.PopAsync(
                     Assignment,
-                    Target.Broker.Address,
                     _filter,
                     _stopping.Token).ConfigureAwait(false);
                 var deliveries = result.Messages

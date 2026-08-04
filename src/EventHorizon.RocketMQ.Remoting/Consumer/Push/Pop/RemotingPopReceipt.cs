@@ -25,7 +25,6 @@ internal sealed class RemotingPopReceipt
     internal RemotingPopReceipt(
         string topic,
         string brokerName,
-        string brokerAddress,
         int queueId,
         long checkpointOffset,
         long queueOffset,
@@ -37,7 +36,6 @@ internal sealed class RemotingPopReceipt
     {
         Topic = topic;
         BrokerName = brokerName;
-        BrokerAddress = brokerAddress;
         QueueId = queueId;
         CheckpointOffset = checkpointOffset;
         QueueOffset = queueOffset;
@@ -57,8 +55,6 @@ internal sealed class RemotingPopReceipt
     /// Gets the broker that issued the receipt.
     /// </summary>
     public string BrokerName { get; }
-
-    internal string BrokerAddress { get; }
 
     /// <summary>
     /// Gets the physical queue identifier.
@@ -130,7 +126,6 @@ internal sealed class RemotingPopReceipt
         return new RemotingPopReceipt(
             Topic,
             BrokerName,
-            BrokerAddress,
             QueueId,
             checkpointOffset,
             QueueOffset,

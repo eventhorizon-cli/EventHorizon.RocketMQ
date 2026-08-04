@@ -16,6 +16,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
+using EventHorizon.RocketMQ.Remoting.Consumer.Route;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
@@ -26,6 +27,7 @@ internal sealed class PopWireClient
 {
     private readonly RemotingPushConsumerOptions _options;
     private readonly RemotingClientOptions _clientOptions;
+    private readonly RemotingConsumerRouteResolver _routes;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
     private readonly IRemotingRocketMQTelemetry _telemetry;
@@ -33,12 +35,14 @@ internal sealed class PopWireClient
     public PopWireClient(
         RemotingPushConsumerOptions options,
         RemotingClientOptions clientOptions,
+        RemotingConsumerRouteResolver routes,
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
         IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options;
         _clientOptions = clientOptions;
+        _routes = routes;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
         _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
@@ -46,12 +50,10 @@ internal sealed class PopWireClient
 
     public async Task<RemotingPopResult> PopAsync(
         RemotingPushAssignment assignment,
-        string brokerAddress,
         FilterExpression filter,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(assignment);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
         ArgumentNullException.ThrowIfNull(filter);
 
         var parentContext = Activity.Current?.Context;
@@ -59,8 +61,12 @@ internal sealed class PopWireClient
         var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                assignment.Topic,
+                assignment.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(brokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.PopMessage, new PopMessageRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),
@@ -84,7 +90,6 @@ internal sealed class PopWireClient
             var result = LegacyPopMessageDecoder.Decode(
                 response,
                 assignment,
-                brokerAddress,
                 _clientOptions.Namespace);
             using var telemetry = _telemetry.StartReceive(
                 assignment.Topic,
@@ -139,8 +144,12 @@ internal sealed class PopWireClient
             message.Properties);
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                receipt.Topic,
+                receipt.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(receipt.BrokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.AckMessage, new AckMessageRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),
@@ -181,8 +190,12 @@ internal sealed class PopWireClient
             message.Properties);
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                receipt.Topic,
+                receipt.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(receipt.BrokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.ChangeMessageInvisibleTime, new ChangeInvisibleTimeRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),

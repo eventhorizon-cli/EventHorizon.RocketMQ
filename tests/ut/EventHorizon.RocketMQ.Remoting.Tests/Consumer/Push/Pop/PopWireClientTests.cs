@@ -19,8 +19,11 @@ using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
+using EventHorizon.RocketMQ.Remoting.Consumer.Route;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
+using EventHorizon.RocketMQ.Remoting.Protocol.Route;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -28,6 +31,44 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push.Pop;
 
 public sealed class PopWireClientTests
 {
+    [Fact]
+    public async Task PopAsync_RouteChangesBetweenRequests_UsesCurrentBrokerAddress()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var ports = new List<int>();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request =>
+                    request.Code == RequestCode.PopMessage &&
+                    Equals(request.ExtFields["bname"], "broker-a") &&
+                    Equals(request.ExtFields["queueId"], -1)),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<EndPoint, RemotingCommand, TimeSpan, CancellationToken>(
+                (endpoint, _, _, _) => ports.Add(GetPort(endpoint)))
+            .ReturnsAsync(new RemotingCommand { Code = ResponseCodes.ResPollingTimeout });
+        var operation = CreateOperation();
+        var telemetry = CreateReceiveTelemetry(operation);
+        var client = CreateClient(
+            remoting.Object,
+            telemetry.Object,
+            "127.0.0.1:10911",
+            "127.0.0.1:20911");
+
+        await client.PopAsync(
+            CreateAssignment(),
+            FilterExpression.All,
+            cancellationToken);
+        await client.PopAsync(
+            CreateAssignment(),
+            FilterExpression.All,
+            cancellationToken);
+
+        Assert.Equal([10911, 20911], ports);
+    }
+
     [Fact]
     public async Task PopAsync_BrokerReturnsNoMessages_RecordsEmptyReceiveWithoutSpan()
     {
@@ -58,7 +99,6 @@ public sealed class PopWireClientTests
 
         var result = await client.PopAsync(
             CreateAssignment(),
-            "127.0.0.1:10911",
             FilterExpression.All,
             cancellationToken);
 
@@ -98,7 +138,26 @@ public sealed class PopWireClientTests
 
         var exception = await Assert.ThrowsAsync<IOException>(() => client.PopAsync(
             CreateAssignment(),
-            "127.0.0.1:10911",
+            FilterExpression.All,
+            cancellationToken));
+
+        Assert.Same(failure, exception);
+        operation.Verify(value => value.Complete(failure), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task PopAsync_RouteResolutionFails_RecordsReceiveFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var failure = new IOException("Route resolution failed.");
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        var operation = CreateOperation();
+        var telemetry = CreateReceiveTelemetry(operation, createActivity: true);
+        var client = CreateClient(remoting.Object, telemetry.Object, CreateFailedRouteService(failure).Object);
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => client.PopAsync(
+            CreateAssignment(),
             FilterExpression.All,
             cancellationToken));
 
@@ -143,6 +202,57 @@ public sealed class PopWireClientTests
 
         operation.Verify(value => value.Complete(), Times.Once);
         operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task ChangeInvisibleTimeAsync_RouteChangesBetweenRequests_UsesCurrentBrokerAddressAndReceiptHeader()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var ports = new List<int>();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request =>
+                    request.Code == RequestCode.ChangeMessageInvisibleTime &&
+                    Equals(request.ExtFields["bname"], "broker-a") &&
+                    Equals(request.ExtFields["queueId"], 3) &&
+                    Equals(request.ExtFields["offset"], 42L) &&
+                    Equals(request.ExtFields["extraInfo"], "40 1700000000000 5000 2 0 broker-a 3 42")),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<EndPoint, RemotingCommand, TimeSpan, CancellationToken>(
+                (endpoint, _, _, _) => ports.Add(GetPort(endpoint)))
+            .ReturnsAsync(new RemotingCommand
+            {
+                Code = ResponseCodes.ResSuccess,
+                ExtFields = new Dictionary<string, object>
+                {
+                    ["popTime"] = "1700000001000",
+                    ["invisibleTime"] = "5000",
+                    ["reviveQid"] = "3"
+                }
+            });
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "nack");
+        var client = CreateClient(
+            remoting.Object,
+            telemetry.Object,
+            "127.0.0.1:10911",
+            "127.0.0.1:20911");
+
+        await client.ChangeInvisibleTimeAsync(
+            CreateReceipt(),
+            TimeSpan.FromSeconds(5),
+            CreateMessage(),
+            cancellationToken);
+        await client.ChangeInvisibleTimeAsync(
+            CreateReceipt(),
+            TimeSpan.FromSeconds(5),
+            CreateMessage(),
+            cancellationToken);
+
+        Assert.Equal([10911, 20911], ports);
     }
 
     [Fact]
@@ -198,6 +308,40 @@ public sealed class PopWireClientTests
     }
 
     [Fact]
+    public async Task AcknowledgeAsync_RouteChangesBetweenRequests_UsesCurrentBrokerAddressAndReceiptHeader()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var ports = new List<int>();
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request =>
+                    request.Code == RequestCode.AckMessage &&
+                    Equals(request.ExtFields["bname"], "broker-a") &&
+                    Equals(request.ExtFields["queueId"], 3) &&
+                    Equals(request.ExtFields["offset"], 42L) &&
+                    Equals(request.ExtFields["extraInfo"], "40 1700000000000 5000 2 0 broker-a 3 42")),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<EndPoint, RemotingCommand, TimeSpan, CancellationToken>(
+                (endpoint, _, _, _) => ports.Add(GetPort(endpoint)))
+            .ReturnsAsync(new RemotingCommand { Code = ResponseCodes.ResSuccess });
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "ack");
+        var client = CreateClient(
+            remoting.Object,
+            telemetry.Object,
+            "127.0.0.1:10911",
+            "127.0.0.1:20911");
+
+        await client.AcknowledgeAsync(CreateReceipt(), CreateMessage(), cancellationToken);
+        await client.AcknowledgeAsync(CreateReceipt(), CreateMessage(), cancellationToken);
+
+        Assert.Equal([10911, 20911], ports);
+    }
+
+    [Fact]
     public async Task AcknowledgeAsync_RemotingCallFails_RecordsSettlementFailure()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -218,6 +362,26 @@ public sealed class PopWireClientTests
         var exception = await Assert.ThrowsAsync<IOException>(() => client.AcknowledgeAsync(
             CreateReceipt(),
             message,
+            cancellationToken));
+
+        Assert.Same(failure, exception);
+        operation.Verify(value => value.Complete(failure), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcknowledgeAsync_RouteResolutionFails_RecordsSettlementFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var failure = new IOException("Route resolution failed.");
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "ack");
+        var client = CreateClient(remoting.Object, telemetry.Object, CreateFailedRouteService(failure).Object);
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => client.AcknowledgeAsync(
+            CreateReceipt(),
+            CreateMessage(),
             cancellationToken));
 
         Assert.Same(failure, exception);
@@ -255,7 +419,18 @@ public sealed class PopWireClientTests
 
     private static PopWireClient CreateClient(
         IRemotingClient remoting,
-        IRemotingRocketMQTelemetry telemetry) =>
+        IRemotingRocketMQTelemetry telemetry,
+        params string[] brokerAddresses) =>
+        CreateClient(
+            remoting,
+            telemetry,
+            CreateRouteService(
+                brokerAddresses.Length == 0 ? ["127.0.0.1:10911"] : brokerAddresses).Object);
+
+    private static PopWireClient CreateClient(
+        IRemotingClient remoting,
+        IRemotingRocketMQTelemetry telemetry,
+        ITopicRouteService routes) =>
         new(
             new RemotingPushConsumerOptions
             {
@@ -266,9 +441,77 @@ public sealed class PopWireClientTests
                 LongPollingTimeout = TimeSpan.FromSeconds(1)
             },
             new RemotingClientOptions { RequestTimeout = TimeSpan.FromSeconds(1) },
+            new RemotingConsumerRouteResolver(
+                Options.Create(new RemotingClientOptions()),
+                routes),
             remoting,
             TimeProvider.System,
             telemetry);
+
+    private static Mock<ITopicRouteService> CreateRouteService(params string[] brokerAddresses)
+    {
+        var remainingAddresses = new Queue<string>(brokerAddresses);
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                "orders",
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                var broker = new BrokerData { BrokerName = "broker-a" };
+                broker.BrokerAddrs[0] = remainingAddresses.Count > 1
+                    ? remainingAddresses.Dequeue()
+                    : remainingAddresses.Peek();
+                return Task.FromResult(new TopicRouteData
+                {
+                    QueueDatas =
+                    [
+                        new QueueData
+                        {
+                            BrokerName = "broker-a",
+                            ReadQueueNums = 1,
+                            WriteQueueNums = 1,
+                            Perm = 6
+                        }
+                    ],
+                    BrokerDatas = [broker]
+                });
+            });
+        return routes;
+    }
+
+    private static Mock<ITopicRouteService> CreateFailedRouteService(Exception failure)
+    {
+        var routes = new Mock<ITopicRouteService>(MockBehavior.Strict);
+        routes
+            .Setup(value => value.GetAsync(
+                "orders",
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(failure);
+        return routes;
+    }
+
+    private static Mock<IRemotingRocketMQTelemetry> CreateReceiveTelemetry(
+        Mock<IRemotingRocketMQTelemetryOperation> operation,
+        bool createActivity = false)
+    {
+        var telemetry = new Mock<IRemotingRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartReceive(
+                "orders",
+                "orders-consumer",
+                0,
+                It.IsAny<ActivityContext?>(),
+                It.IsAny<DateTimeOffset>(),
+                It.IsAny<long>(),
+                null,
+                createActivity,
+                It.IsAny<IEnumerable<IReadOnlyDictionary<string, string>>?>()))
+            .Returns(operation.Object);
+        return telemetry;
+    }
 
     private static RemotingPushAssignment CreateAssignment() => new(
         "orders",
@@ -280,7 +523,6 @@ public sealed class PopWireClientTests
     private static RemotingPopReceipt CreateReceipt() => new(
         "orders",
         "broker-a",
-        "127.0.0.1:10911",
         3,
         40,
         42,
@@ -332,4 +574,6 @@ public sealed class PopWireClientTests
         operation.Setup(value => value.Dispose());
         return operation;
     }
+
+    private static int GetPort(EndPoint endpoint) => Assert.IsType<IPEndPoint>(endpoint).Port;
 }

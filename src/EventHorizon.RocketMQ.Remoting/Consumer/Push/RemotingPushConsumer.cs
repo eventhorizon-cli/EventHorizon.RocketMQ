@@ -73,6 +73,7 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         var popClient = new PopWireClient(
             _options,
             resolvedClientOptions,
+            routes,
             remotingClient,
             timeProvider,
             resolvedTelemetry);

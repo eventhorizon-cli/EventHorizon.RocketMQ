@@ -81,9 +81,10 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 | Consumer 完结操作 | 确认、负确认和转发死信。 | LitePull 与 Push PULL 位点提交、重试/死信 send-back，以及 Push 内部 POP 确认和不可见时间变更。 |
 
 对于 gRPC，`ReceiveMessageRequest.AutoRenew` 请求的 Proxy 托管续约不是独立的客户端 wire operation，不能创建客户端
-settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：handler 活跃期间或 SimpleConsumer
-延长租期使用 `renew`，安排重试使用 `nack`。如果 Proxy 自动续约与客户端续期循环同时存在，或续约与重试记录为相同
-settlement outcome，gRPC 续约 owner 的职责仍未明确收敛。
+settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：SimpleConsumer 显式延长租期使用
+`renew`；Push 或 LitePush 因重试结果、handler 超时或消息损坏而安排重新投递时使用 `nack`。共享接收引擎必须保留
+这两种内部操作的意图区分，即使它们最终使用同一个 RPC。Proxy 托管的 handler 续期不会在客户端重复创建定时器、
+span 或 metric。
 
 classic Remoting 的埋点归属应跟随实际 wire operation。`PullWireClient` 负责记录并完成非空、空结果、取消与失败 PULL 的
 receive 埋点；`RemotingConsumerOffsetClient` 负责 commit settlement；`RemotingSettlementClient` 负责 PULL 重试与

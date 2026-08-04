@@ -17,8 +17,8 @@ Use this pattern only when the application owns a non-Generic-Host lifetime, for
 existing process host. A normal .NET Generic Host should use the [companion Host sample](../../GenericHost/PushConsumer/README.md): its `RunAsync`
 invokes the SDK's registered lifecycle service, so application code must not call `StartAsync` or `StopAsync` again.
 
-The consumer itself still owns assignment polling, long-poll receives, handler concurrency, acknowledgement, retry,
-and dead-letter settlement. The scoped handler returns `Success` only after its sample processing completes.
+The consumer itself still owns assignment polling, long-poll receives, handler concurrency, acknowledgement, and
+failure settlement. The scoped handler returns `Success` only after its sample processing completes.
 
 ## Run the sample
 
@@ -34,8 +34,7 @@ Use the [non-Host gRPC Producer sample](../Producer/README.md) to send the messa
 shutdown; the sample calls `StopAsync` even when startup is cancelled or fails part-way through.
 
 The default Proxy endpoint is `localhost:8081`. External deployments must expose a RocketMQ 5 Proxy, create
-`eventhorizon-test-topic`, and grant route-query and consume permissions, including retry and dead-letter access when
-those outcomes are enabled. Standard .NET configuration overrides apply, such as
+`eventhorizon-test-topic`, and grant route-query and consume permissions. Standard .NET configuration overrides apply, such as
 `RocketMQ__Client__Endpoint=proxy.example:8081`.
 
 See the [gRPC protocol guide](../../../../src/EventHorizon.RocketMQ.Grpc/README.md) for the complete API and delivery

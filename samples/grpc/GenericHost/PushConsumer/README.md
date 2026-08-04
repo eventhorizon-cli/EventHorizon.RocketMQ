@@ -9,7 +9,7 @@ application API: the Broker does not open a server-initiated connection to the a
 ## When to use it
 
 Use PushConsumer when message processing naturally fits a handler and the SDK should own the receive loops,
-backpressure, concurrency, invisibility renewal, and settlement calls. It is usually the simpler choice for continuously
+backpressure, concurrency, Proxy renewal requests, and settlement calls. It is usually the simpler choice for continuously
 running services whose handler can return one delivery outcome per message.
 
 Use `IGrpcSimpleConsumer` when the application must choose when to receive, control batches directly, or coordinate
@@ -63,17 +63,17 @@ Each handler result asks the consumer to perform a specific settlement operation
 | Result | SDK action |
 | --- | --- |
 | `ConsumeResult.Success` | Acknowledge the message. Return it only after the business effect is durable. |
-| `ConsumeResult.Retry` | Make the message eligible for another attempt according to the effective retry policy. |
-| `ConsumeResult.DeadLetter` | Forward the message to the consumer group's dead-letter queue. |
+| `ConsumeResult.Failure` | Let the effective retry policy schedule another delivery. |
 
-An unhandled handler exception is treated as `Retry`. If acknowledgement, retry, or dead-letter completion fails, the
+An unhandled handler exception is treated as `Failure`. If acknowledgement or retry scheduling fails, the
 message may be delivered again. Handlers must therefore be idempotent even when they return `Success`.
 
 Corrupted messages do not reach `IGrpcPushMessageHandler`. A non-FIFO corrupted message is made eligible for retry;
 a corrupted FIFO message is dead-lettered before the next member of its message group is released.
 
-While a handler is active, the client renews message invisibility. For non-FIFO messages, `ConsumeTimeout` bounds how
-long the dispatcher waits: expiry cancels the handler token, stops renewal, requests retry, and ignores a late success.
+Push requests set `AutoRenew=true`, so a compatible Proxy renews the receipt while the handler is active; the .NET
+client does not run a second renewal timer. For non-FIFO messages, `ConsumeTimeout` bounds how long the dispatcher
+waits: expiry cancels the handler token, requests another delivery, and ignores a late success.
 The SDK cannot forcibly stop code that ignores cancellation, so the old invocation can overlap a redelivery. FIFO
 message groups do not use this timeout-detach behavior because releasing the next message could break ordering.
 
@@ -96,9 +96,9 @@ different subscriptions.
 | `MaxConcurrency` | Maximum scheduled handler dispatches. A timed-out handler that ignores cancellation can still remain in process. |
 | `BatchSize` | Maximum messages requested by one receive operation. |
 | `MaxCachedMessages` / `MaxCachedMessageBytes` | Count and body-byte limits for the bounded local message buffer. |
-| `InvisibleDuration` | Initial message invisibility; the client renews it during active processing. |
+| `InvisibleDuration` | Initial message invisibility; a compatible Proxy renews the receipt during active processing. |
 | `ConsumeTimeout` | Maximum non-FIFO handler time before cancellation and retry are requested. |
-| `MaxDeliveryAttempts` / `RetryDelay` | Fallback dead-letter threshold and retry delay when the Proxy does not supply a policy. |
+| `MaxDeliveryAttempts` / `RetryDelay` | Fallback FIFO local-attempt limit and retry delay when the Proxy does not supply a policy. Non-FIFO dead-letter progression remains service-owned. |
 | `LongPollingTimeout` | Maximum server wait for each receive long poll. |
 
 ## Run the sample

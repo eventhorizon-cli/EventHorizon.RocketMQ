@@ -29,12 +29,15 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcPushConsumer_DeadLetterQueue_ForwardsMessage()
+    public async Task GrpcPushConsumer_FifoFailureExhaustsRetries_ForwardsToDeadLetterQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
-        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
-        var consumerGroup = scope.CreateConsumerGroupName("grpc-push-dlq-consumer");
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Fifo, cancellationToken);
+        var consumerGroup = await scope.CreateConsumerGroupAsync(
+            "grpc-push-dlq-consumer",
+            retryMaxTimes: 1,
+            cancellationToken);
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-dlq-{Guid.NewGuid():N}";
         var services = new ServiceCollection();
@@ -45,6 +48,8 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             .AddGrpcPushConsumer<DeadLetterMessageHandler>(ServiceLifetime.Singleton, options =>
             {
                 options.GroupName = consumerGroup;
+                options.MaxDeliveryAttempts = 2;
+                options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.Subscribe(scope.Topic, new FilterExpression("grpc-dlq"));
             });
 
@@ -59,7 +64,8 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
                 scope.Topic,
                 Encoding.UTF8.GetBytes(expected))
             {
-                Tag = "grpc-dlq"
+                Tag = "grpc-dlq",
+                MessageGroup = $"grpc-dlq-{Guid.NewGuid():N}"
             }, cancellationToken);
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
 
@@ -115,7 +121,7 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             if (Encoding.UTF8.GetString(message.Body) == observation.ExpectedBody)
             {
                 observation.Handled.TrySetResult();
-                return ValueTask.FromResult(ConsumeResult.DeadLetter);
+                return ValueTask.FromResult(ConsumeResult.Failure);
             }
 
             return ValueTask.FromResult(ConsumeResult.Success);

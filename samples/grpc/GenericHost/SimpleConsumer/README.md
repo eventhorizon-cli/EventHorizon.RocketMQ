@@ -45,7 +45,6 @@ The public API keeps reception and settlement separate:
 | `ReceiveAsync` | Long-poll the Proxy and return up to the requested number of `GrpcMessageView` values. An empty result is valid. |
 | `AckAsync` | Confirm one message after its business effect is durable. |
 | `ChangeInvisibleDurationAsync` | Replace the current invisibility duration when processing needs more time. |
-| `ForwardToDeadLetterQueueAsync` | Explicitly move a message to the consumer group's dead-letter queue using the supplied delivery-attempt threshold. |
 
 Check `GrpcMessageView.IsCorrupted` before reading the body. A corrupted payload still requires an explicit settlement
 decision; it is not acknowledged automatically by SimpleConsumer.
@@ -57,8 +56,7 @@ stops, or `AckAsync` does not complete successfully, the message can become visi
 duration. Applications must therefore make handlers idempotent and acknowledge only after durable processing.
 
 If work can outlive the current invisibility window, call `ChangeInvisibleDurationAsync` before the window expires.
-Forwarding to the dead-letter queue is also an explicit application decision; an ordinary processing exception does
-not invoke `ForwardToDeadLetterQueueAsync` on the application's behalf.
+If processing cannot complete, leave the message unsettled so it becomes visible again after that window.
 
 Consumer groups own acknowledgement and retry state. Multiple instances using the same group share the work; a
 different group observes the topic independently.

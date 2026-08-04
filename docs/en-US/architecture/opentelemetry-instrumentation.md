@@ -89,9 +89,10 @@ are preserved.
 
 For gRPC, Proxy-managed renewal requested by `ReceiveMessageRequest.AutoRenew` is not a separate client wire operation
 and must not create a client settlement span. A client-issued `ChangeInvisibleDuration` must be classified by intent:
-`renew` for handler-active or SimpleConsumer lease extension, and `nack` for retry scheduling. Consolidating gRPC
-renewal ownership is incomplete if both Proxy auto-renewal and a client renewal loop remain active, or if renewal and
-retry are reported with the same settlement outcome.
+`renew` when SimpleConsumer explicitly extends a lease, and `nack` when Push or LitePush schedules redelivery after a
+retry result, handler timeout, or corrupted message. The shared receive engine keeps these intent-specific internal
+operations separate even though they use the same RPC. Proxy-managed handler renewal creates no duplicate client
+timer, span, or metric.
 
 Classic Remoting instrumentation follows the wire-operation owner. `PullWireClient` owns receive completion for
 non-empty, empty, canceled, and failed PULL operations. `RemotingConsumerOffsetClient` owns commit settlement, while

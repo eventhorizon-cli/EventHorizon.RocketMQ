@@ -38,8 +38,8 @@ using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 | 优先级消息 | `Message.Priority` | 目标端必须支持优先级消息。 |
 | Lite 消息 | `Message.LiteTopic` | 需要 Proxy 和 Broker 提供兼容支持。 |
 | 事务消息 | `IGrpcProducer.SendTransactionAsync` | 在启动前声明事务 topic，并配置事务检查器。 |
-| 显式接收和结算 | `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync`、`AckAsync`、不可见时间和死信 API。 |
-| 自动分发 | `IGrpcPushConsumer` | typed handler 返回 `Success`、`Retry` 或 `DeadLetter`。 |
+| 显式接收和结算 | `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync`、`AckAsync` 和不可见时间 API。 |
+| 自动分发 | `IGrpcPushConsumer` | typed handler 返回 `Success` 或 `Failure`。 |
 | Lite 自动分发 | `IGrpcLitePushConsumer` | 在一个已配置的 bind topic 下分发 `LiteTopics`。 |
 | Tag 和 SQL 过滤器 | `FilterExpression` | SQL 过滤需要匹配的服务端配置。 |
 | 运行时订阅 | `SubscribeAsync` / `UnsubscribeAsync` 及 Lite 等效 API | 由适用的 Consumer 角色支持。 |
@@ -178,14 +178,15 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 ```
 
 调用 `SubscribeAsync` 或 `UnsubscribeAsync` 可在启动后修改订阅。`ReceiveAsync` 既不会确认消息，也不会启用自动续约；
-只有在消息完成持久化处理后才确认。对于长时间运行的处理，需要显式延长不可见时间；应用决定将消息转入死信时，
-调用 `ForwardToDeadLetterQueueAsync`。RocketMQ 5.5.0 Proxy 要求接收长轮询间隔至少为五秒。
+只有在消息完成持久化处理后才确认。对于长时间运行的处理，需要显式延长不可见时间。消息未结算时，会在当前
+不可见时间结束后重新可见。RocketMQ 5.5.0 Proxy 要求接收长轮询间隔至少为五秒。
 
 ## PushConsumer
 
 需要自动接收、分发和结算时，请使用 `IGrpcPushConsumer`。注册 typed
 `IGrpcPushMessageHandler`；如果 handler 使用 scoped 应用服务，适合选择 `Scoped`。
-Push 还会在 handler 执行期间管理消息的不可见时间，应用无需自行续租 receipt。
+Push 会请求 Proxy 在 handler 执行期间托管消息的不可见时间，应用无需自行续租 receipt。目标 Proxy 必须支持并启用
+自动续期；兼容的 RocketMQ 5 Proxy 默认开启 `enableProxyAutoRenew`。
 
 ```csharp
 using System.Text;
@@ -212,16 +213,15 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 }
 ```
 
-返回 `ConsumeResult.Success` 表示确认消息，返回 `Retry` 请求重新投递，返回 `DeadLetter` 将消息转入消费组的
-死信队列。由于可能发生重试和重复投递，handler 应保持幂等。`SubscribeAsync` 和 `UnsubscribeAsync` 可在运行时
-更新普通 Push 订阅。
+返回 `ConsumeResult.Success` 表示确认消息；返回 `Failure` 后，由当前生效的重试策略安排再次投递。由于可能发生
+重试和重复投递，handler 应保持幂等。`SubscribeAsync` 和 `UnsubscribeAsync` 可在运行时更新普通 Push 订阅。
 
 ## LitePushConsumer
 
 需要从一个 LITE parent（bind）topic 下的 LiteTopic 自动分发消息时，请使用 `IGrpcLitePushConsumer`：
 
 ```csharp
-using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using Microsoft.Extensions.DependencyInjection;
 

@@ -26,12 +26,7 @@ public enum ConsumeResult
     Success,
 
     /// <summary>
-    /// Indicates that message processing should be retried.
+    /// Indicates that message processing failed and the effective retry policy should schedule another delivery.
     /// </summary>
-    Retry,
-
-    /// <summary>
-    /// Indicates that the message should be forwarded to the dead-letter queue.
-    /// </summary>
-    DeadLetter
+    Failure
 }

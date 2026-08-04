@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;

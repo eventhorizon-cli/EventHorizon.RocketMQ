@@ -46,8 +46,12 @@ public class GrpcPushConsumerOptions : ConsumerOptions
     public int MaxCachedMessageBytes { get; set; } = 32 * 1024 * 1024;
 
     /// <summary>
-    /// Gets or sets the fallback maximum number of delivery attempts before a message is dead-lettered.
+    /// Gets or sets the fallback maximum number of local FIFO handler attempts before the message is dead-lettered.
     /// </summary>
+    /// <remarks>
+    /// The service owns retry and dead-letter progression for non-FIFO messages. A retry policy supplied by the
+    /// Proxy takes precedence over this fallback.
+    /// </remarks>
     public int MaxDeliveryAttempts { get; set; } = 16;
 
     /// <summary>
@@ -60,8 +64,9 @@ public class GrpcPushConsumerOptions : ConsumerOptions
     /// retry.
     /// </summary>
     /// <remarks>
-    /// When this timeout expires, the consumer cancels the handler token, stops client-side invisibility renewal,
-    /// and requests redelivery. A handler that does not observe cancellation cannot be forcibly stopped, and a late
+    /// When this timeout expires, the consumer cancels the handler token and requests redelivery. Receipt renewal is
+    /// owned by a compatible Proxy because Push receive requests set <c>AutoRenew=true</c>; the client does not run a
+    /// second renewal timer. A handler that does not observe cancellation cannot be forcibly stopped, and a late
     /// successful result is ignored. FIFO message groups are excluded so that their ordering is not broken.
     /// </remarks>
     public TimeSpan ConsumeTimeout { get; set; } = TimeSpan.FromMinutes(15);

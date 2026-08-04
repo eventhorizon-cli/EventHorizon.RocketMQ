@@ -195,8 +195,9 @@ invoke their `IGrpcPushMessageHandler` for each message. Remoting Push invokes i
 otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
 contiguous prefix and retry its tail; `Retry` and `DeadLetter` remain whole-batch outcomes.
 
-For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token, stops client-side
-invisibility renewal, and requests retry when the configured limit elapses. The dispatcher ignores a late result and
+For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token and requests retry when the
+configured limit elapses. Receipt renewal while the handler is active belongs to the Proxy requested by `AutoRenew`,
+not to the handler scope or a client timer. The dispatcher ignores a late result and
 releases its consume-loop slot, but it cannot terminate application code. A timed-out invocation can overlap redelivery and must
 be idempotent. Its typed-handler async scope remains alive until that invocation returns, so scoped dependencies are
 not disposed while handler code is still running. FIFO message groups are excluded to preserve ordering.

@@ -62,7 +62,7 @@ Console.CancelKeyPress += cancelHandler;
 try
 {
     // BuildServiceProvider does not run the IHostedService registered by AddGrpcSimpleConsumer.
-    // This non-Host process owns the Consumer lifecycle and the Receive/Ack/DLQ loop.
+    // This non-Host process owns the Consumer lifecycle and the Receive/Ack loop.
     await consumer.StartAsync(stoppingSource.Token).ConfigureAwait(false);
     Console.WriteLine("gRPC SimpleConsumer started. Press Ctrl+C to stop.");
 
@@ -92,16 +92,10 @@ try
             {
                 if (message.IsCorrupted)
                 {
-                    // SimpleConsumer never auto-settles: explicitly dead-letter an unsafe payload.
                     logger.LogWarning(
-                        "Forwarding corrupted message {MessageId} to the dead-letter queue: {Reason}",
+                        "Leaving corrupted message {MessageId} unsettled so the service retry policy can handle it: {Reason}",
                         message.MessageId,
                         message.CorruptionReason);
-                    await consumer.ForwardToDeadLetterQueueAsync(
-                            message,
-                            maxDeliveryAttempts: 16,
-                            cancellationToken: stoppingSource.Token)
-                        .ConfigureAwait(false);
                     continue;
                 }
 

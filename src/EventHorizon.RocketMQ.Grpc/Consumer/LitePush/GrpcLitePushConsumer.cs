@@ -15,7 +15,7 @@
 
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 
-namespace EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 
 internal sealed class GrpcLitePushConsumer : IGrpcLitePushConsumer
 {

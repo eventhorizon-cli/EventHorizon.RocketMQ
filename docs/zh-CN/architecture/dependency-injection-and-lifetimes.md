@@ -203,8 +203,9 @@ gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通�
 单消息投递。对于并发、非 FIFO 批次，handler 可以返回 `Success` 并设置 `AckIndex`，以确认连续前缀并重试
 尾部；`Retry` 和 `DeadLetter` 仍是整批结果。
 
-对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token、停止客户端不可见时间续期，并请求
-重新投递。dispatcher 会忽略延迟返回的结果并释放消费循环的并发槽位，但无法终止应用代码。超时调用可能与重新投递重叠，因此必须保持幂等。
+对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token 并请求重新投递。handler
+执行期间的 receipt 续期由 `AutoRenew` 请求的 Proxy 负责，不属于 handler scope，也不由客户端定时器承担。
+dispatcher 会忽略延迟返回的结果并释放消费循环的并发槽位，但无法终止应用代码。超时调用可能与重新投递重叠，因此必须保持幂等。
 对应 typed handler 的异步 scope 会一直存活到该调用返回，因此 handler 代码仍在运行时不会提前释放 scoped 依赖。FIFO message group
 为了保持顺序而不会应用此机制。
 

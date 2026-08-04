@@ -9,8 +9,9 @@ RocketMQ Proxy through an `Endpoint`; a classic client asks a NameServer for rou
 the advertised Brokers. Their discovery, wire contracts, Consumer semantics, result types, and
 server requirements are therefore different.
 
-The protocols also use a few models with similar behavior: `Message`, filters, `ConsumeResult`,
-`ConsumerOptions`, and the client exception base. Putting those models in a third production Project
+The protocols also use a few models with similar behavior: `Message`, filters, `ConsumerOptions`, and the client
+exception base. Both protocols define a `ConsumeResult`, but its outcomes follow the owning consumer model rather
+than a cross-protocol shape. Putting those models in a third production Project
 would add another MSBuild boundary, Package version, and release dependency for a very small API
 surface.
 
@@ -56,6 +57,12 @@ The small foundational models are declared separately in each protocol namespace
 | Filter expression | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpression` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpression` |
 | Filter type | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | Client exception base | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
+
+The two `ConsumeResult` types intentionally differ. gRPC Push and LitePush follow the Apache Java gRPC listener
+contract and expose `Success` and `Failure`; the service owns non-FIFO retry and dead-letter progression, while FIFO
+dead-letter forwarding is internal client behavior. Classic Remoting exposes `Success`, `Retry`, and `DeadLetter`
+because its callback settlement contract lets the application select those outcomes. Compatibility tests therefore
+lock each protocol's enum independently instead of requiring parity.
 
 Classic Remoting `ConsumerOptions.InitialPosition` uses the protocol-owned `ConsumeFromPosition` type. LitePull and
 Push apply it only when an assigned queue has no committed group position; a timestamp start also uses

@@ -58,14 +58,15 @@ LiteTopic 订阅时生效。
 ## 投递与失败语义
 
 LitePush 与标准 Push 使用同一个 `IGrpcPushMessageHandler` 契约和依赖注入生命周期规则。
-`ConsumeResult.Success` 会确认消息，`Retry` 会请求再次投递，`DeadLetter` 会将消息转入该 consumer group 的死信队列。
-handler 异常会被当作重试请求，完成操作失败也可能造成重复投递，因此处理逻辑必须幂等。
+`ConsumeResult.Success` 会确认消息；`Failure` 交由当前生效的重试策略安排再次投递。handler 异常会被当作失败结果，
+完成操作失败也可能造成重复投递，因此处理逻辑必须幂等。
 
 损坏的消息不会进入应用 handler。客户端会重试非 FIFO 损坏消息；FIFO 损坏消息会在释放同一 message group 的下一条消息前
 转入死信队列。
 
-客户端会在 handler 运行期间续期消息的不可见时间。对于非 FIFO 工作，`ConsumeTimeout` 会取消 handler token、停止续期并
-请求重试，但无法强制终止忽略取消的代码。FIFO message group 会继续保持关联以维持顺序。它还继承
+LitePush 请求会设置 `AutoRenew=true`，由兼容的 Proxy 在 handler 运行期间续期 receipt；.NET 客户端不会再启动
+一套续期定时器。对于非 FIFO 工作，`ConsumeTimeout` 会取消 handler token 并请求再次投递，但无法强制终止忽略取消的
+代码。FIFO message group 会继续保持关联以维持顺序。它还继承
 `IGrpcPushConsumer` 的本地并发、有界缓存和服务端策略回退行为。
 
 ## RocketMQ 能力要求
@@ -91,7 +92,7 @@ LitePush 要求客户端、Proxy、Broker、Topic 和 consumer group 的配置�
 | `SubscriptionSyncInterval` | 定期协调完整 LiteTopic 集合的间隔。 |
 | `MaxConcurrency`、`BatchSize` 和缓存限制 | 从 Push 继承的本地 handler 并发、Receive 批量和有界缓冲。 |
 | `InvisibleDuration` / `ConsumeTimeout` | 从 Push 继承的初始不可见时长和非 FIFO handler 超时行为。 |
-| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供投递策略时使用的回退值。 |
+| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供策略时使用的 FIFO 本地尝试次数与重试延迟回退值；非 FIFO 的死信推进仍由服务端负责。 |
 | `LongPollingTimeout` | 每次 Receive 长轮询允许服务端等待的最长时间。 |
 
 ## 运行示例

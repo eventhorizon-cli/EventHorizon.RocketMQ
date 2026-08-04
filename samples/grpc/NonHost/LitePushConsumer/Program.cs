@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Grpc;
-using EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Samples.Grpc.NonHost.LitePushConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;

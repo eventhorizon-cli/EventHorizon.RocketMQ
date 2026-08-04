@@ -7,7 +7,7 @@
 
 ## 适用场景
 
-当消息处理适合表示成 handler，并希望 SDK 负责接收循环、背压、并发、不可见时间续期及完成操作时，适合使用
+当消息处理适合表示成 handler，并希望 SDK 负责接收循环、背压、并发、请求 Proxy 续期及完成操作时，适合使用
 PushConsumer。对于持续运行、每条消息都能由 handler 返回一个处理结果的服务，它通常是更简单的选择。
 
 如果应用必须自行决定何时接收、直接控制批量，或者将确认交给自己的调度器，请改用 `IGrpcSimpleConsumer`。如果应用必须选择
@@ -57,17 +57,17 @@ Generic Host 集成会为已注册角色调用 `StartAsync` 和 `StopAsync`。�
 | 结果 | SDK 行为 |
 | --- | --- |
 | `ConsumeResult.Success` | 确认消息。只有业务副作用已经持久化后才能返回该结果。 |
-| `ConsumeResult.Retry` | 按当前生效的重试策略，让消息可以再次投递。 |
-| `ConsumeResult.DeadLetter` | 将消息转入该 consumer group 的死信队列。 |
+| `ConsumeResult.Failure` | 由当前生效的重试策略安排再次投递。 |
 
-未处理的 handler 异常会被当作 `Retry`。如果确认、重试或死信完成操作失败，消息可能再次投递。因此，即使 handler 返回
+未处理的 handler 异常会被当作 `Failure`。如果确认或重试调度失败，消息可能再次投递。因此，即使 handler 返回
 `Success`，处理逻辑仍必须幂等。
 
 损坏的消息不会进入 `IGrpcPushMessageHandler`。非 FIFO 损坏消息会重新变为可投递状态；FIFO 损坏消息会在释放同一
 message group 的下一条消息前转入死信队列。
 
-handler 运行期间，客户端会续期消息的不可见时间。对于非 FIFO 消息，`ConsumeTimeout` 限制 dispatcher 等待 handler
-的时长：超时后会取消 handler token、停止续期、请求重试，并忽略延迟返回的成功结果。SDK 无法强制停止忽略取消的代码，
+Push 请求会设置 `AutoRenew=true`，由兼容的 Proxy 在 handler 运行期间续期 receipt；.NET 客户端不会再启动一套续期
+定时器。对于非 FIFO 消息，`ConsumeTimeout` 限制 dispatcher 等待 handler 的时长：超时后会取消 handler token、
+请求再次投递，并忽略延迟返回的成功结果。SDK 无法强制停止忽略取消的代码，
 因此旧调用可能与重新投递重叠。FIFO message group 不使用这种超时后脱离 handler 的行为，因为释放下一条消息可能破坏顺序。
 
 `MaxConcurrency` 控制本地 handler 并发，不代表 Broker queue 数量。FIFO 顺序只在一个 message group 内成立，不是跨
@@ -87,9 +87,9 @@ queue、consumer group 或 Consumer 实例的全局顺序。使用相同 consume
 | `MaxConcurrency` | 最大 handler 调度并发数。已经超时且忽略取消的 handler 仍可能留在进程中。 |
 | `BatchSize` | 单次 Receive 请求的最大消息数。 |
 | `MaxCachedMessages` / `MaxCachedMessageBytes` | 有界本地消息缓冲的数量和消息体字节数限制。 |
-| `InvisibleDuration` | 初始消息不可见时长；处理期间客户端会续期。 |
+| `InvisibleDuration` | 初始消息不可见时长；处理期间由兼容的 Proxy 续期 receipt。 |
 | `ConsumeTimeout` | 非 FIFO handler 在请求取消和重试前允许运行的最长时间。 |
-| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供策略时使用的死信阈值和重试延迟回退值。 |
+| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供策略时使用的 FIFO 本地尝试次数与重试延迟回退值；非 FIFO 的死信推进仍由服务端负责。 |
 | `LongPollingTimeout` | 每次 Receive 长轮询允许服务端等待的最长时间。 |
 
 ## 运行示例

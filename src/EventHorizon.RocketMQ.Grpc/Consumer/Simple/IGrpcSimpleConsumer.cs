@@ -92,12 +92,4 @@ public interface IGrpcSimpleConsumer : IAsyncDisposable
     /// <returns>A task that represents the asynchronous operation.</returns>
     Task ChangeInvisibleDurationAsync(GrpcMessageView message, TimeSpan invisibleDuration, CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Forwards a received message to the consumer group's dead-letter queue.
-    /// </summary>
-    /// <param name="message">The message to forward.</param>
-    /// <param name="maxDeliveryAttempts">The positive maximum delivery-attempt threshold.</param>
-    /// <param name="cancellationToken">A token that cancels the operation.</param>
-    /// <returns>A task that represents the asynchronous operation.</returns>
-    Task ForwardToDeadLetterQueueAsync(GrpcMessageView message, int maxDeliveryAttempts, CancellationToken cancellationToken = default);
 }

@@ -19,7 +19,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
 
-namespace EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 
 internal sealed class GrpcLiteSubscriptionManager : IAsyncDisposable
 {

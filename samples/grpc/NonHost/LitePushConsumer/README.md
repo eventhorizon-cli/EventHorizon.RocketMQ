@@ -20,8 +20,8 @@ in this non-Host process.
 
 `BindTopic` identifies the LITE parent topic. `LiteTopics` is the complete initial logical subscription set; it is not
 a list of ordinary topics or filters. The sample's scoped `IGrpcPushMessageHandler` logs a message and returns
-`ConsumeResult.Success`, which makes the SDK acknowledge it. `Retry` requests another attempt and `DeadLetter` moves
-the message to the consumer group's dead-letter queue. Handler exceptions are retried, so processing must be idempotent.
+`ConsumeResult.Success`, which makes the SDK acknowledge it. `Failure` lets the effective retry policy schedule another
+delivery. Handler exceptions are retried, so processing must be idempotent.
 
 Do not call ordinary `ConsumerOptions.Subscribe` for LitePush. Use `LiteTopics`, `SubscribeLiteAsync`, and
 `UnsubscribeLiteAsync` with one bind topic instead. Lite delivery still uses client-initiated long polling through a

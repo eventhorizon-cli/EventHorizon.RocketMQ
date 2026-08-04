@@ -323,7 +323,23 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         }, cancellationToken);
     }
 
-    public Task ChangeInvisibleDurationAsync(GrpcMessageView message, TimeSpan invisibleDuration, CancellationToken cancellationToken)
+    public Task ChangeInvisibleDurationAsync(
+        GrpcMessageView message,
+        TimeSpan invisibleDuration,
+        CancellationToken cancellationToken) =>
+        SetInvisibleDurationAsync(message, invisibleDuration, "renew", cancellationToken);
+
+    public Task ScheduleRetryAsync(
+        GrpcMessageView message,
+        TimeSpan invisibleDuration,
+        CancellationToken cancellationToken) =>
+        SetInvisibleDurationAsync(message, invisibleDuration, "nack", cancellationToken);
+
+    private Task SetInvisibleDurationAsync(
+        GrpcMessageView message,
+        TimeSpan invisibleDuration,
+        string telemetryOperation,
+        CancellationToken cancellationToken)
     {
         var endpoint = ValidateCompletionMessage(message);
         if (invisibleDuration <= TimeSpan.Zero)
@@ -331,7 +347,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             throw new ArgumentOutOfRangeException(nameof(invisibleDuration), "Invisible duration must be positive.");
         }
 
-        return ExecuteCompletionAsync("change invisible duration for", "nack", message, async token =>
+        return ExecuteCompletionAsync("change invisible duration for", telemetryOperation, message, async token =>
         {
             var request = new Proto.ChangeInvisibleDurationRequest
             {

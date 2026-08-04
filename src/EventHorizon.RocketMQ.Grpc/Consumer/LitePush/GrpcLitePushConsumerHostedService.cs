@@ -15,7 +15,7 @@
 
 using Microsoft.Extensions.Hosting;
 
-namespace EventHorizon.RocketMQ.Grpc.Consumer.Lite;
+namespace EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 
 internal sealed class GrpcLitePushConsumerHostedService(IGrpcLitePushConsumer consumer) : IHostedService
 {

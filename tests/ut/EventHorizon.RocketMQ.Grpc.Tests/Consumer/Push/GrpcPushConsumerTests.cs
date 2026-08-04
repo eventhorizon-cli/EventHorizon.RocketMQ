@@ -119,7 +119,7 @@ public sealed class GrpcPushConsumerTests
                 {
                     if (Interlocked.Increment(ref firstCalls) == 1)
                     {
-                        return ConsumeResult.Retry;
+                        return ConsumeResult.Failure;
                     }
 
                     firstSecondAttempt.TrySetResult();
@@ -180,7 +180,7 @@ public sealed class GrpcPushConsumerTests
             {
                 processingOrder.Enqueue($"{message.MessageId}:{message.DeliveryAttempt}");
                 return ValueTask.FromResult(
-                    message.MessageId == "first" ? ConsumeResult.Retry : ConsumeResult.Success);
+                    message.MessageId == "first" ? ConsumeResult.Failure : ConsumeResult.Success);
             },
             out var engine,
             options =>
@@ -646,7 +646,7 @@ public sealed class GrpcPushConsumerTests
                 if (message.MessageId == "first")
                 {
                     firstHandled.TrySetResult();
-                    return ValueTask.FromResult(ConsumeResult.Retry);
+                    return ValueTask.FromResult(ConsumeResult.Failure);
                 }
 
                 secondHandled.TrySetResult();
@@ -1029,7 +1029,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_ChangeInvisibleAfterTransientFailure_RetriesAndContinues()
+    public async Task ConsumeLoop_RetrySchedulingAfterTransientFailure_RetriesAndContinues()
     {
         var client = new FakeGrpcClient();
         var calls = 0;
@@ -1040,7 +1040,7 @@ public sealed class GrpcPushConsumerTests
         await using var consumer = CreateConsumer(client, (_, _) =>
         {
             Interlocked.Increment(ref handlerCalls);
-            return ValueTask.FromResult(ConsumeResult.Retry);
+            return ValueTask.FromResult(ConsumeResult.Failure);
         }, out var engine);
 
         await RunConsumeLoopAsync(
@@ -1058,10 +1058,10 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task ConsumeLoop_RetryResult_RecordsFailedProcessTelemetry()
+    public async Task ConsumeLoop_FailureResult_RecordsFailedProcessTelemetry()
     {
         var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
-        operation.Setup(value => value.Complete(false, ConsumeResult.Retry.ToString()));
+        operation.Setup(value => value.Complete(false, ConsumeResult.Failure.ToString()));
         operation.Setup(value => value.Dispose());
         var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
         telemetry
@@ -1077,7 +1077,7 @@ public sealed class GrpcPushConsumerTests
         var client = new FakeGrpcClient();
         await using var consumer = CreateConsumer(
             client,
-            static (_, _) => ValueTask.FromResult(ConsumeResult.Retry),
+            static (_, _) => ValueTask.FromResult(ConsumeResult.Failure),
             out var engine,
             telemetry: telemetry.Object);
 
@@ -1087,61 +1087,40 @@ public sealed class GrpcPushConsumerTests
             TestContext.Current.CancellationToken,
             Message("message-1"));
 
-        operation.Verify(value => value.Complete(false, ConsumeResult.Retry.ToString()), Times.Once);
+        operation.Verify(value => value.Complete(false, ConsumeResult.Failure.ToString()), Times.Once);
         operation.Verify(value => value.Dispose(), Times.Once);
         telemetry.VerifyAll();
     }
 
     [Fact]
-    public async Task ConsumeLoop_DeadLetterAfterTransientFailure_RetriesAndContinues()
+    public async Task ConsumeLoop_FailureAtMaximumDeliveryAttempts_SchedulesRetryWithoutClientDeadLetter()
     {
         var client = new FakeGrpcClient();
-        var calls = 0;
-        client.DeadLetterHandler = _ => Interlocked.Increment(ref calls) == 1
-            ? Task.FromException<Proto.ForwardMessageToDeadLetterQueueResponse>(new IOException("dead letter failed"))
-            : Task.FromResult(DeadLetterSuccess());
         await using var consumer = CreateConsumer(
             client,
-            static (_, _) => ValueTask.FromResult(ConsumeResult.DeadLetter),
-            out var engine);
+            static (_, _) => ValueTask.FromResult(ConsumeResult.Failure),
+            out var engine,
+            options => options.MaxDeliveryAttempts = 3);
 
         await RunConsumeLoopAsync(
             consumer,
             engine,
             TestContext.Current.CancellationToken,
-            Message("first"),
-            Message("second"));
+            Message("first", deliveryAttempt: 3));
 
-        Assert.Equal(3, calls);
+        Assert.Single(client.ChangeInvisibleRequests);
+        Assert.Empty(client.DeadLetterRequests);
     }
 
     [Fact]
-    public async Task ConsumeLoop_RenewalFailure_AcknowledgesAndContinues()
+    public async Task ConsumeLoop_HandlerExceedsHalfLease_DoesNotRenewFromClient()
     {
-        var renewalAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var client = new FakeGrpcClient
-        {
-            ChangeInvisibleHandler = _ =>
-            {
-                renewalAttempted.TrySetResult();
-                return Task.FromException<Proto.ChangeInvisibleDurationResponse>(new IOException("renewal failed"));
-            }
-        };
-        var ackCalls = 0;
-        client.AckHandler = _ =>
-        {
-            Interlocked.Increment(ref ackCalls);
-            return Task.FromResult(AckSuccess());
-        };
+        var client = new FakeGrpcClient();
         await using var consumer = CreateConsumer(
             client,
-            async (message, cancellationToken) =>
+            async (_, cancellationToken) =>
             {
-                if (message.MessageId == "first")
-                {
-                    await renewalAttempted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
-                }
-
+                await Task.Delay(TimeSpan.FromMilliseconds(1250), cancellationToken);
                 return ConsumeResult.Success;
             },
             out var engine,
@@ -1151,10 +1130,10 @@ public sealed class GrpcPushConsumerTests
             consumer,
             engine,
             TestContext.Current.CancellationToken,
-            Message("first"),
-            Message("second"));
+            Message("message-1"));
 
-        Assert.Equal(2, ackCalls);
+        Assert.Single(client.AckRequests);
+        Assert.Empty(client.ChangeInvisibleRequests);
     }
 
     [Fact]
@@ -1222,6 +1201,7 @@ public sealed class GrpcPushConsumerTests
         Assert.Equal(7, request.BatchSize);
         Assert.Equal(TimeSpan.FromSeconds(6), request.LongPollingTimeout.ToTimeSpan());
         Assert.True(request.HasAttemptId);
+        Assert.True(request.AutoRenew);
         Assert.Equal(TimeSpan.FromSeconds(9), client.LastReceiveTimeout);
         Assert.Equal(TimeSpan.FromSeconds(15), Assert.Single(client.OpenSettings).Subscription.LongPollingTimeout.ToTimeSpan());
         var message = Assert.Single(messages);
@@ -1258,6 +1238,66 @@ public sealed class GrpcPushConsumerTests
         Assert.Equal("lite-orders", Assert.Single(client.DeadLetterRequests).LiteTopic);
         Assert.Equal("receipt-updated", message.ReceiptHandle);
         Assert.Equal(TimeSpan.FromSeconds(12), message.InvisibleDuration);
+    }
+
+    [Fact]
+    public async Task ChangeInvisibleDurationAsync_ExplicitLeaseExtension_RecordsRenewSettlement()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete());
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartSettle(
+                "renew",
+                "orders",
+                "tests",
+                "message-1",
+                0,
+                It.IsAny<IReadOnlyDictionary<string, string>?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        var message = Message("message-1");
+        await using var engine = CreateEngine(client, telemetry.Object);
+        engine.BindMessage(message);
+
+        await engine.ChangeInvisibleDurationAsync(message, TimeSpan.FromSeconds(12), cancellationToken);
+
+        Assert.Single(client.ChangeInvisibleRequests);
+        operation.Verify(value => value.Complete(), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
+    }
+
+    [Fact]
+    public async Task ScheduleRetryAsync_RetryScheduling_RecordsNackSettlementAndChangesInvisibility()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete());
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartSettle(
+                "nack",
+                "orders",
+                "tests",
+                "message-1",
+                0,
+                It.IsAny<IReadOnlyDictionary<string, string>?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        var message = Message("message-1");
+        await using var engine = CreateEngine(client, telemetry.Object);
+        engine.BindMessage(message);
+
+        await engine.ScheduleRetryAsync(message, TimeSpan.FromSeconds(12), cancellationToken);
+
+        Assert.Single(client.ChangeInvisibleRequests);
+        operation.Verify(value => value.Complete(), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
     }
 
     [Fact]
@@ -1436,7 +1476,9 @@ public sealed class GrpcPushConsumerTests
             telemetry: telemetry);
     }
 
-    private static GrpcReceiveConsumerEngine CreateEngine(FakeGrpcClient client)
+    private static GrpcReceiveConsumerEngine CreateEngine(
+        FakeGrpcClient client,
+        IGrpcRocketMQTelemetry? telemetry = null)
     {
         var options = PushOptions();
         return new GrpcReceiveConsumerEngine(
@@ -1448,7 +1490,8 @@ public sealed class GrpcPushConsumerTests
             Proto.ClientType.PushConsumer,
             options.LongPollingTimeout,
             NullLogger<GrpcReceiveConsumerEngine>.Instance,
-            NullLogger<GrpcSessionManager>.Instance);
+            NullLogger<GrpcSessionManager>.Instance,
+            telemetry: telemetry);
     }
 
     private static IGrpcRouteService CreateRouteService(Proto.MessageQueue queue)

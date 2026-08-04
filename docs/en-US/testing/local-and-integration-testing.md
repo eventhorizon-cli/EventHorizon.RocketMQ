@@ -153,6 +153,12 @@ The optimized suite keeps the same live-Broker coverage under these rules:
   response; a test-only production shortcut is not added.
 - Timeout values remain failure caps, not expected sleeps. Negative assertions such as no redelivery use the shortest
   real long-poll or state query that can establish the condition, with a separately named upper bound.
+- One `mqadmin consumerProgress -g` invocation returns a snapshot for the entire Consumer Group. Assertions covering
+  several queues parse and validate that single snapshot instead of starting one JVM per queue. Polling the same group
+  concurrently adds container contention without providing stronger evidence.
+- Parallel execution comes from independently isolated test classes within the four-collection runner limit. A class
+  may be split only after its topics, groups, administrative changes, and offset assertions no longer share mutable
+  state; raising the thread limit against the shared Broker is not a substitute for that isolation.
 - Retry, fixed-deadline expiry, late-result rejection, no-retry-on-indeterminate-failure, dead-letter ordering,
   duplicate prevention, rebalance recovery, and persistence coverage remains.
   Runtime work is removed only when a deterministic signal proves the same invariant.

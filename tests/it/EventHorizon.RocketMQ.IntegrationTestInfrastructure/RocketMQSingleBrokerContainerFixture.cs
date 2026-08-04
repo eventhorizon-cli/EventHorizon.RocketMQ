@@ -221,20 +221,38 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
         return $"exit={result.ExitCode} stdout={result.Stdout} stderr={result.Stderr}";
     }
 
-    public async Task<(bool Committed, string Progress)> WaitForConsumerCommitAsync(
+    public Task<(bool Committed, string Progress)> WaitForConsumerCommitAsync(
         string group,
         string topic,
         string brokerName,
         int queueId,
         TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        WaitForConsumerCommitsAsync(
+            group,
+            [(topic, brokerName, queueId)],
+            timeout,
+            cancellationToken);
+
+    public async Task<(bool Committed, string Progress)> WaitForConsumerCommitsAsync(
+        string group,
+        IReadOnlyCollection<(string Topic, string BrokerName, int QueueId)> queues,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        ArgumentNullException.ThrowIfNull(queues);
+        if (queues.Count == 0)
+        {
+            throw new ArgumentException("At least one queue is required.", nameof(queues));
+        }
+
         var deadline = DateTimeOffset.UtcNow + timeout;
         string progress;
         do
         {
             progress = await GetConsumerProgressAsync(group, cancellationToken).ConfigureAwait(false);
-            if (HasZeroLag(progress, topic, brokerName, queueId))
+            if (AllQueuesHaveZeroLag(progress, queues))
             {
                 return (true, progress);
             }
@@ -244,7 +262,7 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
         while (DateTimeOffset.UtcNow < deadline);
 
         progress = await GetConsumerProgressAsync(group, cancellationToken).ConfigureAwait(false);
-        return (HasZeroLag(progress, topic, brokerName, queueId), progress);
+        return (AllQueuesHaveZeroLag(progress, queues), progress);
     }
 
     public async ValueTask InitializeAsync()
@@ -318,16 +336,16 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
         }
     }
 
-    private static bool HasZeroLag(string progress, string topic, string brokerName, int queueId)
+    private static bool AllQueuesHaveZeroLag(
+        string progress,
+        IReadOnlyCollection<(string Topic, string BrokerName, int QueueId)> queues)
     {
+        var committed = new HashSet<(string Topic, string BrokerName, int QueueId)>();
         foreach (var line in progress.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var fields = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (fields.Length < 6 ||
-                !string.Equals(fields[0], topic, StringComparison.Ordinal) ||
-                !string.Equals(fields[1], brokerName, StringComparison.Ordinal) ||
-                !int.TryParse(fields[2], out var actualQueueId) ||
-                actualQueueId != queueId ||
+                !int.TryParse(fields[2], out var queueId) ||
                 !long.TryParse(fields[3], out var brokerOffset) ||
                 !long.TryParse(fields[4], out var consumerOffset) ||
                 !long.TryParse(fields[5], out var difference))
@@ -335,10 +353,13 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
                 continue;
             }
 
-            return consumerOffset >= brokerOffset && difference == 0;
+            if (consumerOffset >= brokerOffset && difference == 0)
+            {
+                committed.Add((fields[0], fields[1], queueId));
+            }
         }
 
-        return false;
+        return queues.All(committed.Contains);
     }
 
     private async Task CreateTopicAsync(string topic, string messageType, CancellationToken cancellationToken)

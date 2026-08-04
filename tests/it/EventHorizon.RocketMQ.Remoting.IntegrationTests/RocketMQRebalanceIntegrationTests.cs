@@ -159,22 +159,15 @@ public sealed class RocketMQRebalanceIntegrationTests(
                 cancellationToken);
             Assert.Empty(unexpectedDeliveries);
 
-            var commitResults = await Task.WhenAll(queues.Select(async queue =>
-            {
-                var result = await _fixture.WaitForConsumerCommitAsync(
-                    group,
-                    scope.Topic,
-                    queue.BrokerName,
-                    queue.QueueId,
-                    RebalanceTimeout,
-                    cancellationToken);
-                return (Queue: queue, result.Committed, result.Progress);
-            }));
-            Assert.All(
-                commitResults,
-                result => Assert.True(
-                    result.Committed,
-                    $"Initial offset for {FormatQueue(result.Queue)} was not committed. {result.Progress}"));
+            var commitResult = await _fixture.WaitForConsumerCommitsAsync(
+                group,
+                queues.Select(queue => (scope.Topic, queue.BrokerName, queue.QueueId)).ToArray(),
+                RebalanceTimeout,
+                cancellationToken);
+            Assert.True(
+                commitResult.Committed,
+                $"Initial offsets were not committed for " +
+                $"[{string.Join(", ", queues.Select(FormatQueue))}]. {commitResult.Progress}");
 
             await consumers[1].StopAsync(CancellationToken.None);
             runningConsumers[1] = false;

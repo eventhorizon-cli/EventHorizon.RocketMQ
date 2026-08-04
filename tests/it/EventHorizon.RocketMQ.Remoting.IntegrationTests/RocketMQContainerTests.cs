@@ -746,7 +746,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
             await consumer.StartAsync(cancellationToken);
             var initialDelivery = await firstBatch.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
             Assert.Equal(expectedBodies, initialDelivery.Bodies);
-            Assert.Equal(1, initialDelivery.DelayLevel);
+            Assert.Equal(0, initialDelivery.DelayLevel);
 
             await tailRedelivered.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
             var retryTopic = $"%RETRY%{group}";

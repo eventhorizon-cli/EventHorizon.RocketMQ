@@ -67,6 +67,13 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
                 scope.Topic,
                 cancellationToken);
             Assert.NotEmpty(adminQueues);
+            await consumer.AssignAsync(
+                adminQueues,
+                new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
+                {
+                    [scope.Topic] = new(tag)
+                },
+                cancellationToken);
 
             var sent = await producer.SendAsync(
                 new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
@@ -87,13 +94,6 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
             var adminQueue = Assert.Single(adminQueues, queue =>
                 queue.BrokerName == sent.MessageQueue.BrokerName && queue.QueueId == sent.MessageQueue.QueueId);
             Assert.Null(await admin.GetConsumerOffsetAsync(group, adminQueue, cancellationToken));
-            await consumer.AssignAsync(
-                [adminQueue],
-                new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
-                {
-                    [scope.Topic] = new(tag)
-                },
-                cancellationToken);
 
             RemotingMessageView? matching = null;
             for (var attempt = 0; attempt < 10 && matching is null; attempt++)

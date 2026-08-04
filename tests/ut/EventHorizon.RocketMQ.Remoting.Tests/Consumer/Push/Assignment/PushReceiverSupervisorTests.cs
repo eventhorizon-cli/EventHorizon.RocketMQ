@@ -81,6 +81,37 @@ public sealed class PushReceiverSupervisorTests
     }
 
     [Fact]
+    public async Task Observe_RunStoppingCompletesReceiver_PreservesReceiverForShutdownOwner()
+    {
+        var registry = new PushReceiverRegistry();
+        using var stopping = new CancellationTokenSource();
+        var wakeupCount = 0;
+        var supervisor = new PushReceiverSupervisor(
+            registry,
+            dispatchScheduler: null,
+            stopping.Token,
+            () => Interlocked.Increment(ref wakeupCount),
+            NullLogger.Instance);
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiver = new TestReceiver(CreateTarget(), completion.Task);
+        var key = PushReceiverKey.Create(receiver.Target);
+        Assert.True(registry.TryAdd(key, receiver));
+        var observation = supervisor.Observe(key, receiver);
+
+        stopping.Cancel();
+        completion.TrySetResult();
+        await observation;
+
+        Assert.Same(receiver, Assert.Single(registry.Snapshot()));
+        Assert.Equal(0, receiver.StopCount);
+        Assert.Equal(0, receiver.DisposeCount);
+        Assert.Equal(0, Volatile.Read(ref wakeupCount));
+
+        var stopped = registry.StopAll(dispatchScheduler: null);
+        PushReceiverRegistry.DisposeAll(stopped);
+    }
+
+    [Fact]
     public async Task Observe_StopAllOwnsReceiver_DoesNotDisposeOrWakeFromSupervisor()
     {
         var registry = new PushReceiverRegistry();

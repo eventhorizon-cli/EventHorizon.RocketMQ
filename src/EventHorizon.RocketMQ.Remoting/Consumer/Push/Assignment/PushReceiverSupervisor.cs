@@ -67,6 +67,11 @@ internal sealed class PushReceiverSupervisor
             receiverFailure = exception;
         }
 
+        if (_stopping.IsCancellationRequested)
+        {
+            return;
+        }
+
         if (!_registry.TryRemove(key, receiver))
         {
             return;
@@ -98,11 +103,6 @@ internal sealed class PushReceiverSupervisor
                 receiver.Assignment.Topic,
                 receiver.Assignment.BrokerName,
                 receiver.Assignment.QueueId);
-        }
-
-        if (_stopping.IsCancellationRequested)
-        {
-            return;
         }
 
         if (receiverFailure is null)

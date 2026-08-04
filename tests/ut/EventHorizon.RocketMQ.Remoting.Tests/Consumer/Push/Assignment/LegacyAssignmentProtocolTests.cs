@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -24,9 +23,9 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push.Assignment;
 public sealed class LegacyAssignmentProtocolTests
 {
     [Fact]
-    public void EncodeQueryAssignment_ClusteringMode_WritesOfficialRequestBody()
+    public void EncodeQuery_ClusteringMode_WritesOfficialRequestBody()
     {
-        var body = LegacyConsumerProtocol.EncodeQueryAssignment(
+        var body = LegacyAssignmentProtocol.EncodeQuery(
             "tenant-a%orders",
             "tenant-a%orders-group",
             "client-a",
@@ -42,9 +41,9 @@ public sealed class LegacyAssignmentProtocolTests
     }
 
     [Fact]
-    public void DecodeQueryAssignment_ResponseContainsNullSet_PreservesPreviousAssignment()
+    public void DecodeResponse_ResponseContainsNullSet_PreservesPreviousAssignment()
     {
-        var update = LegacyConsumerProtocol.DecodeQueryAssignment(
+        var update = LegacyAssignmentProtocol.DecodeResponse(
             Encoding.UTF8.GetBytes("{\"messageQueueAssignments\":null}"));
 
         Assert.False(update.ShouldReplace);
@@ -52,9 +51,9 @@ public sealed class LegacyAssignmentProtocolTests
     }
 
     [Fact]
-    public void DecodeQueryAssignment_ResponseContainsEmptySet_ClearsPreviousAssignment()
+    public void DecodeResponse_ResponseContainsEmptySet_ClearsPreviousAssignment()
     {
-        var update = LegacyConsumerProtocol.DecodeQueryAssignment(
+        var update = LegacyAssignmentProtocol.DecodeResponse(
             Encoding.UTF8.GetBytes("{\"messageQueueAssignments\":[]}"));
 
         Assert.True(update.ShouldReplace);
@@ -62,7 +61,7 @@ public sealed class LegacyAssignmentProtocolTests
     }
 
     [Fact]
-    public void DecodeQueryAssignment_WildcardPopResponse_DecodesPopAndDefaultsMissingModeToPull()
+    public void DecodeResponse_WildcardPopResponse_DecodesPopAndDefaultsMissingModeToPull()
     {
         const string json = """
             {
@@ -79,7 +78,7 @@ public sealed class LegacyAssignmentProtocolTests
             }
             """;
 
-        var update = LegacyConsumerProtocol.DecodeQueryAssignment(Encoding.UTF8.GetBytes(json));
+        var update = LegacyAssignmentProtocol.DecodeResponse(Encoding.UTF8.GetBytes(json));
 
         Assert.True(update.ShouldReplace);
         Assert.Collection(
@@ -102,7 +101,7 @@ public sealed class LegacyAssignmentProtocolTests
     }
 
     [Fact]
-    public void DecodeQueryAssignment_ResponseContainsUnknownMode_ThrowsInvalidDataException()
+    public void DecodeResponse_ResponseContainsUnknownMode_ThrowsInvalidDataException()
     {
         const string json = """
             {
@@ -116,6 +115,6 @@ public sealed class LegacyAssignmentProtocolTests
             """;
 
         Assert.Throws<InvalidDataException>(() =>
-            LegacyConsumerProtocol.DecodeQueryAssignment(Encoding.UTF8.GetBytes(json)));
+            LegacyAssignmentProtocol.DecodeResponse(Encoding.UTF8.GetBytes(json)));
     }
 }

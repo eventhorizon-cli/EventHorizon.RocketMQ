@@ -18,7 +18,7 @@ using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using Xunit;
 
@@ -72,6 +72,12 @@ public sealed class PushConsumerApiTests
             .Select(static type => type.FullName)
             .ToHashSet(StringComparer.Ordinal);
 
+        Assert.Equal(
+            "EventHorizon.RocketMQ.Remoting.Consumer.LitePull.IRemotingLitePullConsumer",
+            typeof(IRemotingLitePullConsumer).FullName);
+        Assert.Equal(
+            "EventHorizon.RocketMQ.Remoting.Consumer.LitePull.RemotingLitePullConsumerOptions",
+            typeof(RemotingLitePullConsumerOptions).FullName);
         Assert.Contains(typeof(IRemotingLitePullConsumer).FullName, exportedTypeNames);
         Assert.Contains(typeof(IRemotingPushConsumer).FullName, exportedTypeNames);
         Assert.Contains(typeof(RemotingConsumerQueue).FullName, exportedTypeNames);

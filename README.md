@@ -84,8 +84,8 @@ Broker configuration. Each protocol package provides its own `RocketMQClientExce
 
 | Package | Connection | Main APIs | Documentation |
 | --- | --- | --- | --- |
-| `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, `IGrpcLitePushConsumer` | [gRPC guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
-| `EventHorizon.RocketMQ.Remoting` | NameServer and Brokers | `IRemotingProducer`, `IRemotingAdmin`, `IRemotingLitePullConsumer`, `IRemotingPushConsumer` | [Remoting guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
+| [`EventHorizon.RocketMQ.Grpc`](https://www.nuget.org/packages/EventHorizon.RocketMQ.Grpc) | RocketMQ 5 Proxy | `IGrpcProducer`, `IGrpcSimpleConsumer`, `IGrpcPushConsumer`, `IGrpcLitePushConsumer` | [gRPC guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.md) |
+| [`EventHorizon.RocketMQ.Remoting`](https://www.nuget.org/packages/EventHorizon.RocketMQ.Remoting) | NameServer and Brokers | `IRemotingProducer`, `IRemotingAdmin`, `IRemotingLitePullConsumer`, `IRemotingPushConsumer` | [Remoting guide](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.md) |
 
 Install only the protocol package used by the application. Each protocol package is self-contained at the client API
 boundary: it owns its public models in its own assembly and has no dependency on another EventHorizon.RocketMQ

@@ -57,14 +57,22 @@ internal sealed class GrpcSimpleConsumer : IGrpcSimpleConsumer
 
     public async Task<IReadOnlyList<GrpcMessageView>> ReceiveAsync(int maxMessages, TimeSpan? invisibleDuration = null, CancellationToken cancellationToken = default)
     {
-        if (maxMessages <= 0) throw new ArgumentOutOfRangeException(nameof(maxMessages));
+        if (maxMessages <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxMessages));
+        }
+
         if (invisibleDuration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(invisibleDuration), "Invisible duration must be positive.");
         }
 
         var subscriptions = _engine.GetSubscriptions();
-        if (subscriptions.Length == 0) throw new InvalidOperationException("At least one subscription is required.");
+        if (subscriptions.Length == 0)
+        {
+            throw new InvalidOperationException("At least one subscription is required.");
+        }
+
         var topicIndex = (Interlocked.Increment(ref _topicIndex) & int.MaxValue) % subscriptions.Length;
         var subscription = subscriptions[topicIndex];
         var assignments = await _engine.GetAssignmentsAsync(subscription.Key, cancellationToken).ConfigureAwait(false);

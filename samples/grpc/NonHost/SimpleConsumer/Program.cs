@@ -21,7 +21,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -40,7 +40,7 @@ services
         options.GroupName = "rocketmq-dotnet-grpc-nonhost-simple-sample";
         options.AwaitDuration = TimeSpan.FromSeconds(5);
         options.InvisibleDuration = TimeSpan.FromSeconds(30);
-        options.Subscribe(Topic, new FilterExpression("sample"));
+        options.Subscribe(topic, new FilterExpression("sample"));
     });
 
 await using var serviceProvider = services.BuildServiceProvider(new ServiceProviderOptions

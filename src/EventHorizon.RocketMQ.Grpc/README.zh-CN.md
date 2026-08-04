@@ -177,12 +177,15 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 }
 ```
 
-调用 `SubscribeAsync` 或 `UnsubscribeAsync` 可在启动后修改订阅。`ReceiveAsync` 不会确认消息；只有在消息完成持久化处理后才确认。对于长时间运行的处理，可以延长不可见时间；应用决定将消息转入死信时，调用 `ForwardToDeadLetterQueueAsync`。RocketMQ 5.5.0 Proxy 要求接收长轮询间隔至少为五秒。
+调用 `SubscribeAsync` 或 `UnsubscribeAsync` 可在启动后修改订阅。`ReceiveAsync` 既不会确认消息，也不会启用自动续约；
+只有在消息完成持久化处理后才确认。对于长时间运行的处理，需要显式延长不可见时间；应用决定将消息转入死信时，
+调用 `ForwardToDeadLetterQueueAsync`。RocketMQ 5.5.0 Proxy 要求接收长轮询间隔至少为五秒。
 
 ## PushConsumer
 
 需要自动接收、分发和结算时，请使用 `IGrpcPushConsumer`。注册 typed
 `IGrpcPushMessageHandler`；如果 handler 使用 scoped 应用服务，适合选择 `Scoped`。
+Push 还会在 handler 执行期间管理消息的不可见时间，应用无需自行续租 receipt。
 
 ```csharp
 using System.Text;

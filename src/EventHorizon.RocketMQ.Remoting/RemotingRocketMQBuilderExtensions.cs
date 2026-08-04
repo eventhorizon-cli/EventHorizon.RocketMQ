@@ -15,9 +15,11 @@
 
 using EventHorizon.RocketMQ.Remoting.Admin;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.Coordination.Rebalance;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Offset;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Offset;
+using EventHorizon.RocketMQ.Remoting.Consumer.Route;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
@@ -300,11 +302,12 @@ public static class RemotingRocketMQBuilderExtensions
         // require a channel-distinct client. Producer and admin roles keep the registration's shared one.
         var groupMember = GetRemotingRebalanceServiceRegistry(provider, roleKey)
             .GetGroupMember(LegacyNamespace.Wrap(clientOptions.Value.Namespace, options.Value.GroupName));
+        var routeResolver = CreateRemotingConsumerRouteResolver(provider, roleKey);
         return ActivatorUtilities.CreateInstance<RemotingLitePullConsumer>(
             provider,
             options,
             clientOptions,
-            CreateRemotingConsumerEngine(provider, roleKey, settings, groupMember.Client),
+            CreateRemotingConsumerEngine(provider, roleKey, settings, routeResolver, groupMember.Client),
             groupMember.Client,
             groupMember.RebalanceService,
             hasLocalGroupPeer);
@@ -324,7 +327,6 @@ public static class RemotingRocketMQBuilderExtensions
             roleRegistration,
             options.Value);
         var clientOptions = RemotingRocketMQRegistration.GetClientOptions(provider, roleKey);
-        var routes = GetTopicRouteService(provider, roleKey);
         // Push uses the same active-group channel rule as LitePull; the registry shares whenever the Broker can still
         // distinguish group membership correctly and isolates only repeated members of the same group.
         var groupMember = GetRemotingRebalanceServiceRegistry(provider, roleKey)
@@ -334,13 +336,19 @@ public static class RemotingRocketMQBuilderExtensions
             options.Value.PullBatchSize,
             options.Value.MaxMessageBytes,
             options.Value.LongPollingTimeout);
-        var consumerEngine = CreateRemotingConsumerEngine(provider, roleKey, settings, groupMember.Client);
+        var routeResolver = CreateRemotingConsumerRouteResolver(provider, roleKey);
+        var consumerEngine = CreateRemotingConsumerEngine(
+            provider,
+            roleKey,
+            settings,
+            routeResolver,
+            groupMember.Client);
         return ActivatorUtilities.CreateInstance<RemotingPushConsumer>(
             provider,
             options,
             clientOptions,
             consumerEngine,
-            routes,
+            routeResolver,
             groupMember.Client,
             groupMember.RebalanceService,
             RemotingPushMessageHandlerFactory.Create(provider, roleKey, handlerLifetime),
@@ -351,15 +359,23 @@ public static class RemotingRocketMQBuilderExtensions
         IServiceProvider provider,
         RemotingRocketMQRoleKey roleKey,
         RemotingConsumerSettings settings,
+        RemotingConsumerRouteResolver routeResolver,
         IRemotingClient? remotingClient = null)
     {
         return ActivatorUtilities.CreateInstance<RemotingConsumerEngine>(
             provider,
             settings,
             RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
-            GetTopicRouteService(provider, roleKey),
+            routeResolver,
             remotingClient ?? GetRemotingClientRegistry(provider, roleKey).SharedClient);
     }
+
+    private static RemotingConsumerRouteResolver CreateRemotingConsumerRouteResolver(
+        IServiceProvider provider,
+        RemotingRocketMQRoleKey roleKey) =>
+        new(
+            RemotingRocketMQRegistration.GetClientOptions(provider, roleKey),
+            GetTopicRouteService(provider, roleKey));
 
     private static RemotingConsumerSettings CreateRemotingConsumerSettings(
         ConsumerOptions options,
@@ -368,7 +384,6 @@ public static class RemotingRocketMQBuilderExtensions
         TimeSpan longPollingTimeout) =>
         new(
             options.GroupName,
-            options.Subscriptions,
             batchSize,
             maxMessageBytes,
             longPollingTimeout);

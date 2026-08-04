@@ -20,7 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var builder = Host.CreateApplicationBuilder(
     new HostApplicationBuilderSettings
@@ -41,14 +41,14 @@ builder.Services
         options.GroupName = "rocketmq-dotnet-grpc-push-sample";
         options.MaxConcurrency = 4;
         options.BatchSize = 16;
-        options.Subscribe(Topic, new FilterExpression("sample"));
+        options.Subscribe(topic, new FilterExpression("sample"));
     })
     .AddGrpcPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
     {
         options.GroupName = "rocketmq-dotnet-grpc-push-all-messages";
         options.MaxConcurrency = 2;
         options.BatchSize = 8;
-        options.Subscribe(Topic);
+        options.Subscribe(topic);
     });
 
 // RunAsync starts and stops both Push roles through their SDK hosted services.

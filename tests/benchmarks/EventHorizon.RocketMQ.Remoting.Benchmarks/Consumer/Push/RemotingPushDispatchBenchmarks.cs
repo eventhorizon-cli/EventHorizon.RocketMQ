@@ -15,7 +15,7 @@
 
 using BenchmarkDotNet.Attributes;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Dispatch;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Dispatch;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EventHorizon.RocketMQ.Remoting.Benchmarks.Consumer.Push;
@@ -71,27 +71,27 @@ public class RemotingPushDispatchBenchmarks
         using var stopping = new CancellationTokenSource();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var consumed = 0;
-        var processQueues = new ProcessQueue[workloads.Count];
-        ConcurrentConsumeDispatcher? dispatcher = null;
+        var processQueues = new PullProcessQueue[workloads.Count];
+        ConcurrentPullConsumeDispatcher? dispatcher = null;
 
         try
         {
             for (var index = 0; index < workloads.Count; index++)
             {
                 var workload = workloads[index];
-                var processQueue = new ProcessQueue(workload.Queue, stopping.Token);
+                var processQueue = new PullProcessQueue(workload.Queue, stopping.Token);
                 processQueues[index] = processQueue;
                 processQueue.Initialize(0, forcePersist: false);
                 processQueue.PutMessages(workload.Messages);
                 processQueue.AdvanceNextPullOffset(workload.Messages.Count);
             }
 
-            dispatcher = new ConcurrentConsumeDispatcher(
+            dispatcher = new ConcurrentPullConsumeDispatcher(
                 MaxConcurrency,
                 ConsumeMessageBatchSize,
                 (request, _) =>
                 {
-                    request.ProcessQueue.CompleteConsumeRequest(
+                    request.PullProcessQueue.CompleteConsumeRequest(
                         request,
                         CompletedStates[request.Entries.Count]);
                     if (Interlocked.Add(ref consumed, request.Entries.Count) == MessageCount)
@@ -138,7 +138,7 @@ public class RemotingPushDispatchBenchmarks
 
     private static QueueWorkload CreateWorkload(string brokerName, int queueId, int messageCount)
     {
-        var queue = new RemotingConsumerQueue(Topic, queueId, brokerName, "127.0.0.1:10911");
+        var queue = new RemotingConsumerQueue(Topic, brokerName, queueId);
         var messages = Enumerable.Range(0, messageCount)
             .Select(offset => new RemotingMessageView(
                 Topic,

@@ -949,7 +949,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         CancellationTokenSource renewalCts,
         CancellationToken cancellationToken)
     {
-        CancellationTokenSource? handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var handlerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         try
         {

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using Microsoft.Extensions.DependencyInjection;
@@ -89,6 +89,14 @@ internal static class RemotingConsumerGroupCompatibilityValidator
                     roleKey,
                     options,
                     "Push consumers in the same consumer group must use the same consumer mode.");
+            }
+
+            if (push.QueueAssignmentMode != otherPush.QueueAssignmentMode)
+            {
+                ThrowGroupOptionsValidation(
+                    roleKey,
+                    options,
+                    "Push consumers in the same consumer group must use the same queue assignment mode.");
             }
 
             if (push.ConsumeOrderly != otherPush.ConsumeOrderly)

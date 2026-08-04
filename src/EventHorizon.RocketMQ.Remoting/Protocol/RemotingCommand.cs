@@ -45,13 +45,13 @@ internal class RemotingCommand
     {
     }
 
-    public RemotingCommand(int code, CommandCustomHeader header)
+    public RemotingCommand(int code, CommandCustomHeader? header = null)
     {
         LanguageCode = LanguageCode.Dotnet;
         Opaque = Interlocked.Increment(ref _opaque);
         Code = code;
         Version = DefaultProtocolVersion;
-        ExtFields = header.Encode();
+        ExtFields = header?.Encode() ?? new Dictionary<string, object>();
     }
 
     public bool IsResponseType() => (Flag & ResponseType) == ResponseType;

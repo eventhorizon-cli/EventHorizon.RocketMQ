@@ -26,7 +26,7 @@ gRPC Project 公开以下 Consumer 角色：
 
 不提供 `IGrpcPullConsumer`。这不是尚未完成的示例，也不是配置开关；该公开客户端角色已从仓库移除。
 需要显式队列和位点工作流时，使用经典
-[`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/Lite/IRemotingLitePullConsumer.cs)
+[`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/LitePull/IRemotingLitePullConsumer.cs)
 的手工分配、seek 和显式 commit。
 如果连接目标必须是 Proxy，则应根据工作流选择 Simple 或 Push，而不是假定 gRPC Pull 可以由客户端单独
 补齐。
@@ -89,6 +89,12 @@ PushConsumer 启动后大致执行如下循环：
 `ConsumeResult.Success` 表示可以确认；`Retry` 表示应交给重试策略；`DeadLetter` 表示转发到死信队列。
 只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认失败仍可能造成重复投递，因此 handler
 必须具备幂等性。
+
+普通 Push 的 receive request 会设置 `AutoRenew=true`，让兼容的 Proxy 通过客户端连接托管 receipt 续期。
+SimpleConsumer 设置 `AutoRenew=false`，初始不可见时间和显式 `ChangeInvisibleDurationAsync` 都由调用方负责。
+当前 .NET Push dispatcher 还会在 handler 执行期间启动客户端侧的半租期续期循环。Proxy 续期和客户端侧续期是同一
+receipt 生命周期的两个不同 owner；后续 gRPC 重构必须合并这两个 owner 及对应 telemetry，不能把任一机制照搬到
+classic Remoting。Apache Java gRPC Push 会请求 Proxy 自动续约，而 classic Remoting Push 使用固定 POP deadline。
 
 `MaxConcurrency` 控制消费循环数量，`MaxCachedMessages` 与 `MaxCachedMessageBytes` 限制本地缓冲。开启
 FIFO 分发时，客户端为同一消息组维持顺序尾链并阻塞同组后续消息；这是应用处理顺序的约束，不应被理解为

@@ -205,7 +205,7 @@ Use `IRemotingLitePullConsumer` when application code should poll messages and d
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 
 rocketMQ.AddRemotingLitePullConsumer(options =>
 {
@@ -293,6 +293,10 @@ Applications do not select POP directly and do not need a different handler for 
 consumption use client assignment and PULL even when `Broker` is requested. If a Broker assignment query fails, the
 consumer waits for the next reconciliation instead of switching to client allocation.
 
+For Broker-assigned POP, `PopInvisibleDuration` is a fixed processing deadline. Classic Remoting Push does not renew
+the receipt while the handler is active; processing that may exceed the deadline must be idempotent and may be
+redelivered. This differs from gRPC Push auto-renewal.
+
 This distinction follows Apache RocketMQ's classic
 [PushConsumer guide](https://rocketmq.apache.org/docs/4.x/consumer/02push/). The
 [Remoting consumer design](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/docs/en-US/remoting/consumer-model.md)
@@ -301,7 +305,7 @@ records the source-level Java and Broker references.
 `ConsumeMessageBatchSize` controls the largest list passed to one handler call. Return `Success`, `Retry`, or
 `DeadLetter`. For a concurrent non-FIFO batch, set `RemotingPushConsumeContext.AckIndex` before returning
 `Success` to acknowledge only a contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay or
-direct dead-letter behavior.
+direct dead-letter behavior; its default value is `0`, which delegates retry timing to the Broker.
 
 `ServiceLifetime.Scoped` or `Transient` creates a fresh async scope for each handling attempt. A singleton handler
 must be thread-safe. Handlers must honor cancellation and remain idempotent because delivery is at least once.

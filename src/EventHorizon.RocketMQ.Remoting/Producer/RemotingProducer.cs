@@ -768,7 +768,7 @@ internal sealed class RemotingProducer : IRemotingProducer
     {
         var response = await _remotingClient.InvokeAsync(
             broker.EndPoint,
-            new RemotingCommand(RequestCode.HeartBeat, new HeartbeatRequestHeader())
+            new RemotingCommand(RequestCode.HeartBeat)
             {
                 Body = ProducerHeartbeatCodec.Encode(_clientId, GetWireProducerGroup())
             },

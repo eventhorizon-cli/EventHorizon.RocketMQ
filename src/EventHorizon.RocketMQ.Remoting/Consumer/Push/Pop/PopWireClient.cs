@@ -16,6 +16,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
+using EventHorizon.RocketMQ.Remoting.Consumer.Route;
 using EventHorizon.RocketMQ.Remoting.Exceptions;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
@@ -26,6 +27,7 @@ internal sealed class PopWireClient
 {
     private readonly RemotingPushConsumerOptions _options;
     private readonly RemotingClientOptions _clientOptions;
+    private readonly RemotingConsumerRouteResolver _routes;
     private readonly IRemotingClient _remotingClient;
     private readonly TimeProvider _timeProvider;
     private readonly IRemotingRocketMQTelemetry _telemetry;
@@ -33,12 +35,14 @@ internal sealed class PopWireClient
     public PopWireClient(
         RemotingPushConsumerOptions options,
         RemotingClientOptions clientOptions,
+        RemotingConsumerRouteResolver routes,
         IRemotingClient remotingClient,
         TimeProvider timeProvider,
         IRemotingRocketMQTelemetry? telemetry = null)
     {
         _options = options;
         _clientOptions = clientOptions;
+        _routes = routes;
         _remotingClient = remotingClient;
         _timeProvider = timeProvider;
         _telemetry = telemetry ?? RemotingRocketMQTelemetry.Disabled;
@@ -46,12 +50,10 @@ internal sealed class PopWireClient
 
     public async Task<RemotingPopResult> PopAsync(
         RemotingPushAssignment assignment,
-        string brokerAddress,
         FilterExpression filter,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(assignment);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAddress);
         ArgumentNullException.ThrowIfNull(filter);
 
         var parentContext = Activity.Current?.Context;
@@ -59,8 +61,12 @@ internal sealed class PopWireClient
         var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                assignment.Topic,
+                assignment.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(brokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.PopMessage, new PopMessageRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),
@@ -84,7 +90,6 @@ internal sealed class PopWireClient
             var result = LegacyPopMessageDecoder.Decode(
                 response,
                 assignment,
-                brokerAddress,
                 _clientOptions.Namespace);
             using var telemetry = _telemetry.StartReceive(
                 assignment.Topic,
@@ -139,8 +144,12 @@ internal sealed class PopWireClient
             message.Properties);
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                receipt.Topic,
+                receipt.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(receipt.BrokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.AckMessage, new AckMessageRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),
@@ -162,17 +171,18 @@ internal sealed class PopWireClient
         }
     }
 
+    // This is the POP Retry/NACK wire operation. Handler-active receipt renewal is deliberately not part of the
+    // classic Remoting Push model.
     public async Task<RemotingPopReceipt> ChangeInvisibleTimeAsync(
         RemotingPopReceipt receipt,
         TimeSpan invisibleDuration,
-        bool suspend,
         RemotingMessageView message,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(receipt);
         ArgumentNullException.ThrowIfNull(message);
         using var telemetry = _telemetry.StartSettle(
-            suspend ? "renew" : "nack",
+            "nack",
             receipt.Topic,
             _options.GroupName,
             message.MessageId,
@@ -180,8 +190,12 @@ internal sealed class PopWireClient
             message.Properties);
         try
         {
+            var broker = await _routes.ResolveBrokerAsync(
+                receipt.Topic,
+                receipt.BrokerName,
+                cancellationToken).ConfigureAwait(false);
             var response = await _remotingClient.InvokeAsync(
-                EndpointParser.Parse(receipt.BrokerAddress),
+                EndpointParser.Parse(broker.Address),
                 new RemotingCommand(RequestCode.ChangeMessageInvisibleTime, new ChangeInvisibleTimeRequestHeader
                 {
                     ConsumerGroup = GetConsumerGroup(),
@@ -191,14 +205,14 @@ internal sealed class PopWireClient
                     Offset = receipt.QueueOffset,
                     InvisibleTime = ToPositiveMilliseconds(invisibleDuration),
                     Bname = receipt.BrokerName,
-                    Suspend = suspend
+                    Suspend = false
                 }),
                 _clientOptions.RequestTimeout,
                 cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response, "change the POP message invisibility");
-            var renewed = RenewReceipt(receipt, response);
+            var changed = DecodeChangedReceipt(receipt, response);
             telemetry.Complete();
-            return renewed;
+            return changed;
         }
         catch (Exception exception)
         {
@@ -233,14 +247,14 @@ internal sealed class PopWireClient
         }
     }
 
-    private static RemotingPopReceipt RenewReceipt(RemotingPopReceipt receipt, RemotingCommand response)
+    private static RemotingPopReceipt DecodeChangedReceipt(RemotingPopReceipt receipt, RemotingCommand response)
     {
         var popTimeMilliseconds = GetRequiredPositiveInt64(response.ExtFields, "popTime");
         var invisibleTimeMilliseconds = GetRequiredPositiveInt64(response.ExtFields, "invisibleTime");
         var reviveQueueId = GetRequiredNonNegativeInt32(response.ExtFields, "reviveQid");
         try
         {
-            return receipt.Renew(popTimeMilliseconds, invisibleTimeMilliseconds, reviveQueueId);
+            return receipt.WithChangedInvisibleTime(popTimeMilliseconds, invisibleTimeMilliseconds, reviveQueueId);
         }
         catch (Exception exception) when (exception is ArgumentOutOfRangeException or OverflowException)
         {

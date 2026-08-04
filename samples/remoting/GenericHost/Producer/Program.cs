@@ -20,7 +20,7 @@ using EventHorizon.RocketMQ.Samples.Remoting.Producer;
 using Microsoft.OpenApi;
 
 // This registration name is also the .NET keyed-service key for the explicit audit route.
-const string AuditRegistrationName = "audit";
+const string auditRegistrationName = "audit";
 
 var builder = WebApplication.CreateBuilder(args);
 // NamesrvAddr discovers routes; the producer then sends directly to advertised Broker endpoints.
@@ -41,7 +41,7 @@ var rocketMQ = builder.Services.AddRocketMQRemoting(remotingSection.Bind);
 rocketMQ.AddRemotingProducer(static options =>
     options.GroupName = "remoting-sample-producer");
 builder.Services
-    .AddRocketMQRemoting(AuditRegistrationName, auditRemotingSection.Bind)
+    .AddRocketMQRemoting(auditRegistrationName, auditRemotingSection.Bind)
     .AddRemotingProducer(static options =>
         options.GroupName = "remoting-sample-audit-producer");
 
@@ -137,7 +137,7 @@ static async Task<IResult> SendMessageAsync(
 
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
-    [FromKeyedServices(AuditRegistrationName)] IRemotingProducer producer,
+    [FromKeyedServices(auditRegistrationName)] IRemotingProducer producer,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
     SendMessageAsync(request, producer, logger, cancellationToken);

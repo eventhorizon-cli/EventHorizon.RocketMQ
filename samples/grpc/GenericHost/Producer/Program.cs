@@ -21,7 +21,7 @@ using Microsoft.OpenApi;
 
 // A registration name identifies an independent client registration and doubles as its keyed-service key;
 // "audit" is application composition metadata, not a Broker feature.
-const string AuditRegistrationName = "audit";
+const string auditRegistrationName = "audit";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
@@ -45,7 +45,7 @@ builder.Services
     .AddGrpcProducer(static options =>
         options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 builder.Services
-    .AddRocketMQGrpc(AuditRegistrationName, auditClientSection.Bind)
+    .AddRocketMQGrpc(auditRegistrationName, auditClientSection.Bind)
     .AddGrpcProducer(static options =>
         options.SendMsgTimeout = TimeSpan.FromSeconds(3));
 
@@ -123,7 +123,7 @@ static async Task<IResult> SendMessageAsync(
 
 static Task<IResult> SendAuditMessageAsync(
     SendMessageRequest? request,
-    [FromKeyedServices(AuditRegistrationName)] IGrpcProducer producer,
+    [FromKeyedServices(auditRegistrationName)] IGrpcProducer producer,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
     SendMessageAsync(request, producer, logger, cancellationToken);

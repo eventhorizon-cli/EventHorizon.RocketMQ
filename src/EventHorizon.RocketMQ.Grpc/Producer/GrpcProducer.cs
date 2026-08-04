@@ -609,11 +609,30 @@ internal sealed class GrpcProducer : IGrpcProducer
             MessageType = GetMessageType(message, transactional),
             Keys = { message.Keys }
         };
-        if (message.Tag is not null) properties.Tag = message.Tag;
-        if (message.MessageGroup is not null) properties.MessageGroup = message.MessageGroup;
-        if (message.DeliveryTimestamp is not null) properties.DeliveryTimestamp = Timestamp.FromDateTime(message.DeliveryTimestamp.Value.UtcDateTime);
-        if (message.Priority is not null) properties.Priority = message.Priority.Value;
-        if (message.LiteTopic is not null) properties.LiteTopic = message.LiteTopic;
+        if (message.Tag is not null)
+        {
+            properties.Tag = message.Tag;
+        }
+
+        if (message.MessageGroup is not null)
+        {
+            properties.MessageGroup = message.MessageGroup;
+        }
+
+        if (message.DeliveryTimestamp is not null)
+        {
+            properties.DeliveryTimestamp = Timestamp.FromDateTime(message.DeliveryTimestamp.Value.UtcDateTime);
+        }
+
+        if (message.Priority is not null)
+        {
+            properties.Priority = message.Priority.Value;
+        }
+
+        if (message.LiteTopic is not null)
+        {
+            properties.LiteTopic = message.LiteTopic;
+        }
 
         return new Proto.Message
         {
@@ -695,10 +714,26 @@ internal sealed class GrpcProducer : IGrpcProducer
     private static Proto.MessageType GetMessageType(Message message, bool transactional)
     {
         var specialized = 0;
-        if (message.MessageGroup is not null) specialized++;
-        if (message.DeliveryTimestamp is not null) specialized++;
-        if (message.Priority is not null) specialized++;
-        if (message.LiteTopic is not null) specialized++;
+        if (message.MessageGroup is not null)
+        {
+            specialized++;
+        }
+
+        if (message.DeliveryTimestamp is not null)
+        {
+            specialized++;
+        }
+
+        if (message.Priority is not null)
+        {
+            specialized++;
+        }
+
+        if (message.LiteTopic is not null)
+        {
+            specialized++;
+        }
+
         if (specialized > 1)
         {
             throw new ArgumentException("FIFO, delay, priority, and lite message properties are mutually exclusive.", nameof(message));
@@ -716,10 +751,26 @@ internal sealed class GrpcProducer : IGrpcProducer
             return Proto.MessageType.Transaction;
         }
 
-        if (message.MessageGroup is not null) return Proto.MessageType.Fifo;
-        if (message.DeliveryTimestamp is not null) return Proto.MessageType.Delay;
-        if (message.Priority is not null) return Proto.MessageType.Priority;
-        if (message.LiteTopic is not null) return Proto.MessageType.Lite;
+        if (message.MessageGroup is not null)
+        {
+            return Proto.MessageType.Fifo;
+        }
+
+        if (message.DeliveryTimestamp is not null)
+        {
+            return Proto.MessageType.Delay;
+        }
+
+        if (message.Priority is not null)
+        {
+            return Proto.MessageType.Priority;
+        }
+
+        if (message.LiteTopic is not null)
+        {
+            return Proto.MessageType.Lite;
+        }
+
         return Proto.MessageType.Normal;
     }
 

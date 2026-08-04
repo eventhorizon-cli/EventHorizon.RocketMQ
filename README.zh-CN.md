@@ -84,8 +84,8 @@ assignment 返回 PULL 或 POP，但要求运维侧准备兼容的 Broker 配置
 
 | Package | 连接目标 | 主要 API | 文档 |
 | --- | --- | --- | --- |
-| `EventHorizon.RocketMQ.Grpc` | RocketMQ 5 Proxy | `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer`、`IGrpcLitePushConsumer` | [gRPC 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md) |
-| `EventHorizon.RocketMQ.Remoting` | NameServer 和 Broker | `IRemotingProducer`、`IRemotingAdmin`、`IRemotingLitePullConsumer`、`IRemotingPushConsumer` | [Remoting 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md) |
+| [`EventHorizon.RocketMQ.Grpc`](https://www.nuget.org/packages/EventHorizon.RocketMQ.Grpc) | RocketMQ 5 Proxy | `IGrpcProducer`、`IGrpcSimpleConsumer`、`IGrpcPushConsumer`、`IGrpcLitePushConsumer` | [gRPC 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md) |
+| [`EventHorizon.RocketMQ.Remoting`](https://www.nuget.org/packages/EventHorizon.RocketMQ.Remoting) | NameServer 和 Broker | `IRemotingProducer`、`IRemotingAdmin`、`IRemotingLitePullConsumer`、`IRemotingPushConsumer` | [Remoting 指南](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md) |
 
 应用只需安装实际使用的协议 Package。两个协议 Package 在客户端 API 层面都完全自包含：公开模型位于
 各自的程序集，不依赖其他 EventHorizon.RocketMQ Package。

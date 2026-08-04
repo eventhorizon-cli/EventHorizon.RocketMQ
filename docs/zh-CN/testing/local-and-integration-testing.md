@@ -124,9 +124,29 @@ container suite 刻意继续使用专用 topic，且类内方法串行执行，�
 语义。
 
 single-Broker fixture 会启用 Broker-side assignment 与 timer wheel，同时把消息请求模式默认保持为 PULL。
-Remoting Broker-assigned Push case 仅通过测试管理操作把一个唯一 topic/group 切换为 POP，验证投递、确认、重试、
-续租和死信行为，并在清理时恢复 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产 Consumer
+Remoting Broker-assigned Push case 仅通过测试管理操作把一个唯一 topic/group 切换为 POP，验证投递、确认、固定 deadline
+过期、迟到结果拒绝、一次性重试、不对不确定失败重试和死信行为，并在清理时恢复 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产 Consumer
 API。普通 LitePull 与默认 Push 工作流不依赖 Broker 侧 POP 配置。
+
+single-Broker 的运行时间也属于需要持续测量的测试设计约束。在 commit `9ef119f` 上，本地使用
+`Topology!=MultiBroker` 筛选条件运行 Remoting 测试，29 个测试全部通过，测试阶段耗时 167.7 秒，其中共享
+fixture 启动约 44.6 秒。
+使用 lazy assembly fixture 的测试时长都包含同一段启动时间，不能直接相加。容器就绪后，最明确的可避免开销来自
+五个串行的 Broker-assigned POP 工作流：这些工作流多次使用 7 秒的结算后观察窗口，还叠加 retry 以及固定 deadline/迟到结果的观察等待。
+
+经过优化的测试套件仍保留同等的真实 Broker 覆盖，并遵守以下规则：
+
+- Broker-assigned POP 工作流使用独立 topic 和 consumer group，并拆分到可以彼此并行的测试类。公共 helper 可以复用
+  setup，但不能把本来隔离的工作流重新放回一个串行测试类。
+- 固定时长的静默等待不能证明 ACK、不可见时间变更、send-back 或 offset commit 已成功。测试应等待可观测的协议
+  操作成功或 Broker 状态变化，再校验关联的 message、receipt、topic、group 与 outcome。如果现有 OpenTelemetry
+  settlement completion 代表真实 Broker response，可以把它作为观察信号，但不能为测试在生产代码中增加捷径。
+- timeout 只用于限定失败上限，不应作为预期 sleep。对于“没有重投”等负向断言，应使用能够证明条件的最短真实
+  长轮询或状态查询，并为该等待单独设置上限。
+- 重试、固定 deadline 过期、迟到结果拒绝、不对不确定失败重试、死信顺序、防重复、rebalance 恢复与持久化覆盖必须保留。
+  只有确定性信号能证明同一不变量时，才可以删除等待时间。
+- 性能改动应使用同一条筛选命令，并至少在镜像已预热的情况下比较测试阶段 wall-clock 时间。即使结果更快，只要
+  聚焦工作流或完整筛选测试出现抖动，仍不能接受。
 
 端口由 Testcontainers 动态映射，测试不会依赖手工环境的固定端口。
 

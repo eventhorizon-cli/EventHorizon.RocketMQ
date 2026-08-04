@@ -87,6 +87,14 @@ dispatches work according to the configured concurrency and FIFO settings. It is
 long polling from end to end. Calling it protocol-level Broker push would give the wrong operational
 model.
 
+Ordinary Push receive requests set `AutoRenew=true`, asking a compatible Proxy to own receipt renewal for the client
+connection. SimpleConsumer sets `AutoRenew=false`; its caller owns the initial invisible duration and any explicit
+`ChangeInvisibleDurationAsync` call. The current .NET Push dispatcher also starts a client-side half-lease renewal loop
+while its handler is active. Proxy renewal and client-side renewal are two distinct owners of the same receipt lifetime;
+the gRPC follow-up refactor must consolidate that ownership and its telemetry rather than copying either mechanism into
+classic Remoting. Apache's Java gRPC Push client requests Proxy auto-renewal, while classic Remoting Push uses a fixed
+POP deadline.
+
 For non-FIFO dispatch, `ConsumeTimeout` defaults to 15 minutes. When it expires, the dispatcher cancels the handler
 token, stops client-side invisibility renewal, and requests retry; a late successful result is ignored. This recovers
 consume-loop capacity even when application code ignores cancellation, but the client cannot forcibly terminate that code.
@@ -141,7 +149,7 @@ and [local environment guide](../../../test-environments/rocketmq/README.md).
   decisions for every delivered message.
 - The lack of a public gRPC Pull API is deliberate. Use `IGrpcSimpleConsumer` or
   `IGrpcPushConsumer` when their semantics fit, or use the classic
-  [`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/Pull/Lite/IRemotingLitePullConsumer.cs)
+  [`IRemotingLitePullConsumer`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/LitePull/IRemotingLitePullConsumer.cs)
   with manual assignment, seek, and explicit commit when a classic queue-and-offset workflow is required.
 - gRPC Push and LitePush are not interchangeable with Remoting Push. They use different route,
   assignment, server, and compatibility paths even though both perform long polling internally.

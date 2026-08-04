@@ -16,12 +16,12 @@
 using System.Text;
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -41,7 +41,7 @@ services
         options.LongPollingTimeout = TimeSpan.FromSeconds(5);
         options.InitialPosition = ConsumeFromPosition.End;
         options.EnableAutoCommit = false;
-        options.Subscribe(Topic);
+        options.Subscribe(topic);
     });
 
 await using var serviceProvider = services.BuildServiceProvider(new ServiceProviderOptions

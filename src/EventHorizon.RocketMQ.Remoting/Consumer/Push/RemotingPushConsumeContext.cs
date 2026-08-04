@@ -55,11 +55,10 @@ public sealed class RemotingPushConsumeContext
     /// Gets or sets the RocketMQ delay level used when the consumer sends unacknowledged messages back.
     /// </summary>
     /// <remarks>
-    /// The consumer initializes this value from <see cref="RemotingPushConsumerOptions.RetryDelay"/>. Set it to
-    /// <c>0</c> to let the Broker choose the retry interval, to a positive RocketMQ delay level to select a
-    /// Broker-defined interval, or to a negative value to request direct dead-letter delivery.
+    /// The default value is <c>0</c>, which lets the Broker choose the retry interval. Set it to a positive RocketMQ
+    /// delay level to select a Broker-defined interval, or to a negative value to request direct dead-letter delivery.
     /// If <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value
-    /// and retries the complete batch using the configured <see cref="RemotingPushConsumerOptions.RetryDelay"/>.
+    /// and retries the complete batch using the Broker-selected interval.
     /// </remarks>
     public int DelayLevelWhenNextConsume { get; set; }
 }

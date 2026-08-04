@@ -27,7 +27,7 @@ namespace EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 /// </remarks>
 internal sealed class GrpcTelemetrySession : IGrpcTelemetrySession
 {
-    private static readonly Task _never = new TaskCompletionSource(
+    private static readonly Task Never = new TaskCompletionSource(
         TaskCreationOptions.RunContinuationsAsynchronously).Task;
     private static readonly TimeSpan InitializationGracePeriod = TimeSpan.FromSeconds(3);
     private readonly AsyncDuplexStreamingCall<Proto.TelemetryCommand, Proto.TelemetryCommand> _call;
@@ -58,7 +58,7 @@ internal sealed class GrpcTelemetrySession : IGrpcTelemetrySession
     }
 
     public Proto.Settings? ServerSettings { get; private set; }
-    public Task Completion => _reader ?? _never;
+    public Task Completion => _reader ?? Never;
 
     public async Task StartAsync(Proto.Settings settings, TimeSpan timeout, CancellationToken cancellationToken)
     {

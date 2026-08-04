@@ -48,6 +48,15 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// <summary>
     /// Gets or sets the initial invisibility lease for a message received through POP.
     /// </summary>
+    /// <remarks>
+    /// Classic Remoting Push treats this as a fixed processing deadline. It does not renew the receipt while the
+    /// message handler is active. If processing outlives the deadline, the client ignores the late result and the
+    /// Broker may redeliver the message. A handler retry changes invisibility as a one-shot negative acknowledgement;
+    /// that operation is not an active-handler lease renewal.
+    /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L266-L360">
+    /// Apache RocketMQ classic POP result handling and fixed-deadline checks.
+    /// </seealso>
     public TimeSpan PopInvisibleDuration { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
@@ -97,8 +106,12 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public TimeSpan LongPollingTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Gets or sets the delay applied before retrying message handling or a failed receive operation.
+    /// Gets or sets the local delay before retrying failed receive, settlement, or orderly handling work.
     /// </summary>
+    /// <remarks>
+    /// This value does not select the Broker redelivery interval. Use
+    /// <see cref="RemotingPushConsumeContext.DelayLevelWhenNextConsume"/> for that purpose.
+    /// </remarks>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>

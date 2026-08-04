@@ -18,7 +18,7 @@ using System.Globalization;
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 
 /// <summary>
-/// Represents the broker-issued receipt required to acknowledge or extend the invisibility of a POP message.
+/// Represents the broker-issued receipt required to settle a POP message.
 /// </summary>
 internal sealed class RemotingPopReceipt
 {
@@ -94,7 +94,7 @@ internal sealed class RemotingPopReceipt
 
     internal RemotingPopRetryTopicKind RetryTopicKind { get; }
 
-    internal RemotingPopReceipt Renew(
+    internal RemotingPopReceipt WithChangedInvisibleTime(
         long popTimeMilliseconds,
         long invisibleTimeMilliseconds,
         int reviveQueueId)

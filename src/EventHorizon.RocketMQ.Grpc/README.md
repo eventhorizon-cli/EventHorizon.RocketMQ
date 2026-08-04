@@ -189,7 +189,8 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 ```
 
 Call `SubscribeAsync` or `UnsubscribeAsync` to change subscriptions after startup. `ReceiveAsync` does not acknowledge
-messages; acknowledge only after durable processing, extend invisibility for long-running work, or call
+messages and does not enable automatic renewal; acknowledge only after durable processing, extend invisibility for
+long-running work, or call
 `ForwardToDeadLetterQueueAsync` when the application chooses to dead-letter a message. RocketMQ 5.5.0 Proxy requires a
 five-second minimum receive long-poll interval.
 
@@ -197,6 +198,7 @@ five-second minimum receive long-poll interval.
 
 Use `IGrpcPushConsumer` for automatic receive, handler dispatch, and settlement. Register a typed
 `IGrpcPushMessageHandler`; `Scoped` is appropriate when the handler uses scoped application services.
+Push also manages message invisibility while the handler is active; applications do not renew receipts themselves.
 
 ```csharp
 using System.Text;

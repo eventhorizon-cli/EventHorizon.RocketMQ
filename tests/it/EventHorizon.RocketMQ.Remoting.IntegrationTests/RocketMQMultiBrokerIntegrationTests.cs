@@ -18,6 +18,7 @@ using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Admin;
 using EventHorizon.RocketMQ.Remoting.Consumer;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;
@@ -137,6 +138,82 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         }
         finally
         {
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task LitePullConsumer_EmptyQueueLongPoll_DoesNotBlockReadyQueue()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var suffix = Guid.NewGuid().ToString("N");
+        var tag = $"multi-broker-lite-pull-{suffix}";
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = _fixture.NameServerAddresses;
+                options.InstanceName = $"remoting-multi-broker-lite-pull-{suffix}";
+            })
+            .AddRemotingProducer(options =>
+                options.GroupName = $"remoting-multi-broker-lite-pull-producer-{suffix}")
+            .AddRemotingLitePullConsumer(options =>
+            {
+                options.GroupName = $"remoting-multi-broker-lite-pull-consumer-{suffix}";
+                options.InitialPosition = ConsumeFromPosition.End;
+                options.EnableAutoCommit = false;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(5);
+                options.PollTimeout = TimeSpan.FromSeconds(2);
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IRemotingProducer>();
+        var consumer = provider.GetRequiredService<IRemotingLitePullConsumer>();
+        await producer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        try
+        {
+            var queues = await GetExpectedQueuesAsync(producer, cancellationToken);
+            var emptyQueue = Assert.Single(queues, static queue =>
+                queue.BrokerName == RocketMQMultiBrokerRemotingContainerFixture.BrokerAName &&
+                queue.QueueId == 0);
+            var readyQueue = Assert.Single(queues, static queue =>
+                queue.BrokerName == RocketMQMultiBrokerRemotingContainerFixture.BrokerBName &&
+                queue.QueueId == 0);
+            await consumer.AssignAsync(
+                [ToConsumerQueue(emptyQueue), ToConsumerQueue(readyQueue)],
+                new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
+                {
+                    [RocketMQMultiBrokerRemotingContainerFixture.TestTopic] = new(tag)
+                },
+                cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+
+            var body = $"multi-broker-lite-pull-ready-{suffix}";
+            var result = await producer.SendAsync(
+                new Message(
+                    RocketMQMultiBrokerRemotingContainerFixture.TestTopic,
+                    Encoding.UTF8.GetBytes(body))
+                {
+                    Tag = tag
+                },
+                readyQueue,
+                cancellationToken);
+            Assert.Equal(RemotingSendStatus.SendOk, result.Status);
+            Assert.Equal(readyQueue.BrokerName, result.MessageQueue.BrokerName);
+            Assert.Equal(readyQueue.QueueId, result.MessageQueue.QueueId);
+
+            var messages = await consumer.PollAsync(cancellationToken: cancellationToken);
+
+            var message = Assert.Single(messages);
+            Assert.Equal(body, Encoding.UTF8.GetString(message.Body));
+            Assert.Equal(readyQueue.BrokerName, message.BrokerName);
+            Assert.Equal(readyQueue.QueueId, message.QueueId);
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
             await producer.StopAsync(CancellationToken.None);
         }
     }

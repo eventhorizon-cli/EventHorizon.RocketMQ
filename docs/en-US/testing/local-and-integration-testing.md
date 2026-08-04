@@ -133,9 +133,31 @@ semantics.
 
 The single-Broker fixture enables Broker-side assignment and the timer wheel while retaining PULL as the default
 message request mode. Remoting Broker-assigned Push cases use a test-only administrative operation to select POP for
-one unique topic/group, verify delivery, acknowledgement, retry, renewal, and dead-letter behavior, and restore PULL
-during cleanup. `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer
+one unique topic/group, verify delivery, acknowledgement, fixed-deadline expiry, late-result rejection, one-shot retry,
+no-retry-on-indeterminate-failure, and dead-letter behavior, and restore PULL during cleanup. `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer
 API. Ordinary LitePull and default Push workflows do not depend on Broker-side POP configuration.
+
+Single-Broker runtime is treated as a measured test-design constraint. On commit `9ef119f`, the local Remoting filter
+`Topology!=MultiBroker` passed 29 tests in 167.7 seconds; approximately 44.6 seconds were shared fixture startup. Test
+durations that wait on the lazy assembly fixture include that common startup and therefore cannot be added together.
+After startup, the clearest avoidable cost was five serial Broker-assigned POP workflows with repeated seven-second
+post-settlement observation windows, plus retry and fixed-deadline/late-result observation delays.
+
+The optimized suite keeps the same live-Broker coverage under these rules:
+
+- Broker-assigned POP workflows use unique topics and consumer groups and live in independently parallelizable test
+  classes. A shared helper may own setup, but it must not put otherwise isolated workflows back into one serial class.
+- A fixed quiet delay is not evidence of ACK, invisible-time change, send-back, or offset commit. Tests wait for an
+  observable successful protocol operation or Broker state, then assert its correlated message, receipt, topic, group,
+  and outcome. Existing OpenTelemetry settlement completion may be observed when it represents the real Broker
+  response; a test-only production shortcut is not added.
+- Timeout values remain failure caps, not expected sleeps. Negative assertions such as no redelivery use the shortest
+  real long-poll or state query that can establish the condition, with a separately named upper bound.
+- Retry, fixed-deadline expiry, late-result rejection, no-retry-on-indeterminate-failure, dead-letter ordering,
+  duplicate prevention, rebalance recovery, and persistence coverage remains.
+  Runtime work is removed only when a deterministic signal proves the same invariant.
+- Performance changes record the same filtered command and compare test-phase wall time after at least one warm image
+  run. A faster result is not accepted if the focused workflow or the complete filtered suite becomes flaky.
 
 The fixture obtains host ports dynamically, so parallel or repeated test runs are not tied to the
 manual Compose ports. The protocol-specific test projects are:

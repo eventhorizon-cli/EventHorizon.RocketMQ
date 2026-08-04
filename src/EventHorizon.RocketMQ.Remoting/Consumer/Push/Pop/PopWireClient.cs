@@ -162,17 +162,18 @@ internal sealed class PopWireClient
         }
     }
 
+    // This is the POP Retry/NACK wire operation. Handler-active receipt renewal is deliberately not part of the
+    // classic Remoting Push model.
     public async Task<RemotingPopReceipt> ChangeInvisibleTimeAsync(
         RemotingPopReceipt receipt,
         TimeSpan invisibleDuration,
-        bool suspend,
         RemotingMessageView message,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(receipt);
         ArgumentNullException.ThrowIfNull(message);
         using var telemetry = _telemetry.StartSettle(
-            suspend ? "renew" : "nack",
+            "nack",
             receipt.Topic,
             _options.GroupName,
             message.MessageId,
@@ -191,14 +192,14 @@ internal sealed class PopWireClient
                     Offset = receipt.QueueOffset,
                     InvisibleTime = ToPositiveMilliseconds(invisibleDuration),
                     Bname = receipt.BrokerName,
-                    Suspend = suspend
+                    Suspend = false
                 }),
                 _clientOptions.RequestTimeout,
                 cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response, "change the POP message invisibility");
-            var renewed = RenewReceipt(receipt, response);
+            var changed = DecodeChangedReceipt(receipt, response);
             telemetry.Complete();
-            return renewed;
+            return changed;
         }
         catch (Exception exception)
         {
@@ -233,14 +234,14 @@ internal sealed class PopWireClient
         }
     }
 
-    private static RemotingPopReceipt RenewReceipt(RemotingPopReceipt receipt, RemotingCommand response)
+    private static RemotingPopReceipt DecodeChangedReceipt(RemotingPopReceipt receipt, RemotingCommand response)
     {
         var popTimeMilliseconds = GetRequiredPositiveInt64(response.ExtFields, "popTime");
         var invisibleTimeMilliseconds = GetRequiredPositiveInt64(response.ExtFields, "invisibleTime");
         var reviveQueueId = GetRequiredNonNegativeInt32(response.ExtFields, "reviveQid");
         try
         {
-            return receipt.Renew(popTimeMilliseconds, invisibleTimeMilliseconds, reviveQueueId);
+            return receipt.WithChangedInvisibleTime(popTimeMilliseconds, invisibleTimeMilliseconds, reviveQueueId);
         }
         catch (Exception exception) when (exception is ArgumentOutOfRangeException or OverflowException)
         {

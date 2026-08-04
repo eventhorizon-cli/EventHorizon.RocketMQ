@@ -107,19 +107,17 @@ public sealed class PopWireClientTests
         operation.Verify(value => value.Dispose(), Times.Once);
     }
 
-    [Theory]
-    [InlineData(false, "nack")]
-    [InlineData(true, "renew")]
-    public async Task ChangeInvisibleTimeAsync_RequestSucceeds_RecordsSettlement(
-        bool suspend,
-        string operationName)
+    [Fact]
+    public async Task ChangeInvisibleTimeAsync_RequestSucceeds_RecordsNackSettlement()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
         remoting
             .Setup(value => value.InvokeAsync(
                 It.IsAny<EndPoint>(),
-                It.Is<RemotingCommand>(request => request.Code == RequestCode.ChangeMessageInvisibleTime),
+                It.Is<RemotingCommand>(request =>
+                    request.Code == RequestCode.ChangeMessageInvisibleTime &&
+                    Equals(request.ExtFields["suspend"], false)),
                 It.IsAny<TimeSpan>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new RemotingCommand
@@ -133,18 +131,46 @@ public sealed class PopWireClientTests
                 }
             });
         var operation = CreateOperation();
-        var telemetry = CreateSettlementTelemetry(operation, operationName);
+        var telemetry = CreateSettlementTelemetry(operation, "nack");
         var client = CreateClient(remoting.Object, telemetry.Object);
         var message = CreateMessage();
 
         await client.ChangeInvisibleTimeAsync(
             CreateReceipt(),
             TimeSpan.FromSeconds(5),
-            suspend,
             message,
             cancellationToken);
 
         operation.Verify(value => value.Complete(), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task ChangeInvisibleTimeAsync_RemotingCallFails_RecordsNackSettlementFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var failure = new IOException("Changing POP invisibility failed.");
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request => request.Code == RequestCode.ChangeMessageInvisibleTime),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(failure);
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "nack");
+        var client = CreateClient(remoting.Object, telemetry.Object);
+        var message = CreateMessage();
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => client.ChangeInvisibleTimeAsync(
+            CreateReceipt(),
+            TimeSpan.FromSeconds(5),
+            message,
+            cancellationToken));
+
+        Assert.Same(failure, exception);
+        operation.Verify(value => value.Complete(failure), Times.Once);
         operation.Verify(value => value.Dispose(), Times.Once);
     }
 
@@ -168,6 +194,62 @@ public sealed class PopWireClientTests
         await client.AcknowledgeAsync(CreateReceipt(), message, cancellationToken);
 
         operation.Verify(value => value.Complete(), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcknowledgeAsync_RemotingCallFails_RecordsSettlementFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var failure = new IOException("Acknowledging the POP message failed.");
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request => request.Code == RequestCode.AckMessage),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(failure);
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "ack");
+        var client = CreateClient(remoting.Object, telemetry.Object);
+        var message = CreateMessage();
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => client.AcknowledgeAsync(
+            CreateReceipt(),
+            message,
+            cancellationToken));
+
+        Assert.Same(failure, exception);
+        operation.Verify(value => value.Complete(failure), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcknowledgeAsync_RemotingCallIsCanceled_RecordsSettlementCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        var canceled = new OperationCanceledException(cancellation.Token);
+        var remoting = new Mock<IRemotingClient>(MockBehavior.Strict);
+        remoting
+            .Setup(value => value.InvokeAsync(
+                It.IsAny<EndPoint>(),
+                It.Is<RemotingCommand>(request => request.Code == RequestCode.AckMessage),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(canceled);
+        var operation = CreateOperation();
+        var telemetry = CreateSettlementTelemetry(operation, "ack");
+        var client = CreateClient(remoting.Object, telemetry.Object);
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => client.AcknowledgeAsync(
+            CreateReceipt(),
+            CreateMessage(),
+            cancellation.Token));
+
+        Assert.Same(canceled, exception);
+        operation.Verify(value => value.Complete(canceled), Times.Once);
         operation.Verify(value => value.Dispose(), Times.Once);
     }
 

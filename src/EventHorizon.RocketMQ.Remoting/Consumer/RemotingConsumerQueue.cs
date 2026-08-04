@@ -20,12 +20,6 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer;
 /// </summary>
 public sealed class RemotingConsumerQueue : IEquatable<RemotingConsumerQueue>
 {
-    private static readonly IReadOnlyDictionary<long, string> EmptyBrokerAddresses =
-        new Dictionary<long, string>();
-    private readonly IReadOnlyDictionary<long, string> _brokerAddresses;
-    private readonly string? _defaultBrokerAddress;
-    private long _preferredBrokerId;
-
     /// <summary>
     /// Initializes a new instance of the <see cref="RemotingConsumerQueue"/> class.
     /// </summary>
@@ -41,40 +35,6 @@ public sealed class RemotingConsumerQueue : IEquatable<RemotingConsumerQueue>
         Topic = topic;
         BrokerName = brokerName;
         QueueId = queueId;
-        _brokerAddresses = EmptyBrokerAddresses;
-    }
-
-    internal RemotingConsumerQueue(string topic, int queueId, string brokerName, string brokerAddress)
-        : this(topic, queueId, brokerName, new Dictionary<long, string> { [0] = brokerAddress })
-    {
-    }
-
-    internal RemotingConsumerQueue(
-        string topic,
-        int queueId,
-        string brokerName,
-        IReadOnlyDictionary<long, string> brokerAddresses)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
-        ArgumentException.ThrowIfNullOrWhiteSpace(brokerName);
-        if (queueId < -1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(queueId));
-        }
-
-        ArgumentNullException.ThrowIfNull(brokerAddresses);
-        if (brokerAddresses.Count == 0)
-        {
-            throw new ArgumentException("At least one Broker address is required.", nameof(brokerAddresses));
-        }
-
-        Topic = topic;
-        BrokerName = brokerName;
-        QueueId = queueId;
-        _brokerAddresses = new Dictionary<long, string>(brokerAddresses);
-        _defaultBrokerAddress = _brokerAddresses.TryGetValue(0, out var master)
-            ? master
-            : _brokerAddresses.OrderBy(static entry => entry.Key).First().Value;
     }
 
     /// <summary>
@@ -91,10 +51,6 @@ public sealed class RemotingConsumerQueue : IEquatable<RemotingConsumerQueue>
     /// Gets the queue identifier within the topic and Broker.
     /// </summary>
     public int QueueId { get; }
-
-    internal IReadOnlyDictionary<long, string> BrokerAddresses => _brokerAddresses;
-    internal string BrokerAddress => _defaultBrokerAddress ?? throw new InvalidOperationException(
-        "The consumer queue does not have a resolved Broker route.");
 
     /// <inheritdoc/>
     public bool Equals(RemotingConsumerQueue? other) =>
@@ -123,18 +79,4 @@ public sealed class RemotingConsumerQueue : IEquatable<RemotingConsumerQueue>
     /// </summary>
     public static bool operator !=(RemotingConsumerQueue? left, RemotingConsumerQueue? right) => !(left == right);
 
-    internal string GetPullBrokerAddress()
-    {
-        var preferred = Interlocked.Read(ref _preferredBrokerId);
-        if (_brokerAddresses.TryGetValue(preferred, out var address))
-        {
-            return address;
-        }
-
-        return _defaultBrokerAddress ?? throw new InvalidOperationException(
-            "The consumer queue does not have a resolved Broker route.");
-    }
-
-    internal void SetPreferredBrokerId(long brokerId) =>
-        Interlocked.Exchange(ref _preferredBrokerId, brokerId);
 }

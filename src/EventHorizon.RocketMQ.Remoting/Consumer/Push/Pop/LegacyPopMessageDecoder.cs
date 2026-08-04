@@ -55,15 +55,6 @@ internal static class LegacyPopMessageDecoder
     public static RemotingPopResult Decode(
         RemotingCommand response,
         RemotingConsumerQueue queue,
-        string? @namespace = null)
-    {
-        ArgumentNullException.ThrowIfNull(queue);
-        return Decode(response, queue, queue.GetPullBrokerAddress(), @namespace);
-    }
-
-    public static RemotingPopResult Decode(
-        RemotingCommand response,
-        RemotingConsumerQueue queue,
         string brokerAddress,
         string? @namespace)
     {
@@ -117,14 +108,6 @@ internal static class LegacyPopMessageDecoder
                 response.Code,
                 response.Remark ?? "Broker rejected the POP request.")
         };
-    }
-
-    public static IReadOnlyList<RemotingPopMessage> DecodeMessages(
-        IReadOnlyList<RemotingMessageView> messages,
-        RemotingConsumerQueue queue)
-    {
-        ArgumentNullException.ThrowIfNull(queue);
-        return DecodeMessages(messages, queue, queue.GetPullBrokerAddress());
     }
 
     public static IReadOnlyList<RemotingPopMessage> DecodeMessages(
@@ -194,14 +177,6 @@ internal static class LegacyPopMessageDecoder
         }
 
         return Array.AsReadOnly(result);
-    }
-
-    public static RemotingPopMessage DecodeMessage(
-        RemotingMessageView message,
-        RemotingConsumerQueue queue)
-    {
-        ArgumentNullException.ThrowIfNull(queue);
-        return DecodeMessage(message, queue, queue.GetPullBrokerAddress());
     }
 
     public static RemotingPopMessage DecodeMessage(

@@ -83,10 +83,11 @@ distinct groups, while isolated same-group members maintain their own Broker mem
 and POP operations remain internal to LitePull and Push and do not create additional public roles or group sessions.
 Producers maintain their own producer heartbeat lifecycle.
 
-Push and LitePull keep queue-allocation decisions in their own Consumer implementations. Their shared classic group
-protocol operations are owned by `RemotingConsumerGroupSession`; orderly Push queue-lock wire operations are owned by
-`RemotingPushQueueLockManager`. This keeps transport I/O, Rebalance triggering, and Consumer state reconciliation as
-separate responsibilities.
+Push and LitePull keep queue-allocation decisions in their own per-start runs. Their shared classic group wire
+operations are owned by the stateless `RemotingConsumerGroupClient`; a run-owned `RemotingConsumerGroupSession` keeps
+known Brokers, subscription version, Rebalance registration, and the unregister boundary. Orderly Push queue-lock wire
+operations remain owned by `OrderlyPullQueueLockClient`. This keeps transport I/O, Rebalance triggering, membership
+lifetime, and role-specific queue reconciliation as separate responsibilities.
 
 ### Consumer-group combinations
 
@@ -156,18 +157,19 @@ already-started Generic Host must not invoke those role lifecycle methods a seco
 
 ### Consumer engines
 
-The reusable receive machinery is internal and protocol-owned. A gRPC Push or Simple role receives
-one `IGrpcReceiveConsumerEngine`; each Remoting LitePull or Push role receives one
-`IRemotingConsumerEngine`. The builder constructs that engine at the protocol composition root and
-injects it into the consumer implementation. It is not a global DI service, and the consumer does
-not instantiate it itself.
+The reusable protocol machinery is internal and protocol-owned. A gRPC Push or Simple role receives one
+`IGrpcReceiveConsumerEngine`; each Remoting LitePull or Push role receives one `IRemotingConsumerEngine`. The builder
+constructs that engine at the protocol composition root and injects it into the consumer implementation. It is not a
+global DI service, and the consumer does not instantiate it itself.
 
 The relevant implementations are
 [`GrpcReceiveConsumerEngine`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/GrpcReceiveConsumerEngine.cs)
 and
 [`RemotingConsumerEngine`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/RemotingConsumerEngine.cs).
-This gives each consumer instance one coherent lifecycle for its receive loops, subscriptions, and
-shutdown work.
+The gRPC engine owns its protocol receive lifecycle. The Remoting engine instead composes one role's route, PULL,
+offset, and send-back capabilities; the Remoting role's per-start run owns group membership, assignment, receive loops,
+and ordered shutdown. Disposing the role disposes both boundaries. This distinction avoids a no-op second lifecycle in
+the Remoting wire engine while keeping its state isolated per registered Consumer.
 
 ### Push-handler lifetimes
 
@@ -200,9 +202,13 @@ be idempotent. Its typed-handler async scope remains alive until that invocation
 not disposed while handler code is still running. FIFO message groups are excluded to preserve ordering.
 
 For concurrent clustered non-FIFO Remoting batches, `ConsumeTimeout` cancels the handler token and requests Broker
-redelivery when the configured limit elapses. A late result is ignored and can overlap redelivery, so the handler still
-owns cancellation cooperation and must be idempotent; the runtime cannot forcibly stop application code. FIFO and
-orderly delivery remain excluded to preserve ordering guarantees.
+redelivery when the configured limit elapses. For POP delivery, the receipt is not renewed while the handler is active;
+the fixed invisible deadline is checked before handler processing and again before settlement. An expired result is
+ignored without settlement. A `Retry` outcome makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false`;
+an indeterminate failure is not retried with the old receipt. ACK, including the ACK after dead-letter forwarding, is
+retried only while the original deadline remains valid. A late result is ignored and can overlap redelivery, so the
+handler still owns cancellation cooperation and must be idempotent; the runtime cannot forcibly stop application code.
+FIFO and orderly delivery remain excluded to preserve ordering guarantees.
 
 ## Trade-offs and Constraints
 

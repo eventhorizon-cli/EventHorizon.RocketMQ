@@ -17,7 +17,6 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
 internal sealed record RemotingConsumerSettings(
     string GroupName,
-    IReadOnlyDictionary<string, FilterExpression> Subscriptions,
     int BatchSize,
     int MaxMessageBytes,
     TimeSpan LongPollingTimeout);

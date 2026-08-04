@@ -80,6 +80,21 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 | 自动 handler 处理 | Push 与 LitePush handler。 | Push handler。 |
 | Consumer 完结操作 | 确认、负确认和转发死信。 | LitePull 与 Push PULL 位点提交、重试/死信 send-back，以及 Push 内部 POP 确认和不可见时间变更。 |
 
+对于 gRPC，`ReceiveMessageRequest.AutoRenew` 请求的 Proxy 托管续约不是独立的客户端 wire operation，不能创建客户端
+settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：handler 活跃期间或 SimpleConsumer
+延长租期使用 `renew`，安排重试使用 `nack`。如果 Proxy 自动续约与客户端续期循环同时存在，或续约与重试记录为相同
+settlement outcome，gRPC 续约 owner 的职责仍未明确收敛。
+
+classic Remoting 的埋点归属应跟随实际 wire operation。`PullWireClient` 负责记录并完成非空、空结果、取消与失败 PULL 的
+receive 埋点；`RemotingConsumerOffsetClient` 负责 commit settlement；`RemotingSettlementClient` 负责 PULL 重试与
+死信 send-back。POP receive、ACK 和不可见时间变更仍由 `PopWireClient` 负责。角色级 consumer engine 只负责组合这些
+client；内部职责迁移不能让同一个 Activity 或 metric 被重复完成，也不能遗漏完成。
+
+POP 结算 telemetry 按每次实际的 wire operation 独立记录：确认使用 `ack`，一次性重试/延期
+`CHANGE_MESSAGE_INVISIBLETIME` 使用 `nack`（defer），死信转发与后续 ACK 也分别记录。handler 结果在固定不可见
+deadline 之后到达时，不创建任何结算 operation。不确定的 `nack` 失败不会使用旧 receipt 重试；确认以及死信转发后
+的 ACK 只在原始 deadline 内重试。
+
 Activity 使用 OpenTelemetry 消息语义约定属性，例如 `messaging.system`、`messaging.destination.name`、
 `messaging.consumer.group.name`、消息 ID、分区 ID、body 大小和 batch 大小。失败时会把 Activity 状态设为 error，
 并记录 `error.type`。

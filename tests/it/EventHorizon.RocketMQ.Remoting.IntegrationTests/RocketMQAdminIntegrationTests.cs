@@ -17,7 +17,7 @@ using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Admin;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -28,7 +28,7 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task AdminWorkflow_ReadableQueueIsDiscovered_ReadsOffsetsAndConsumerCommit()
+    public async Task AdminWorkflow_ReadableQueueIsAssignedToLitePull_ReadsOffsetsAndConsumerCommit()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
@@ -52,7 +52,6 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
                 options.InitialPosition = ConsumeFromPosition.End;
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
                 options.PollTimeout = TimeSpan.FromSeconds(2);
-                options.Subscribe(scope.Topic, new FilterExpression(tag));
             });
 
         await using var provider = services.BuildServiceProvider(
@@ -68,10 +67,6 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
                 scope.Topic,
                 cancellationToken);
             Assert.NotEmpty(adminQueues);
-
-            var pullQueues = await consumer.GetMessageQueuesAsync(
-                scope.Topic,
-                cancellationToken);
 
             var sent = await producer.SendAsync(
                 new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
@@ -91,9 +86,14 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
 
             var adminQueue = Assert.Single(adminQueues, queue =>
                 queue.BrokerName == sent.MessageQueue.BrokerName && queue.QueueId == sent.MessageQueue.QueueId);
-            var pullQueue = Assert.Single(pullQueues, queue =>
-                queue.BrokerName == sent.MessageQueue.BrokerName && queue.QueueId == sent.MessageQueue.QueueId);
             Assert.Null(await admin.GetConsumerOffsetAsync(group, adminQueue, cancellationToken));
+            await consumer.AssignAsync(
+                [adminQueue],
+                new Dictionary<string, FilterExpression>(StringComparer.Ordinal)
+                {
+                    [scope.Topic] = new(tag)
+                },
+                cancellationToken);
 
             RemotingMessageView? matching = null;
             for (var attempt = 0; attempt < 10 && matching is null; attempt++)
@@ -123,7 +123,7 @@ public sealed class RocketMQAdminIntegrationTests(RocketMQSingleBrokerContainerF
             Assert.True(maximum > sent.QueueOffset);
             Assert.InRange(lowerTimestampOffset, minimum, maximum);
             Assert.InRange(upperTimestampOffset, minimum, maximum);
-            await consumer.CommitAsync(pullQueue, cancellationToken);
+            await consumer.CommitAsync(adminQueue, cancellationToken);
             Assert.Equal(
                 message.QueueOffset + 1,
                 await admin.GetConsumerOffsetAsync(group, adminQueue, cancellationToken));

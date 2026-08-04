@@ -13,49 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using EventHorizon.RocketMQ.Remoting.Consumer.Offset;
 using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
+using EventHorizon.RocketMQ.Remoting.Consumer.Route;
+using EventHorizon.RocketMQ.Remoting.Consumer.Settlement;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer;
 
-internal interface IRemotingConsumerEngine : IAsyncDisposable
+internal interface IRemotingConsumerEngine :
+    IRemotingConsumerRouteClient,
+    IRemotingPullWireClient,
+    IRemotingConsumerOffsetClient,
+    IRemotingSettlementClient,
+    IAsyncDisposable
 {
     ValueTask StartAsync(CancellationToken cancellationToken = default);
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<RemotingConsumerQueue>> GetMessageQueuesAsync(
-        string topic,
-        CancellationToken cancellationToken = default);
-
-    Task<RemotingPullResult> PullAsync(
-        RemotingConsumerQueue queue,
-        long offset,
-        int? maxMessages = null,
-        CancellationToken cancellationToken = default);
-
-    Task<long> GetOffsetAsync(
-        RemotingConsumerQueue queue,
-        CancellationToken cancellationToken = default);
-
-    Task UpdateOffsetAsync(
-        RemotingConsumerQueue queue,
-        long offset,
-        CancellationToken cancellationToken = default);
-
-    Task<long> QueryOffsetAsync(
-        RemotingConsumerQueue queue,
-        ConsumeFromPosition position,
-        DateTimeOffset? timestamp = null,
-        CancellationToken cancellationToken = default);
-
-    Task SendBackAsync(
-        RemotingConsumerQueue queue,
-        RemotingMessageView message,
-        int delayLevel,
-        int maxReconsumeTimes,
-        CancellationToken cancellationToken);
-
-    void SetSubscription(string topic, FilterExpression expression);
-
-    void RemoveSubscription(string topic);
 }

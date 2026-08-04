@@ -20,7 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -58,7 +58,7 @@ try
     // This non-Host process owns the Producer lifecycle.
     await producer.StartAsync(stoppingSource.Token).ConfigureAwait(false);
 
-    var message = new Message(Topic, Encoding.UTF8.GetBytes("Hello from the non-Host gRPC Producer sample."))
+    var message = new Message(topic, Encoding.UTF8.GetBytes("Hello from the non-Host gRPC Producer sample."))
     {
         Tag = "sample"
     };

@@ -105,7 +105,7 @@ internal sealed class RemotingMessageRequestModeScope : IAsyncDisposable
         }.ToJson());
         var response = await client.InvokeAsync(
             brokerEndpoint,
-            new RemotingCommand(RequestCode.SetMessageRequestMode, new EmptyRequestHeader()) { Body = body },
+            new RemotingCommand(RequestCode.SetMessageRequestMode) { Body = body },
             RequestTimeout,
             cancellationToken).ConfigureAwait(false);
         if (response.Code != ResponseCodes.ResSuccess)
@@ -116,5 +116,4 @@ internal sealed class RemotingMessageRequestModeScope : IAsyncDisposable
         }
     }
 
-    private sealed class EmptyRequestHeader : CommandCustomHeader;
 }

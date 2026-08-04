@@ -96,7 +96,8 @@ operator-managed Broker configuration.
 
 Push PULL settings are named `PullBatchSize`, `PullMaxCachedMessages`, and `PullMaxCachedMessageBytes`. Broker-assigned
 POP uses `PopBatchSize`, `PopInvisibleDuration`, and `PopMaxInflightMessagesPerAssignment`. POP receipt acquisition,
-renewal, acknowledgement, and retry remain internal Push responsibilities rather than a caller-managed Consumer API.
+fixed-deadline validation, acknowledgement, and retry remain internal Push responsibilities rather than a
+caller-managed Consumer API. The client does not renew a POP receipt while the handler is active.
 
 Remoting Push has one batch-oriented handler API: `IRemotingPushMessageHandler.HandleAsync` receives an
 `IReadOnlyList<RemotingMessageView>` and a `RemotingPushConsumeContext`. `ConsumeMessageBatchSize` independently limits
@@ -141,7 +142,7 @@ The inbound handler only records a wakeup; it does not perform route or Broker I
 has an independent single-flight participant, so a blocked or failing group cannot serialize unrelated groups.
 Failures retry after one second, and a periodic fallback capped at 20 seconds repairs missed notifications. Shared
 heartbeat, membership-query, and unregister operations belong to `RemotingConsumerGroupSession`; orderly queue lock
-and unlock commands belong to `RemotingPushQueueLockManager`.
+and unlock commands belong to `OrderlyPullQueueLockClient`.
 
 A physical `RemotingClient` is transport only and has no group identity of its own. Each active Push or LitePull
 session sends its own heartbeat through its assigned client on initial and periodic coordination; LitePull becomes
@@ -183,32 +184,33 @@ because Broker queue-lock lease expiry, rather than client notification, determi
 
 #### Concurrent Push dispatch and offset safety
 
-In concurrent PULL mode, every assigned Broker physical queue owns one client-side `ProcessQueue`. A `ProcessQueue`
+In concurrent PULL mode, every assigned Broker physical queue owns one client-side `PullProcessQueue`. A `PullProcessQueue`
 holds
 locally pulled messages and their consumption state; it is not another Broker queue and does not create any
 server-side resource. Pulling can advance independently of handler completion. `PullMaxCachedMessages` and
 `PullMaxCachedMessageBytes` bound admission of newly pulled messages waiting for their first dispatch. Batches already
 handed to handlers do not retain that capacity. When settlement is unresolved or a FIFO message has an incomplete
-predecessor, including one in another physical queue, messages already cached by that `ProcessQueue` release their
+predecessor, including one in another physical queue, messages already cached by that `PullProcessQueue` release their
 admission and new admission for the queue pauses until it can make progress. A blocked queue therefore cannot
 monopolize capacity needed by healthy queues, and the setting is not a strict limit on every resident message.
 
-Ready `ProcessQueue` instances enter a coalesced ready queue at most once. The shared logical consume loops take one
+Ready `PullProcessQueue` instances enter a coalesced ready queue at most once. The shared logical consume loops take one
 handler batch from a ready queue, put it at the back again when more work remains, and thereby round-robin across
 active physical queues instead of allowing one hot queue to occupy the entire dispatch path. `MaxConcurrency` is the
 total concurrency shared by all assigned queues. These loops are asynchronous tasks scheduled by the .NET ThreadPool;
 they are not dedicated or thread-affine consumer threads.
 
-Each `ProcessQueue` also maintains its own contiguous completion watermark. A later batch that finishes first cannot
+Each `PullProcessQueue` also maintains its own contiguous completion watermark. A later batch that finishes first cannot
 move the persisted offset past an earlier unresolved message, and a faster queue cannot advance another queue's
 offset. Failed retry/dead-letter settlement remains unresolved and is retried locally after `RetryDelay` without
 invoking the application handler again; offset persistence is also retried without crossing the gap. When an
-assignment is dropped, its `ProcessQueue` is marked dropped so a late handler completion cannot mutate the replacement
+assignment is dropped, its `PullProcessQueue` is marked dropped so a late handler completion cannot mutate the replacement
 assignment or commit its offset.
 
-The `ProcessQueue` name and per-physical-queue ownership follow the role used by the official RocketMQ Java client.
+The internal `PullProcessQueue` corresponds to the official RocketMQ Java client's `ProcessQueue` role and its
+per-physical-queue ownership.
 The Java concurrent path creates consume requests from a newly pulled message list; this implementation's coalesced
-ready queue and one-batch-per-turn extraction from `ProcessQueue` are a .NET scheduling design, not an exact copy of
+ready queue and one-batch-per-turn extraction from `PullProcessQueue` are a .NET scheduling design, not an exact copy of
 the Java data path.
 
 ### Read-only Admin and physical message IDs

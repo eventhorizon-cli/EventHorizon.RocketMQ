@@ -67,12 +67,12 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task InvokeAsync_LargeFrameOverNetworkStream_RoundTrip()
     {
-        const int BodyLength = 512 * 1024;
+        const int bodyLength = 512 * 1024;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
-        var requestBody = new byte[BodyLength];
-        var responseBody = new byte[BodyLength];
-        for (var index = 0; index < BodyLength; index++)
+        var requestBody = new byte[bodyLength];
+        var responseBody = new byte[bodyLength];
+        for (var index = 0; index < bodyLength; index++)
         {
             requestBody[index] = (byte)(index % 251);
             responseBody[index] = (byte)(250 - (index % 251));
@@ -456,11 +456,11 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task InvokeAsync_ResponseBeforePeerClose_ReturnsResponse()
     {
-        const int BodyLength = 8 * 1024 * 1024;
+        const int bodyLength = 8 * 1024 * 1024;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var request = CreateRequest("response-before-close");
-        request.Body = GC.AllocateUninitializedArray<byte>(BodyLength);
+        request.Body = GC.AllocateUninitializedArray<byte>(bodyLength);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
 
@@ -569,14 +569,14 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task BrokerRequest_WithPendingOpaque_DoesNotCompletePendingInvocation()
     {
-        const int BrokerRequestCode = 200050;
+        const int brokerRequestCode = 200050;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var handlerInvoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var allowActualResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
-        using var registration = client.RegisterRequestHandler(BrokerRequestCode, context =>
+        using var registration = client.RegisterRequestHandler(brokerRequestCode, context =>
         {
             handlerInvoked.TrySetResult();
             return ValueTask.FromResult(RemotingRequestResult.NoResponse);
@@ -607,7 +607,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, request.Opaque, oneway: true),
+                CreateBrokerRequest(brokerRequestCode, request.Opaque, oneway: true),
                 server.CancellationToken);
             await handlerInvoked.Task.WaitAsync(OperationTimeout, server.CancellationToken);
             await allowActualResponse.Task.WaitAsync(OperationTimeout, server.CancellationToken);
@@ -618,13 +618,13 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task BrokerOnewayRequest_RegisteredHandlerWithoutWritingResponse_Invokes()
     {
-        const int BrokerRequestCode = 1201;
+        const int brokerRequestCode = 1201;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var handlerInvoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
-        using var registration = client.RegisterRequestHandler(BrokerRequestCode, context =>
+        using var registration = client.RegisterRequestHandler(brokerRequestCode, context =>
         {
             handlerInvoked.TrySetResult();
             return ValueTask.FromResult(RemotingRequestResult.Respond(new RemotingCommand
@@ -648,7 +648,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, opaque: 7001, oneway: true),
+                CreateBrokerRequest(brokerRequestCode, opaque: 7001, oneway: true),
                 server.CancellationToken);
             await handlerInvoked.Task.WaitAsync(OperationTimeout, server.CancellationToken);
 
@@ -664,8 +664,8 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task UnknownBrokerRequest_NotSupportedResponse_ReturnsNotSupportedResponse()
     {
-        const int UnknownRequestCode = 1202;
-        const int BrokerOpaque = 7002;
+        const int unknownRequestCode = 1202;
+        const int brokerOpaque = 7002;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
@@ -686,12 +686,12 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(UnknownRequestCode, BrokerOpaque),
+                CreateBrokerRequest(unknownRequestCode, brokerOpaque),
                 server.CancellationToken);
 
             var unsupportedResponse = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResRequestCodeNotSupported, unsupportedResponse.Code);
-            Assert.Equal(BrokerOpaque, unsupportedResponse.Opaque);
+            Assert.Equal(brokerOpaque, unsupportedResponse.Opaque);
             Assert.True(unsupportedResponse.IsResponseType());
             Assert.False(unsupportedResponse.IsOnewayRpc());
 
@@ -702,7 +702,7 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task UnsupportedTransactionStateCheck_WithoutWritingResponse_IsIgnored()
     {
-        const int BrokerOpaque = 7006;
+        const int brokerOpaque = 7006;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
@@ -723,7 +723,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(RequestCode.CheckTransactionState, BrokerOpaque),
+                CreateBrokerRequest(RequestCode.CheckTransactionState, brokerOpaque),
                 server.CancellationToken);
 
             using var noResponseCts = CancellationTokenSource.CreateLinkedTokenSource(server.CancellationToken);
@@ -738,8 +738,8 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task UnsupportedOnewayBrokerRequest_WithoutWritingResponse_IsIgnored()
     {
-        const int UnknownRequestCode = 1206;
-        const int BrokerOpaque = 7007;
+        const int unknownRequestCode = 1206;
+        const int brokerOpaque = 7007;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
@@ -760,7 +760,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(UnknownRequestCode, BrokerOpaque, oneway: true),
+                CreateBrokerRequest(unknownRequestCode, brokerOpaque, oneway: true),
                 server.CancellationToken);
 
             using var noResponseCts = CancellationTokenSource.CreateLinkedTokenSource(server.CancellationToken);
@@ -775,14 +775,14 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task DisposedBrokerRequestHandler_NotSupportedResponse_ReturnsNotSupportedResponse()
     {
-        const int BrokerRequestCode = 1207;
-        const int BrokerOpaque = 7008;
+        const int brokerRequestCode = 1207;
+        const int brokerOpaque = 7008;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
         var registration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromResult(RemotingRequestResult.NoResponse));
         registration.Dispose();
 
@@ -801,12 +801,12 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                CreateBrokerRequest(brokerRequestCode, brokerOpaque),
                 server.CancellationToken);
 
             var unsupportedResponse = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResRequestCodeNotSupported, unsupportedResponse.Code);
-            Assert.Equal(BrokerOpaque, unsupportedResponse.Opaque);
+            Assert.Equal(brokerOpaque, unsupportedResponse.Opaque);
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
         }
     }
@@ -814,24 +814,24 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task MultipleBrokerRequestHandlers_FirstHandledResponse_UsesFirstHandler()
     {
-        const int BrokerRequestCode = 1208;
-        const int BrokerOpaque = 7009;
+        const int brokerRequestCode = 1208;
+        const int brokerOpaque = 7009;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
         using var firstRegistration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromResult(RemotingRequestResult.NotHandled));
         using var secondRegistration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromResult(RemotingRequestResult.Respond(new RemotingCommand
             {
                 Code = ResponseCodes.ResSuccess,
                 Body = Encoding.UTF8.GetBytes("first-handler-response")
             })));
         using var thirdRegistration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromResult(RemotingRequestResult.Respond(new RemotingCommand
             {
                 Code = ResponseCodes.ResError,
@@ -853,12 +853,12 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                CreateBrokerRequest(brokerRequestCode, brokerOpaque),
                 server.CancellationToken);
 
             var handlerResponse = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResSuccess, handlerResponse.Code);
-            Assert.Equal(BrokerOpaque, handlerResponse.Opaque);
+            Assert.Equal(brokerOpaque, handlerResponse.Opaque);
             Assert.Equal("first-handler-response", Encoding.UTF8.GetString(handlerResponse.Body!));
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
         }
@@ -867,7 +867,7 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task TransactionStateHandlerWithoutResponse_Response_Suppresses()
     {
-        const int BrokerOpaque = 7010;
+        const int brokerOpaque = 7010;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var handlerInvoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -896,7 +896,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(RequestCode.CheckTransactionState, BrokerOpaque),
+                CreateBrokerRequest(RequestCode.CheckTransactionState, brokerOpaque),
                 server.CancellationToken);
             await handlerInvoked.Task.WaitAsync(OperationTimeout, server.CancellationToken);
 
@@ -912,14 +912,14 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task SyncHandlerWithoutResponse_ErrorInsteadOfTimingOut_ReturnsErrorWithoutTimeout()
     {
-        const int BrokerRequestCode = 1205;
-        const int BrokerOpaque = 7005;
+        const int brokerRequestCode = 1205;
+        const int brokerOpaque = 7005;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
         using var registration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromResult(RemotingRequestResult.NoResponse));
 
         var response = await client.InvokeAsync(
@@ -937,12 +937,12 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                CreateBrokerRequest(brokerRequestCode, brokerOpaque),
                 server.CancellationToken);
 
             var handlerError = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResError, handlerError.Code);
-            Assert.Equal(BrokerOpaque, handlerError.Opaque);
+            Assert.Equal(brokerOpaque, handlerError.Opaque);
             Assert.True(handlerError.IsResponseType());
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
         }
@@ -951,14 +951,14 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task SlowBrokerRequestHandler_NormalResponse_DoesNotBlock()
     {
-        const int BrokerRequestCode = 1203;
+        const int brokerRequestCode = 1203;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var handlerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
-        using var registration = client.RegisterRequestHandler(BrokerRequestCode, async context =>
+        using var registration = client.RegisterRequestHandler(brokerRequestCode, async context =>
         {
             handlerEntered.TrySetResult();
             await releaseHandler.Task.WaitAsync(context.CancellationToken);
@@ -989,7 +989,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, opaque: 7003, oneway: true),
+                CreateBrokerRequest(brokerRequestCode, opaque: 7003, oneway: true),
                 server.CancellationToken);
             await handlerEntered.Task.WaitAsync(OperationTimeout, server.CancellationToken);
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
@@ -999,15 +999,15 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task FullInboundRequestQueue_SystemBusyResponse_ReturnsSystemBusyResponse()
     {
-        const int BrokerRequestCode = 1209;
-        const int InitialBrokerOpaque = 8000;
+        const int brokerRequestCode = 1209;
+        const int initialBrokerOpaque = 8000;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var requestLoopsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCount = 0;
         var serverTask = ServeAsync();
         await using var client = CreateClient();
-        using var registration = client.RegisterRequestHandler(BrokerRequestCode, async context =>
+        using var registration = client.RegisterRequestHandler(brokerRequestCode, async context =>
         {
             if (Interlocked.Increment(ref handlerCount) == 2)
             {
@@ -1034,20 +1034,20 @@ public sealed class RemotingClientTests
             var request = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteManyAsync(
                 [
-                    CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque),
-                    CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + 1)
+                    CreateBrokerRequest(brokerRequestCode, initialBrokerOpaque),
+                    CreateBrokerRequest(brokerRequestCode, initialBrokerOpaque + 1)
                 ],
                 server.CancellationToken);
             await requestLoopsStarted.Task.WaitAsync(OperationTimeout, server.CancellationToken);
 
             await connection.WriteManyAsync(
                 Enumerable.Range(2, 129)
-                    .Select(index => CreateBrokerRequest(BrokerRequestCode, InitialBrokerOpaque + index)),
+                    .Select(index => CreateBrokerRequest(brokerRequestCode, initialBrokerOpaque + index)),
                 server.CancellationToken);
 
             var busyResponse = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResSystemBusy, busyResponse.Code);
-            Assert.Equal(InitialBrokerOpaque + 130, busyResponse.Opaque);
+            Assert.Equal(initialBrokerOpaque + 130, busyResponse.Opaque);
             Assert.True(busyResponse.IsResponseType());
             await connection.WriteAsync(CreateResponse(request, "normal-response"), server.CancellationToken);
         }
@@ -1056,14 +1056,14 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task ThrowingBrokerRequestHandler_ErrorAndConnectionUsable_ReturnsAndKeeps()
     {
-        const int BrokerRequestCode = 1204;
-        const int BrokerOpaque = 7004;
+        const int brokerRequestCode = 1204;
+        const int brokerOpaque = 7004;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var serverTask = ServeAsync();
         await using var client = CreateClient();
         using var registration = client.RegisterRequestHandler(
-            BrokerRequestCode,
+            brokerRequestCode,
             static _ => ValueTask.FromException<RemotingRequestResult>(
                 new InvalidOperationException("handler failed")));
 
@@ -1088,12 +1088,12 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var firstRequest = await connection.ReadAsync(server.CancellationToken);
             await connection.WriteAsync(
-                CreateBrokerRequest(BrokerRequestCode, BrokerOpaque),
+                CreateBrokerRequest(brokerRequestCode, brokerOpaque),
                 server.CancellationToken);
 
             var handlerError = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(ResponseCodes.ResError, handlerError.Code);
-            Assert.Equal(BrokerOpaque, handlerError.Opaque);
+            Assert.Equal(brokerOpaque, handlerError.Opaque);
             Assert.True(handlerError.IsResponseType());
             await connection.WriteAsync(
                 CreateResponse(firstRequest, "first-response"),
@@ -1109,7 +1109,7 @@ public sealed class RemotingClientTests
     [Fact]
     public async Task InvokeOnewayAsync_OnewayFlagAndCompleteFrame_SetsAndWrites()
     {
-        const int OnewayFlag = 1 << 1;
+        const int onewayFlag = 1 << 1;
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackServer(cancellationToken);
         var request = CreateRequest("one-way");
@@ -1130,7 +1130,7 @@ public sealed class RemotingClientTests
             var connection = new CommandConnection(socket.GetStream());
             var received = await connection.ReadAsync(server.CancellationToken);
             Assert.Equal(request.Opaque, received.Opaque);
-            Assert.Equal(OnewayFlag, received.Flag & OnewayFlag);
+            Assert.Equal(onewayFlag, received.Flag & onewayFlag);
             Assert.Equal("one-way", Encoding.UTF8.GetString(received.Body!));
         }
     }

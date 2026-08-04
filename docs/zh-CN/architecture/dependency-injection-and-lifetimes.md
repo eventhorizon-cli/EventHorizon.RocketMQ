@@ -84,9 +84,11 @@ heartbeat 属于逻辑 group session，而不属于物理 `RemotingClient`：活
 不同 group，而同组的隔离成员会分别维护自己的 Broker membership。低层 PULL 与 POP 操作只由 LitePull 和 Push
 内部使用，不会形成额外的公开角色或 group session；Producer 则维护自己的 producer heartbeat 生命周期。
 
-Push 与 LitePull 各自在 Consumer 实现中保留队列分配决策。两者共享的经典消费组协议操作由
-`RemotingConsumerGroupSession` 负责，顺序 Push 的队列锁 wire 操作由 `RemotingPushQueueLockManager` 负责，从而
-把 transport I/O、Rebalance 触发和 Consumer 状态收敛分成独立职责。
+Push 与 LitePull 各自在每次启动的 run 中保留队列分配决策。两者共享的经典消费组协议 wire 操作由无状态的
+`RemotingConsumerGroupClient` 负责；由 run 独占的 `RemotingConsumerGroupSession` 保存已知 Broker、subscription
+version、Rebalance registration 以及 unregister 边界。顺序 Push 的队列锁 wire 操作仍由
+`OrderlyPullQueueLockClient` 负责。这样，transport I/O、Rebalance 触发、membership 生命周期和角色专属的
+队列收敛各自都有明确的所有者。
 
 ### 2. 角色拥有自己的 Engine
 
@@ -95,9 +97,10 @@ gRPC 的 Push、Simple 与 LitePush 角色会构造内部
 Remoting 的 LitePull 与 Push 角色会分别构造内部
 [`IRemotingConsumerEngine`](../../../src/EventHorizon.RocketMQ.Remoting/Consumer/IRemotingConsumerEngine.cs)。
 
-Engine 是角色内部的协作对象，负责协议收发、订阅或必要的后台协调。它不应作为应用可注入的公共服务，也
-不应在多个 Consumer 之间共享。这样停止某个角色不会意外停止另一个角色的循环，配置选项、消费组和处理器
-也不会相互覆盖。
+Engine 是角色内部的协议协作对象，不会作为应用可注入的公共服务，也不会在多个 Consumer 之间共享。gRPC
+Engine 负责其协议接收生命周期；Remoting Engine 只负责组合当前角色的 route、PULL、offset 与 send-back 能力，
+group membership、assignment、接收循环和有序关闭则由该角色在每次启动的 run 中负责。释放角色时，这两部分也会
+一并释放。这样既避免 Remoting wire engine 继续维护一套空的生命周期，也不会让一个角色停止另一个角色的循环。
 
 ### 3. Host 负责启动和停止
 
@@ -206,8 +209,11 @@ gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通�
 为了保持顺序而不会应用此机制。
 
 对于并发集群、非 FIFO 的 Remoting 批次，`ConsumeTimeout` 到期后会取消 handler token，并请求 Broker 重新投递。
-延迟返回的结果会被忽略，并可能与重新投递重叠，因此 handler 仍需自行配合取消并保持幂等；运行时不能强制停止应用代码。
-FIFO 和顺序投递为保持顺序保证而不会应用此机制。
+对于 POP 投递，handler 执行期间不会续租 receipt；客户端会在 handler 处理前和结算前检查固定不可见 deadline。
+过期结果会被忽略且不发送结算。`Retry` 结果只发起一次带 `suspend=false` 的
+`CHANGE_MESSAGE_INVISIBLETIME` 请求；对于不确定的失败，不会使用旧 receipt 重试。ACK，包括死信转发后的 ACK，
+只在原始 deadline 内重试。延迟返回的结果会被忽略，并可能与重新投递重叠，因此 handler 仍需自行配合取消并保持
+幂等；运行时不能强制停止应用代码。FIFO 和顺序投递为了保持顺序保证，不应用此机制。
 
 对应的 handler scope 逻辑位于
 [`GrpcPushMessageHandlerFactory`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushMessageHandlerFactory.cs)

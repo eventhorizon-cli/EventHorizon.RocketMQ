@@ -21,22 +21,38 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer;
 public sealed class RemotingConsumerQueueTests
 {
     [Fact]
-    public void LogicalEquality_BrokerAddressesDiffer_UsesOnlyQueueIdentity()
+    public void LogicalEquality_EquivalentIdentity_UsesTopicBrokerAndQueueId()
     {
-        var discovered = new RemotingConsumerQueue(
-            "orders",
-            3,
-            "broker-a",
-            new Dictionary<long, string>
-            {
-                [0] = "127.0.0.1:10911",
-                [1] = "127.0.0.1:10912"
-            });
-        var reconstructed = new RemotingConsumerQueue("orders", "broker-a", 3);
+        var first = new RemotingConsumerQueue("orders", "broker-a", 3);
+        var equivalent = new RemotingConsumerQueue("orders", "broker-a", 3);
 
-        Assert.Equal(discovered, reconstructed);
-        Assert.True(discovered == reconstructed);
-        Assert.Equal(discovered.GetHashCode(), reconstructed.GetHashCode());
+        Assert.Equal(first, equivalent);
+        Assert.True(first == equivalent);
+        Assert.Equal(first.GetHashCode(), equivalent.GetHashCode());
+    }
+
+    [Fact]
+    public void PublicContract_QueueType_ExposesOnlyQueueIdentity()
+    {
+        var queueType = typeof(RemotingConsumerQueue);
+        var constructor = Assert.Single(queueType.GetConstructors());
+        Assert.Equal(
+            [typeof(string), typeof(string), typeof(int)],
+            constructor.GetParameters().Select(static parameter => parameter.ParameterType));
+        Assert.Empty(
+            queueType.GetConstructors(
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic));
+
+        var properties = queueType
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Select(static property => property.Name)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(["BrokerName", "QueueId", "Topic"], properties);
+        Assert.DoesNotContain(
+            queueType.GetMembers(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance),
+            static member => member.Name is "BrokerAddresses" or "BrokerAddress");
     }
 
     [Theory]

@@ -20,7 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -50,7 +50,7 @@ try
     // This application does not use a Generic Host, so it explicitly owns the Producer lifecycle.
     await producer.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
-    var message = new Message(Topic, Encoding.UTF8.GetBytes("Hello from the Remoting non-Host Producer sample."))
+    var message = new Message(topic, Encoding.UTF8.GetBytes("Hello from the Remoting non-Host Producer sample."))
     {
         Tag = "sample"
     };

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 using System.Text;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 

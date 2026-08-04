@@ -15,8 +15,13 @@
 
 using System.Reflection;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.Coordination;
+using EventHorizon.RocketMQ.Remoting.Consumer.Coordination.Rebalance;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
+using EventHorizon.RocketMQ.Remoting.Consumer.Offset;
+using EventHorizon.RocketMQ.Remoting.Consumer.Pull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Consumer.Settlement;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
@@ -284,8 +289,7 @@ public sealed class DependencyInjectionTests
             GetSingleInstanceField<ITopicRouteService>(consumers[1]));
         Assert.All(consumers, consumer => Assert.Same(
             GetGroupMemberClient(consumer),
-            GetSingleInstanceField<IRemotingClient>(
-                GetSingleInstanceField<IRemotingConsumerEngine>(consumer))));
+            GetConsumerEngineClient(consumer)));
         var optionsByGroup = consumers
             .Select(GetPushConsumerOptions)
             .ToDictionary(options => options.GroupName, StringComparer.Ordinal);
@@ -333,11 +337,19 @@ public sealed class DependencyInjectionTests
         await using var provider = services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateOnBuild = true });
 
-        var primaryOptions = GetRepeatableConsumerSettings(provider, role, "primary");
-        var collidingOptions = GetRepeatableConsumerSettings(provider, role, collidingRegistrationName);
+        var primarySettings = GetRepeatableConsumerSettings(provider, role, "primary");
+        var collidingSettings = GetRepeatableConsumerSettings(provider, role, collidingRegistrationName);
+        var primaryOptions = GetRepeatableConsumerOptions(provider, role, "primary");
+        var collidingOptions = GetRepeatableConsumerOptions(provider, role, collidingRegistrationName);
 
-        Assert.Equal(["primary-first", "primary-second"], primaryOptions.Select(static options => options.GroupName));
-        Assert.Equal("colliding", Assert.Single(collidingOptions).GroupName);
+        Assert.Equal(["primary-first", "primary-second"], primarySettings.Select(static settings => settings.GroupName));
+        Assert.Equal("colliding", Assert.Single(collidingSettings).GroupName);
+        Assert.All(primarySettings.Concat(collidingSettings), settings =>
+        {
+            Assert.Equal(32, settings.BatchSize);
+            Assert.Equal(32 * 1024 * 1024, settings.MaxMessageBytes);
+            Assert.Equal(TimeSpan.FromSeconds(15), settings.LongPollingTimeout);
+        });
         Assert.Equal(
             ["primary-first-topic", "primary-second-topic"],
             primaryOptions.Select(static options => Assert.Single(options.Subscriptions).Key));
@@ -387,10 +399,7 @@ public sealed class DependencyInjectionTests
         Assert.NotSame(
             GetSingleInstanceField<IRemotingRebalanceService>(consumers[0]),
             GetSingleInstanceField<IRemotingRebalanceService>(consumers[1]));
-        var clientIds = consumers
-            .Select(GetSingleInstanceField<RemotingClientOptions>)
-            .Select(static options => options.BuildRemotingClientId())
-            .ToArray();
+        var clientIds = consumers.Select(GetConsumerGroupClient).Select(static client => client.ClientId).ToArray();
         Assert.NotEqual(clientIds[0], clientIds[1]);
         var consumerOptions = consumers.Select(GetPushConsumerOptions).ToArray();
         Assert.All(consumerOptions, options =>
@@ -517,6 +526,39 @@ public sealed class DependencyInjectionTests
 
         Assert.Contains("same consumer group", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(expectedFailure, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AddRemotingPushConsumer_MismatchedQueueAssignmentModeForSameGroup_Rejects()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders-consumer";
+                options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Client;
+                options.Subscribe("orders");
+            })
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders-consumer";
+                options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Broker;
+                options.Subscribe("orders");
+            });
+        var provider = services.BuildServiceProvider();
+        try
+        {
+            var exception = Assert.Throws<OptionsValidationException>(
+                () => provider.GetServices<IRemotingPushConsumer>().ToArray());
+
+            Assert.Contains("same consumer group", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("queue assignment mode", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -687,8 +729,7 @@ public sealed class DependencyInjectionTests
         Assert.NotSame(rebalanceServices[0], rebalanceServices[2]);
         Assert.All(consumers, consumer => Assert.Same(
             GetGroupMemberClient(consumer),
-            GetSingleInstanceField<IRemotingClient>(
-                GetSingleInstanceField<IRemotingConsumerEngine>(consumer))));
+            GetConsumerEngineClient(consumer)));
         Assert.All(consumers, consumer => Assert.Contains(consumer, hostedConsumers));
     }
 
@@ -1081,6 +1122,32 @@ public sealed class DependencyInjectionTests
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "The role is not a repeatable consumer.")
         };
 
+    private static ConsumerOptions[] GetRepeatableConsumerOptions(
+        IServiceProvider provider,
+        RemotingRocketMQRole role,
+        string registrationName) =>
+        role switch
+        {
+            RemotingRocketMQRole.LitePullConsumer => provider
+                .GetKeyedServices<IRemotingLitePullConsumer>(registrationName)
+                .Select(GetConsumerOptions)
+                .ToArray(),
+            RemotingRocketMQRole.PushConsumer => provider
+                .GetKeyedServices<IRemotingPushConsumer>(registrationName)
+                .Select(GetConsumerOptions)
+                .ToArray(),
+            _ => throw new ArgumentOutOfRangeException(nameof(role), role, "The role is not a repeatable consumer.")
+        };
+
+    private static ConsumerOptions GetConsumerOptions(object consumer) =>
+        consumer switch
+        {
+            IRemotingLitePullConsumer litePull =>
+                GetSingleInstanceField<RemotingLitePullConsumerOptions>(litePull),
+            IRemotingPushConsumer push => GetPushConsumerOptions(push),
+            _ => throw new ArgumentOutOfRangeException(nameof(consumer), consumer, "Unsupported consumer type.")
+        };
+
     private static RemotingConsumerSettings GetConsumerSettings(object consumer) =>
         GetSingleInstanceField<RemotingConsumerSettings>(
             GetSingleInstanceField<IRemotingConsumerEngine>(consumer));
@@ -1104,16 +1171,71 @@ public sealed class DependencyInjectionTests
             ValueTask<ConsumeResult>>>(implementation);
     }
 
+    private static RemotingConsumerGroupClient GetConsumerGroupClient(object consumer) =>
+        GetSingleInstanceField<RemotingConsumerGroupClient>(consumer);
+
     private static IRemotingClient GetGroupMemberClient(object consumer) =>
-        GetSingleInstanceField<IRemotingClient>(
-            GetSingleInstanceField<RemotingConsumerGroupSession>(consumer));
+        GetDirectInstanceField<IRemotingClient>(GetConsumerGroupClient(consumer));
+
+    private static IRemotingClient GetConsumerEngineClient(object consumer)
+    {
+        var engine = GetDirectInstanceField<IRemotingConsumerEngine>(consumer);
+        var pullClient = GetDirectInstanceField<IRemotingClient>(
+            GetDirectInstanceField<PullWireClient>(engine));
+        var offsetClient = GetDirectInstanceField<IRemotingClient>(
+            GetDirectInstanceField<RemotingConsumerOffsetClient>(engine));
+        var settlementClient = GetDirectInstanceField<IRemotingClient>(
+            GetDirectInstanceField<RemotingSettlementClient>(engine));
+
+        Assert.Same(pullClient, offsetClient);
+        Assert.Same(pullClient, settlementClient);
+        return pullClient;
+    }
+
+    private static TField GetDirectInstanceField<TField>(object instance)
+    {
+        var matches = instance.GetType()
+            .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Select(field => field.GetValue(instance))
+            .OfType<TField>();
+        return Assert.Single(matches);
+    }
 
     private static TField GetSingleInstanceField<TField>(object instance)
     {
-        var field = Assert.Single(instance.GetType()
-            .GetFields(BindingFlags.Instance | BindingFlags.NonPublic),
-            candidate => typeof(TField).IsAssignableFrom(candidate.FieldType));
-        return Assert.IsAssignableFrom<TField>(field.GetValue(instance));
+        const int maximumDepth = 6;
+        var productionAssembly = typeof(RemotingPushConsumer).Assembly;
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var matches = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var pending = new Queue<(object Instance, int Depth)>();
+        pending.Enqueue((instance, 0));
+        while (pending.TryDequeue(out var current))
+        {
+            if (!visited.Add(current.Instance))
+            {
+                continue;
+            }
+
+            foreach (var field in current.Instance.GetType()
+                         .GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
+            {
+                var value = field.GetValue(current.Instance);
+                if (value is TField)
+                {
+                    matches.Add(value);
+                    continue;
+                }
+
+                if (value is not null &&
+                    current.Depth < maximumDepth &&
+                    value.GetType().Assembly == productionAssembly)
+                {
+                    pending.Enqueue((value, current.Depth + 1));
+                }
+            }
+        }
+
+        return Assert.IsAssignableFrom<TField>(Assert.Single(matches));
     }
 
     private sealed class TestRemotingPushMessageHandler : IRemotingPushMessageHandler

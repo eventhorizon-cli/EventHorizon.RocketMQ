@@ -36,7 +36,8 @@ public sealed class LegacyPopMessageDecoderTests
 
         var popMessage = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
             message,
-            queue);
+            queue,
+            "127.0.0.1:10911");
 
         Assert.Same(message, popMessage.Message);
         Assert.Equal("orders", popMessage.Receipt.Topic);
@@ -52,46 +53,38 @@ public sealed class LegacyPopMessageDecoderTests
     }
 
     [Fact]
-    public void DecodeMessage_CapturedBrokerAddress_UsesBroker()
+    public void DecodeMessage_ExplicitBrokerAddress_UsesRequestEndpoint()
     {
-        var queue = new RemotingConsumerQueue(
-            "orders",
-            3,
-            "broker-a",
-            new Dictionary<long, string>
-            {
-                [0] = "127.0.0.1:10911",
-                [1] = "127.0.0.1:10912"
-            });
-        queue.SetPreferredBrokerId(1);
+        var queue = new RemotingConsumerQueue("orders", "broker-a", 3);
 
         var popMessage = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
             CreateMessage(Checkpoint),
             queue,
-            "127.0.0.1:10911");
+            "127.0.0.1:10912");
 
-        Assert.Equal("127.0.0.1:10911", popMessage.Receipt.BrokerAddress);
+        Assert.Equal("127.0.0.1:10912", popMessage.Receipt.BrokerAddress);
     }
 
     [Fact]
-    public void ReceiptRenew_BrokerControlledCheckpointFields_ReplacesBrokerFields()
+    public void WithChangedInvisibleTime_BrokerReturnsCheckpointFields_ReplacesBrokerFields()
     {
         var receipt = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
             CreateMessage(Checkpoint),
-            CreateQueue()).Receipt;
+            CreateQueue(),
+            "127.0.0.1:10911").Receipt;
 
-        var renewed = receipt.Renew(1_700_000_120_000, 120_000, 5);
+        var changed = receipt.WithChangedInvisibleTime(1_700_000_120_000, 120_000, 5);
 
-        Assert.Equal(receipt.Topic, renewed.Topic);
-        Assert.Equal(receipt.BrokerName, renewed.BrokerName);
-        Assert.Equal(receipt.BrokerAddress, renewed.BrokerAddress);
-        Assert.Equal(receipt.QueueId, renewed.QueueId);
-        Assert.Equal(42, renewed.CheckpointOffset);
-        Assert.Equal(receipt.QueueOffset, renewed.QueueOffset);
-        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_120_000), renewed.PopTime);
-        Assert.Equal(TimeSpan.FromSeconds(120), renewed.InvisibleTime);
-        Assert.Equal(5, renewed.ReviveQueueId);
-        Assert.Equal("42 1700000120000 120000 5 0 broker-a 3 42", renewed.ExtraInfo);
+        Assert.Equal(receipt.Topic, changed.Topic);
+        Assert.Equal(receipt.BrokerName, changed.BrokerName);
+        Assert.Equal(receipt.BrokerAddress, changed.BrokerAddress);
+        Assert.Equal(receipt.QueueId, changed.QueueId);
+        Assert.Equal(42, changed.CheckpointOffset);
+        Assert.Equal(receipt.QueueOffset, changed.QueueOffset);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_120_000), changed.PopTime);
+        Assert.Equal(TimeSpan.FromSeconds(120), changed.InvisibleTime);
+        Assert.Equal(5, changed.ReviveQueueId);
+        Assert.Equal("42 1700000120000 120000 5 0 broker-a 3 42", changed.ExtraInfo);
     }
 
     [Theory]
@@ -105,7 +98,8 @@ public sealed class LegacyPopMessageDecoderTests
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
                 CreateMessage(checkpoint),
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911"));
 
         Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
     }
@@ -119,13 +113,14 @@ public sealed class LegacyPopMessageDecoderTests
     {
         var popMessage = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
             CreateMessage($"40 1700000000000 60000 2 {marker} broker-a 3 42"),
-            CreateQueue());
+            CreateQueue(),
+            "127.0.0.1:10911");
 
         Assert.Equal((RemotingPopRetryTopicKind)expectedKind, popMessage.Receipt.RetryTopicKind);
     }
 
     [Fact]
-    public void ReceiptRenew_RetryTopicMessage_PreservesRetryTopicMarker()
+    public void WithChangedInvisibleTime_RetryTopicMessage_PreservesRetryTopicMarker()
     {
         var receipt = new RemotingPopReceipt(
             "orders",
@@ -140,10 +135,10 @@ public sealed class LegacyPopMessageDecoderTests
             "40 1700000000000 60000 2 1 broker-a 3 42",
             RemotingPopRetryTopicKind.RetryV1);
 
-        var renewed = receipt.Renew(1_700_000_120_000, 120_000, 5);
+        var changed = receipt.WithChangedInvisibleTime(1_700_000_120_000, 120_000, 5);
 
-        Assert.Equal(RemotingPopRetryTopicKind.RetryV1, renewed.RetryTopicKind);
-        Assert.Equal("42 1700000120000 120000 5 1 broker-a 3 42", renewed.ExtraInfo);
+        Assert.Equal(RemotingPopRetryTopicKind.RetryV1, changed.RetryTopicKind);
+        Assert.Equal("42 1700000120000 120000 5 1 broker-a 3 42", changed.ExtraInfo);
     }
 
     [Fact]
@@ -152,7 +147,8 @@ public sealed class LegacyPopMessageDecoderTests
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
                 CreateMessage(checkpoint: null),
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911"));
 
         Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
     }
@@ -341,7 +337,9 @@ public sealed class LegacyPopMessageDecoderTests
                 Code = ResponseCodes.ResPullNotFound,
                 ExtFields = new Dictionary<string, object> { ["restNum"] = "9" }
             },
-            CreateQueue());
+            CreateQueue(),
+            "127.0.0.1:10911",
+            @namespace: null);
 
         Assert.Equal(global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopStatus.NoNewMessage, result.Status);
         Assert.Empty(result.Messages);
@@ -358,7 +356,9 @@ public sealed class LegacyPopMessageDecoderTests
                     Code = ResponseCodes.ResPullNotFound,
                     ExtFields = new Dictionary<string, object> { ["restNum"] = "-1" }
                 },
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911",
+                @namespace: null));
 
         Assert.Contains("restNum", exception.Message, StringComparison.Ordinal);
     }
@@ -368,7 +368,9 @@ public sealed class LegacyPopMessageDecoderTests
     {
         var pollingFull = global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
             new RemotingCommand { Code = ResponseCodes.ResPollingFull },
-            CreateQueue());
+            CreateQueue(),
+            "127.0.0.1:10911",
+            @namespace: null);
 
         Assert.Equal(global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.RemotingPopStatus.PollingFull, pollingFull.Status);
         Assert.Empty(pollingFull.Messages);
@@ -376,7 +378,9 @@ public sealed class LegacyPopMessageDecoderTests
         var exception = Assert.Throws<RemotingCommandException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.Decode(
                 new RemotingCommand { Code = 999_999, Remark = "unsupported" },
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911",
+                @namespace: null));
 
         Assert.Equal(999_999, exception.ResponseCode);
     }
@@ -388,15 +392,18 @@ public sealed class LegacyPopMessageDecoderTests
 
         Assert.Empty(global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
             Array.Empty<RemotingMessageView>(),
-            queue));
+            queue,
+            "127.0.0.1:10911"));
         Assert.Throws<ArgumentNullException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
                 null!,
-                queue));
+                queue,
+                "127.0.0.1:10911"));
         Assert.Throws<ArgumentNullException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessages(
                 Array.Empty<RemotingMessageView>(),
-                null!));
+                null!,
+                "127.0.0.1:10911"));
     }
 
     [Fact]
@@ -405,13 +412,15 @@ public sealed class LegacyPopMessageDecoderTests
         var whitespace = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
                 CreateMessage(" "),
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911"));
         Assert.Contains("valid", whitespace.Message, StringComparison.OrdinalIgnoreCase);
 
         var mismatchedQueue = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
                 CreateMessage(Checkpoint, queueId: 4),
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911"));
         Assert.Contains("physical queue", mismatchedQueue.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -456,7 +465,8 @@ public sealed class LegacyPopMessageDecoderTests
         var exception = Assert.Throws<InvalidDataException>(() =>
             global::EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop.LegacyPopMessageDecoder.DecodeMessage(
                 CreateMessage(checkpoint),
-                CreateQueue()));
+                CreateQueue(),
+                "127.0.0.1:10911"));
 
         Assert.Contains("POP_CK", exception.Message, StringComparison.Ordinal);
     }
@@ -489,7 +499,7 @@ public sealed class LegacyPopMessageDecoderTests
         };
 
     private static RemotingConsumerQueue CreateQueue(string brokerName = "broker-a") =>
-        new("orders", 3, brokerName, "127.0.0.1:10911");
+        new("orders", brokerName, 3);
 
     private static RemotingMessageView CreateMessage(string? checkpoint, int queueId = 3) =>
         new(

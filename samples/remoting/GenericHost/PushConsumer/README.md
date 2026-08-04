@@ -103,7 +103,7 @@ not consuming that topic, while inconsistent filters can make accepted messages 
 The registration validates this constraint locally. Compatible same-group registrations receive distinct active
 consumer identities and share queues; they are not independent fan-out subscriptions.
 
-Every PULL assignment maintains a local `ProcessQueue`. It holds pulled messages and their consumption state; it is
+Every PULL assignment maintains a local `PullProcessQueue`. It holds pulled messages and their consumption state; it is
 not a new Broker queue and creates no server resource. The name and ownership concept follow the official RocketMQ
 Java client.
 
@@ -112,7 +112,7 @@ Java client.
 one handler invocation. Concurrent PULL batches contain only messages from the same physical queue. Messages with a
 `MessageGroup` and all `ConsumeOrderly` deliveries remain singleton batches.
 
-Ready `ProcessQueue` instances share asynchronous consume loops. Each turn takes one batch from one ready queue and
+Ready `PullProcessQueue` instances share asynchronous consume loops. Each turn takes one batch from one ready queue and
 places a queue with more work at the back, providing fair progress across active queues and Brokers. `MaxConcurrency`
 limits handler dispatches across the entire Consumer, not per queue. These loops are .NET ThreadPool tasks; they are
 not dedicated threads and are not permanently bound to a queue. This fair scheduler is a .NET design rather than an
@@ -122,7 +122,7 @@ exact copy of the Java concurrent dispatch path.
 blocked messages do not continue to hold that admission capacity, and a blocked PULL queue pauses new admission until
 it can progress. The value is therefore not a strict count of every message resident in the process.
 
-A Broker-assigned POP receiver uses separate receipt state rather than `ProcessQueue` offsets. `PopBatchSize` controls
+A Broker-assigned POP receiver uses separate receipt state rather than `PullProcessQueue` offsets. `PopBatchSize` controls
 each POP request, `PopInvisibleDuration` sets the initial lease, and `PopMaxInflightMessagesPerAssignment` bounds
 messages awaiting settlement for one assignment. The client renews receipts while a handler is active and always uses
 the latest renewed receipt for final settlement.
@@ -138,26 +138,27 @@ The handler returns one `ConsumeResult` for its batch:
   `int.MaxValue` accepts all messages; `-1` accepts none.
 - `Retry` and `DeadLetter` ignore `AckIndex` and apply to the complete batch.
 
-For a clustered concurrent non-FIFO batch, `context.DelayLevelWhenNextConsume` starts from the Broker delay level
-mapped from `RetryDelay`. Set it to `0` to let the Broker choose, to a positive RocketMQ delay level to request that
-level, or to a negative value to request direct dead-letter delivery. PULL retries use classic send-back; POP retries
-change the receipt's invisibility, and POP dead-letter handling forwards before acknowledging the receipt.
+For a clustered concurrent non-FIFO batch, `context.DelayLevelWhenNextConsume` defaults to `0`, allowing the Broker to
+select the retry interval. Set it to a positive RocketMQ delay level to request that level, or to a negative value to
+request direct dead-letter delivery. PULL retries use classic send-back; POP retries map the selected level through the
+classic POP retry schedule and change the receipt's invisibility. POP dead-letter handling forwards before
+acknowledging the receipt.
 `MessageGroup` FIFO, `ConsumeOrderly`, and broadcasting paths ignore this context setting. In clustering mode,
 `MaxDeliveryAttempts` bounds retry delivery; a retried message that reaches the limit is sent to the dead-letter queue.
 
-Every PULL `ProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
+Every PULL `PullProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
 queue or Broker, cannot skip an earlier unresolved queue offset. Pulling may run ahead of handler completion. In
 clustering mode, the Broker-committed offset cannot run ahead of successful settlement; broadcasting instead treats
 unavailable retry and dead-letter outcomes as locally resolved drops, as described below.
 
-In the clustered concurrent `ProcessQueue` path, failed retry/dead-letter settlement is retried locally after
+In the clustered concurrent `PullProcessQueue` path, failed retry/dead-letter settlement is retried locally after
 `RetryDelay` without invoking the application handler again; the watermark remains blocked. Offset persistence
 failures are also retried. If an assignment is revoked, a late handler result from that old assignment is ignored and
 cannot advance its replacement.
 
-POP settlement is valid only while the current receipt lease can still be renewed. If renewal can no longer preserve
-the lease, the late handler result is ignored and Broker redelivery becomes authoritative. Removing or changing an
-assignment also invalidates late receipt renewal and settlement from the old generation.
+POP settlement is valid only before the fixed invisible deadline returned by the Broker. The client does not renew the
+receipt while the handler is active. A result that arrives after the deadline is ignored and Broker redelivery becomes
+authoritative. Removing or changing an assignment also invalidates late settlement from the old generation.
 
 `ConsumeTimeout` applies to concurrent clustered non-FIFO batches. On expiry, the client cancels the handler token and
 requests Broker redelivery for the whole batch. Code that ignores cancellation cannot be forcibly stopped; its late

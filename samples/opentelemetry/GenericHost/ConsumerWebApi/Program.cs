@@ -24,7 +24,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var builder = WebApplication.CreateBuilder(args);
 var grpcClientSection = builder.Configuration.GetRequiredSection("RocketMQ:Grpc:Client");
@@ -74,7 +74,7 @@ builder.Services
         options.InvisibleDuration = TimeSpan.FromSeconds(30);
         options.ConsumeTimeout = TimeSpan.FromMinutes(15);
         options.LongPollingTimeout = TimeSpan.FromSeconds(15);
-        options.Subscribe(Topic);
+        options.Subscribe(topic);
     });
 builder.Services
     .AddRocketMQRemoting(remotingClientSection.Bind)
@@ -87,7 +87,7 @@ builder.Services
         options.ConsumeTimeout = TimeSpan.FromMinutes(15);
         options.LongPollingTimeout = TimeSpan.FromSeconds(5);
         options.RetryDelay = TimeSpan.FromSeconds(1);
-        options.Subscribe(Topic);
+        options.Subscribe(topic);
     });
 
 var app = builder.Build();
@@ -110,7 +110,7 @@ await app.RunAsync();
 
 static IResult GetConsumers() => Results.Ok(
     new ConsumerStatusResponse(
-        Topic,
+        topic,
         nameof(IGrpcPushConsumer),
         nameof(IRemotingPushConsumer)));
 

@@ -96,7 +96,7 @@ consumer-id 列表；订阅不一致可能把队列分给没有消费该 topic �
 队列所有者。注册会在本地验证这个约束。配置兼容的同组注册会获得不同的活跃 Consumer 身份并共同分配队列，而不是形成
 各自独立的 fan-out 订阅。
 
-客户端会为每个 PULL assignment 维护一个本地 `ProcessQueue`。`ProcessQueue` 保存已拉取消息及其
+客户端会为每个 PULL assignment 维护一个本地 `PullProcessQueue`。`PullProcessQueue` 保存已拉取消息及其
 消费状态；它不是新建的 Broker 队列，也不会创建服务端资源。这个名称和职责概念沿用了 RocketMQ 官方 Java 客户端。
 
 `PullBatchSize` 限制一次 Broker PULL 请求的消息数；`PullMaxCachedMessages` 和
@@ -104,7 +104,7 @@ consumer-id 列表；订阅不一致可能把队列分给没有消费该 topic �
 消息数。并发 PULL batch 只包含来自同一个物理队列的消息。带 `MessageGroup` 的消息和所有 `ConsumeOrderly`
 投递仍然是单消息 batch。
 
-就绪的 `ProcessQueue` 共享异步消费循环。每轮从一个就绪队列取一个 batch，仍有工作的队列会放回队尾，从而让不同
+就绪的 `PullProcessQueue` 共享异步消费循环。每轮从一个就绪队列取一个 batch，仍有工作的队列会放回队尾，从而让不同
 Broker 上的活跃队列公平推进。`MaxConcurrency` 限制整个 Consumer 的 handler 分发数，而不是每个队列的分发数。
 这些循环是 .NET ThreadPool 任务，不是独占线程，也不会永久绑定某个队列。这个公平调度器是 .NET 的设计，并非逐项复制
 Java 的并发分发路径。
@@ -112,9 +112,9 @@ Java 的并发分发路径。
 `PullMaxCachedMessages` 限制等待首次分发的新拉取消息准入。在途或被结算阻塞的消息不会继续占用这部分准入容量；
 被阻塞的 PULL 队列也会暂停新准入，直到能够继续推进。因此，该值不是进程内所有驻留消息数量的严格上限。
 
-Broker-assigned POP receiver 使用独立的 receipt 状态，而不是 `ProcessQueue` 位点。`PopBatchSize` 控制每次 POP
-请求，`PopInvisibleDuration` 设置初始租约，`PopMaxInflightMessagesPerAssignment` 限制一条 assignment 上等待
-结算的消息数。handler 活跃期间客户端会续租，并始终用最新 receipt 完成最终结算。
+Broker-assigned POP receiver 使用独立的 receipt 状态，而不是 `PullProcessQueue` 位点。`PopBatchSize` 控制每次 POP
+请求，`PopInvisibleDuration` 设置固定的不可见时间，`PopMaxInflightMessagesPerAssignment` 限制一条 assignment 上等待
+结算的消息数。handler 执行期间客户端不会续租；超过 Broker 返回的 deadline 后，延迟结果会被忽略。
 
 ## 确认、重试与位点
 
@@ -125,22 +125,22 @@ handler 为一个 batch 返回一个 `ConsumeResult`：
   客户端会结算连续前缀，只把尾部交给 Broker 重试。默认值 `int.MaxValue` 接受全部消息；`-1` 表示一条也不接受。
 - `Retry` 和 `DeadLetter` 会忽略 `AckIndex`，并应用到整个 batch。
 
-对于集群并发、非 FIFO batch，`context.DelayLevelWhenNextConsume` 初始为由 `RetryDelay` 映射得到的 Broker
-延迟级别。设为 `0` 时由 Broker 选择；设为正的 RocketMQ 延迟级别时请求该级别；设为负值时请求直接进入死信队列。
-PULL 重试使用经典 send-back；POP 重试修改 receipt 不可见期，POP 死信处理则先转发、再确认 receipt。
+对于集群并发、非 FIFO batch，`context.DelayLevelWhenNextConsume` 默认为 `0`，由 Broker 选择重试间隔；设为正的
+RocketMQ 延迟级别时请求该级别，设为负值时请求直接进入死信队列。PULL 重试使用经典 send-back；POP 重试按
+classic POP 重试表将级别换算为不可见时间，并修改 receipt 不可见期。POP 死信处理则先转发、再确认 receipt。
 `MessageGroup` FIFO、`ConsumeOrderly` 和广播路径会忽略此 context 设置。在集群模式下，
 `MaxDeliveryAttempts` 限制重试投递次数；重试消息达到上限后会进入死信队列。
 
-每个 PULL `ProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
+每个 PULL `PullProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
 完成，也不能跳过前面尚未解决的队列位点。拉取可以先于 handler 完成继续前进。在集群模式下，Broker 已提交位点不能
 越过成功结算；广播模式则会把不可用的重试和死信结果视为本地已解决并丢弃，具体见后文。
 
-在集群并发 `ProcessQueue` 路径中，如果重试或死信结算失败，客户端会在 `RetryDelay` 后仅在本地重试结算，
+在集群并发 `PullProcessQueue` 路径中，如果重试或死信结算失败，客户端会在 `RetryDelay` 后仅在本地重试结算，
 不会再次调用应用 handler；完成水位仍保持阻塞。位点持久化失败也会重试。如果分配被撤销，旧分配上延迟返回的
 handler 结果会被忽略，不能推进替代它的新分配。
 
-POP 结算只在当前 receipt 租约仍可续期时有效。无法继续维持租约后，延迟返回的 handler 结果会被忽略，由 Broker
-重新投递。assignment 被移除或切换模式时，旧 generation 上延迟到达的续租与结算同样失效。
+POP 结算只在 Broker 返回的固定不可见 deadline 之前有效。超过 deadline 后，延迟返回的 handler 结果会被忽略，由
+Broker 重新投递。assignment 被移除或切换模式时，旧 generation 上延迟到达的结算同样失效。
 
 `ConsumeTimeout` 适用于并发集群、非 FIFO batch。超时后，客户端会取消 handler token，并为整个 batch 请求 Broker
 重新投递。忽略取消的代码无法被强制停止；其延迟结果会被忽略，但其外部工作可能与重新投递的调用重叠。handler 必须响应

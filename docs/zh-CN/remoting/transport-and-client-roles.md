@@ -84,8 +84,8 @@ Broker 请求签名。注册阶段强制两个值成对出现，防止“只有�
 LitePull 与 Push 共享 `ConsumerOptions.InitialPosition`，其类型为 `ConsumeFromPosition`；只有队列没有已提交 group
 位点时才会应用 Beginning、End 或 Timestamp。Push 的 PULL options 使用 `PullBatchSize`、
 `PullMaxCachedMessages` 与 `PullMaxCachedMessageBytes`；Broker-assigned POP 使用 `PopBatchSize`、
-`PopInvisibleDuration` 与 `PopMaxInflightMessagesPerAssignment`。POP receipt 获取、续租、确认与重试都由 Push
-内部管理，不构成调用方控制的 Consumer API。
+`PopInvisibleDuration` 与 `PopMaxInflightMessagesPerAssignment`。POP receipt 的获取、固定 deadline 校验、确认和重试均由
+Push 内部管理，不属于调用方可控制的 Consumer API；handler 执行期间客户端不会续租 POP receipt。
 
 Push 唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`。`ConsumeMessageBatchSize` 独立限制单次 handler 调用收到的消息数，默认值为 `1`。
@@ -124,7 +124,7 @@ Broker 成员变化
 入站 handler 只记录唤醒，不会在接收循环上执行 route 或 Broker I/O。每个 group 都有独立、单飞的 participant，
 因此一个 group 阻塞或失败不会串行阻塞其他 group。失败会在 1 秒后重试，最长 20 秒的周期兜底会修复丢失的通知。
 共享 heartbeat、成员查询和 unregister 操作归 `RemotingConsumerGroupSession` 所有；顺序消费的队列 lock/unlock
-命令归 `RemotingPushQueueLockManager` 所有。
+命令归 `OrderlyPullQueueLockClient` 所有。
 
 物理 `RemotingClient` 只负责传输，本身没有 group identity。每个活跃的 Push 或 LitePull session 都会在初始和周期
 协调时，经由分配给自己的 Client 发送 heartbeat；LitePull 在拥有订阅或手工分配队列后成为活跃成员。因此共享 Client
@@ -158,26 +158,26 @@ assignment 互斥且并集完整，再正常停止一个成员，并确认另一
 
 #### 并发 Push 分发与位点安全
 
-并发 PULL 模式下，每个已分配的 Broker 物理队列都有一个客户端侧 `ProcessQueue`。`ProcessQueue` 保存本地已拉取的
+并发 PULL 模式下，每个已分配的 Broker 物理队列都有一个客户端侧 `PullProcessQueue`。`PullProcessQueue` 保存本地已拉取的
 消息及其消费状态；它不是另一个 Broker 队列，也不会创建任何服务端资源。拉取位点可以独立于 handler 完成而
 继续推进。`PullMaxCachedMessages` 与 `PullMaxCachedMessageBytes` 限制等待首次分发的新拉取消息准入，已经交给
 handler 的批次不会继续占用该容量。
-处置尚未解决，或 FIFO 消息存在未完成的前驱（包括位于另一个物理队列的前驱）时，该 `ProcessQueue` 中已经缓存
+处置尚未解决，或 FIFO 消息存在未完成的前驱（包括位于另一个物理队列的前驱）时，该 `PullProcessQueue` 中已经缓存
 的消息会释放准入配额，并暂停该队列的新准入，直到可以继续推进。因此被阻塞的队列不会独占健康队列所需的容量，
 该设置也不是进程内所有驻留消息的严格总数上限。
 
-每个已就绪的 `ProcessQueue` 最多以一个合并后的通知进入 ready queue。共享的逻辑消费循环每次从一个就绪队列
+每个已就绪的 `PullProcessQueue` 最多以一个合并后的通知进入 ready queue。共享的逻辑消费循环每次从一个就绪队列
 取得一个 handler 批次；若仍有工作，就把该队列放回队尾。这样会在活跃物理队列之间进行公平轮询，避免一个热点
 队列占满整个分发路径。`MaxConcurrency` 是所有已分配队列共享的总并发度。这些循环是由 .NET ThreadPool 调度的
 异步任务，并非独占或绑定固定线程的 Consumer 线程。
 
-每个 `ProcessQueue` 还维护自己的连续完成水位。后面的批次即使先完成，也不能让持久化位点越过前面尚未解决的
+每个 `PullProcessQueue` 还维护自己的连续完成水位。后面的批次即使先完成，也不能让持久化位点越过前面尚未解决的
 消息；处理较快的队列也不能推进另一个队列的位点。retry/dead-letter 处置失败时，该消息保持未解决，并在
 `RetryDelay` 后仅重试处置而不再次调用应用 handler；位点持久化失败也会重试，且不会跨过缺口。分配被撤销时，
-对应 `ProcessQueue` 会被标记为 dropped，因此延迟返回的 handler 结果不能修改新的分配状态或提交其位点。
+对应 `PullProcessQueue` 会被标记为 dropped，因此延迟返回的 handler 结果不能修改新的分配状态或提交其位点。
 
-`ProcessQueue` 的名称以及每个物理队列一份状态的职责沿用了 RocketMQ 官方 Java 客户端的概念。Java 的并发路径
-会从刚拉取的消息列表创建 consume request；当前实现使用合并 ready queue，并在每轮从 `ProcessQueue` 取一个批次，
+内部的 `PullProcessQueue` 对应 RocketMQ 官方 Java 客户端的 `ProcessQueue` 概念，并保留每个物理队列一份状态的职责。Java 的并发路径
+会从刚拉取的消息列表创建 consume request；当前实现使用合并 ready queue，并在每轮从 `PullProcessQueue` 取一个批次，
 这是 .NET 的调度设计，并非对 Java 数据路径的逐项复制。
 
 无论选择哪种角色，至少一次交付仍要求业务处理幂等。发送重试、连接中断、可见期到期或确认失败都可能导致

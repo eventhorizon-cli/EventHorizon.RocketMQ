@@ -19,9 +19,8 @@ using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
-using EventHorizon.RocketMQ.Remoting.Consumer.Push.Orderly;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Protocol.Route;
@@ -255,7 +254,11 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
                         return ValueTask.FromResult(ConsumeResult.Retry);
                     }
 
-                    if (body == expected) consumed.TrySetResult((message.MessageId, message.DeliveryAttempt));
+                    if (body == expected)
+                    {
+                        consumed.TrySetResult((message.MessageId, message.DeliveryAttempt));
+                    }
+
                     return ValueTask.FromResult(ConsumeResult.Success);
                 });
 
@@ -847,11 +850,11 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
                     }
                 }
             }.ToJson());
-            var lockRequest = new RemotingCommand(RequestCode.LockBatchMq, new LockBatchMqRequestHeader())
+            var lockRequest = new RemotingCommand(RequestCode.LockBatchMq)
             {
                 Body = lockBody
             };
-            var unlockRequest = new RemotingCommand(RequestCode.UnlockBatchMq, new UnlockBatchMqRequestHeader())
+            var unlockRequest = new RemotingCommand(RequestCode.UnlockBatchMq)
             {
                 Body = lockBody
             };
@@ -903,7 +906,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
                 {
                     await lockClient.InvokeAsync(
                         brokerEndpoint,
-                        new RemotingCommand(RequestCode.UnlockBatchMq, new UnlockBatchMqRequestHeader())
+                        new RemotingCommand(RequestCode.UnlockBatchMq)
                         {
                             Body = lockBody
                         },

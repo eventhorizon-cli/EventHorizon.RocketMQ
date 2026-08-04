@@ -21,6 +21,14 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push;
 public sealed class RemotingPushConsumeContextTests
 {
     [Fact]
+    public void DelayLevelWhenNextConsume_NewContext_DelegatesRetryTimingToBroker()
+    {
+        var context = new RemotingPushConsumeContext();
+
+        Assert.Equal(0, context.DelayLevelWhenNextConsume);
+    }
+
+    [Fact]
     public void AckIndex_CompleteBatchAcknowledgement_Defaults()
     {
         var context = new RemotingPushConsumeContext();

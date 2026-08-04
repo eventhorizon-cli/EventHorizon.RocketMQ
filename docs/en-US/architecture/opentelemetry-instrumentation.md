@@ -87,6 +87,24 @@ are preserved.
 | Automatic handler processing | Push and LitePush handlers. | Push handlers. |
 | Consumer settlement | Acknowledge, negative acknowledgement, and dead-letter forwarding. | LitePull and Push PULL offset commits, retry/dead-letter send-back, and internal Push POP acknowledgement and invisibility changes. |
 
+For gRPC, Proxy-managed renewal requested by `ReceiveMessageRequest.AutoRenew` is not a separate client wire operation
+and must not create a client settlement span. A client-issued `ChangeInvisibleDuration` must be classified by intent:
+`renew` for handler-active or SimpleConsumer lease extension, and `nack` for retry scheduling. Consolidating gRPC
+renewal ownership is incomplete if both Proxy auto-renewal and a client renewal loop remain active, or if renewal and
+retry are reported with the same settlement outcome.
+
+Classic Remoting instrumentation follows the wire-operation owner. `PullWireClient` owns receive completion for
+non-empty, empty, canceled, and failed PULL operations. `RemotingConsumerOffsetClient` owns commit settlement, while
+`RemotingSettlementClient` owns PULL retry and dead-letter send-back. `PopWireClient` continues to own POP receive,
+acknowledgement, and invisibility-change telemetry. The role-level consumer engine only composes these clients; moving
+a responsibility between internal types must not duplicate or drop its Activity or metric completion.
+
+POP settlement telemetry records each actual wire operation independently: `ack` for acknowledgement, `nack` for the
+one-shot retry/defer `CHANGE_MESSAGE_INVISIBLETIME`, and separate dead-letter forwarding and follow-up ACK operations.
+A handler result that arrives after the fixed invisible deadline creates no settlement operation. An indeterminate
+`nack` failure is not retried with the old receipt; acknowledgement and the ACK after dead-letter forwarding are retried
+only while the original deadline remains valid.
+
 Activities use OpenTelemetry messaging semantic-convention attributes such as `messaging.system`,
 `messaging.destination.name`, `messaging.consumer.group.name`, message ID, partition ID, body size, and batch size.
 Failures set the Activity status to error and record `error.type`.

@@ -198,7 +198,7 @@ public sealed class OrderOffsets(IRemotingAdmin admin)
 ```csharp
 using EventHorizon.RocketMQ.Remoting;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 
 rocketMQ.AddRemotingLitePullConsumer(options =>
 {
@@ -283,13 +283,16 @@ public sealed class OrderMessageHandler : IRemotingPushMessageHandler
 应用不直接选择 POP，也不需要为它编写不同的处理器。即使请求 `Broker`，广播和有序消费也会使用客户端分配和
 PULL。Broker 分配查询失败时，Consumer 会等待下一轮协调，不会切换到客户端分配。
 
+对于 Broker-assigned POP，`PopInvisibleDuration` 是固定的处理 deadline。classic Remoting Push 不会在 handler
+执行期间续租 receipt；可能超过 deadline 的处理必须保持幂等，并接受消息被重新投递。这与 gRPC Push 自动续约不同。
+
 该行为遵循 Apache RocketMQ 官方的 classic
 [PushConsumer 指南](https://rocketmq.apache.org/docs/4.x/consumer/02push/)。源码层面的 Java 与 Broker 依据记录在
 [Remoting Consumer 设计](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/docs/zh-CN/remoting/consumer-model.md)中。
 
 `ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success`、`Retry` 或 `DeadLetter`。
 对于并发的非 FIFO 批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
-`DelayLevelWhenNextConsume` 控制下一次重试的延迟，或直接进入死信的行为。
+`DelayLevelWhenNextConsume` 控制下一次重试的延迟，或决定是否直接进入死信；默认值为 `0`，由 Broker 决定重试时间。
 
 `ServiceLifetime.Scoped` 或 `Transient` 会为每次处理尝试创建新的异步作用域。Singleton 处理器必须支持并发访问。
 由于投递语义是至少一次，处理器必须响应取消并保证幂等。

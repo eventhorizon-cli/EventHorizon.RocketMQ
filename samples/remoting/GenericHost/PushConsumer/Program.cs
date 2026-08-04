@@ -21,7 +21,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-const string Topic = "eventhorizon-test-topic";
+const string topic = "eventhorizon-test-topic";
 
 var builder = Host.CreateApplicationBuilder(
     new HostApplicationBuilderSettings
@@ -48,7 +48,7 @@ builder.Services
         options.MaxConcurrency = 4;
         options.PullBatchSize = 32;
         options.ConsumeMessageBatchSize = 4;
-        options.Subscribe(Topic, new FilterExpression("sample"));
+        options.Subscribe(topic, new FilterExpression("sample"));
     })
     .AddRemotingPushConsumer<AllMessagesMessageHandler>(ServiceLifetime.Scoped, options =>
     {
@@ -58,7 +58,7 @@ builder.Services
         options.MaxConcurrency = 2;
         options.PullBatchSize = 8;
         options.ConsumeMessageBatchSize = 1;
-        options.Subscribe(Topic);
+        options.Subscribe(topic);
     });
 
 // RunAsync starts and stops both Push roles through their SDK hosted services.

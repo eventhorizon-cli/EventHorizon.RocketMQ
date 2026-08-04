@@ -17,7 +17,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.Pull.Lite;
+using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;

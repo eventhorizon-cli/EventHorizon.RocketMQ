@@ -64,7 +64,7 @@ internal class RemoteCommandSerializer : IRemoteCommandSerializer
 
         Span<byte> frameSizeBuffer = stackalloc byte[4];
         input.Slice(0, 4).CopyTo(frameSizeBuffer);
-        int frameSize = BinaryPrimitives.ReadInt32BigEndian(frameSizeBuffer);
+        var frameSize = BinaryPrimitives.ReadInt32BigEndian(frameSizeBuffer);
         if (frameSize < 4)
         {
             throw new InvalidDataException($"Invalid RocketMQ frame size: {frameSize}.");
@@ -88,8 +88,8 @@ internal class RemoteCommandSerializer : IRemoteCommandSerializer
         // header length
         Span<byte> headerLengthBuffer = stackalloc byte[4];
         input.Slice(framePrefixLength, 4).CopyTo(headerLengthBuffer);
-        int oriHeaderLength = BinaryPrimitives.ReadInt32BigEndian(headerLengthBuffer);
-        int headerLength = oriHeaderLength & 0xFFFFFF;
+        var oriHeaderLength = BinaryPrimitives.ReadInt32BigEndian(headerLengthBuffer);
+        var headerLength = oriHeaderLength & 0xFFFFFF;
         if (headerLength > frameSize - 4)
         {
             throw new InvalidDataException(

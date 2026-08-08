@@ -41,9 +41,19 @@ protocol-owned tracing and metrics together with the behavior and tests. A featu
 corresponding telemetry success, empty-result, cancellation, and failure semantics are missing.
 
 - When an implementation requires a behavioral or design decision, first consult the corresponding official
-  Apache RocketMQ Java and Go client implementations. Use their semantics and underlying approach as a reference,
-  adapting it to this client's architecture and .NET runtime rather than copying implementation details wholesale.
-  Preserve established protocol semantics unless a documented protocol-specific reason requires this client to differ.
+  Apache RocketMQ Java and Go client implementations. Treat the official Java client as the primary behavioral and
+  design reference; use the official Go client as a secondary cross-check for corroboration, protocol-specific insight,
+  and unresolved differences. When their released behavior differs, follow Java by default unless a documented
+  protocol-specific reason requires this client to follow Go or intentionally differ from both. Adapt the selected
+  approach to this client's architecture and .NET runtime rather than copying implementation details wholesale.
+  Use only versions published as official, non-draft, non-prerelease releases: confirm the relevant Java and Go
+  versions from each official repository's release metadata, then inspect the source through the matching repository
+  tags. Do not use `main`, `master`, an arbitrary commit, or an untagged fix as the behavioral source of truth. Such
+  unreleased code may be inspected only to identify a future change or known gap, and must be described explicitly as
+  unreleased rather than implemented as current official behavior. Record the exact release tags in code comments,
+  documentation, tests, or issues whenever the upstream comparison is material to the decision. Issues that track
+  unresolved upstream differences must identify the released Java baseline first, then the released Go comparison,
+  and must keep prerelease or unreleased observations in a clearly separate, non-normative section.
 
 ## Architecture constraints
 

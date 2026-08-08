@@ -31,7 +31,7 @@ The audit also found two related implementation problems:
 
 ## Official Baseline
 
-This decision uses the Java client in the Apache RocketMQ main repository as its classic Remoting baseline. The
+This decision uses the released Java client at the Apache RocketMQ `rocketmq-all-5.5.0` tag as its classic Remoting baseline. The
 RocketMQ 5.x website's Java SDK examples describe the separate gRPC SDK in `apache/rocketmq-clients`; their
 PushConsumer load-balancing model must not be projected onto the classic Remoting client. The 4.x PushConsumer guide
 and the `apache/rocketmq` 5.5.0 `client` module describe the Remoting API considered here.
@@ -144,7 +144,7 @@ organized by ownership rather than by a generic Consumer base class:
 | `Coordination/Rebalance` | Shared client-rebalance scheduling, registration, wakeup, and the deterministic average queue allocator. |
 | `Pull` | Stateless internal PULL request/response contracts and wire execution used by LitePull and Push PULL receivers; each pull receives its filter from the current receive target. |
 | `Offset` | Internal queue-position queries and consumer-group offset persistence. |
-| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution shared by Push PULL retry and explicit POP dead-letter forwarding. |
+| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution used by Push PULL retry and retry-topic offset initialization. |
 | `LitePull` and `Push` | The two public role facades and their role-specific assignment, receive, dispatch, and run state. |
 
 The protocol composition root still creates one `IRemotingConsumerEngine` per registered role. The engine owns only
@@ -380,7 +380,7 @@ DI.
 | `Pull/Offset/PullOffsetManager` | PULL initial and committed offsets, broadcasting storage, reset boundaries, and retry-topic initialization boundaries. | POP progress. |
 | `Pull/Receive/PullAssignmentReceiver` | One PULL assignment's identity, cancellation, observed Broker-lock lease, and completion boundary for its receive loop plus active consume requests. | POP wire operations or handler-result policy. |
 | `Pop/PopAssignmentReceiver` | One POP assignment's target-filtered long polling, receive batching, cancellation, and receive-failure isolation. | Handler invocation, receipt lifetime, or settlement. |
-| `Pop/PopDeliveryProcessor` | POP handler invocation, fixed invisible-deadline checks, one-shot retry invisibility, maximum-attempt age handling, and deadline-bounded ACK/explicit-dead-letter settlement. | Assignment reconciliation, receive polling, `PullProcessQueue`, or offset commits. |
+| `Pop/PopDeliveryProcessor` | POP handler invocation, fixed invisible-deadline checks, one-shot retry invisibility, maximum-attempt age handling, and deadline-bounded receipt settlement. | Assignment reconciliation, receive polling, `PullProcessQueue`, or offset commits. |
 | `Pull/Orderly/OrderlyPullQueueLockClient` and `Pop/PopWireClient` | Their respective lock/unlock and POP wire commands. The queue-lock client accepts only physical PULL lock targets. | Assignment policy or application-handler invocation. |
 
 The control and delivery flows are deliberately different:
@@ -405,7 +405,7 @@ orderly PULL receiver -> OrderlyPullReceiveLoop -> PushMessageHandlerInvoker
 
 POP receiver  -> PopDeliveryProcessor -> receipt and lease state
                                     \-> PushMessageHandlerInvoker
-                                    \-> POP ACK / invisible-time change / explicit dead letter
+                                    \-> POP ACK / invisible-time change
 ```
 
 The following ownership rules are part of the behavior, not merely file organization:
@@ -446,7 +446,7 @@ maintains distinct PULL `PullProcessQueue` and Java POP `PopProcessQueue` tables
 and
 [`ConsumeMessagePopConcurrentlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java)
 keep PULL and POP settlement separate. The classic
-[Go Push consumer](https://github.com/apache/rocketmq-client-go/blob/master/consumer/push_consumer.go) likewise describes
+[Go Push consumer](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/push_consumer.go) likewise describes
 Push as a callback facade over PULL and keeps queue/offset state below that facade; it is a PULL lifecycle reference,
 not a source for POP semantics.
 
@@ -458,11 +458,10 @@ consumer result model:
 - `Success` settles the acknowledged prefix selected by `AckIndex`.
 - For concurrent non-FIFO delivery, `Retry` with a non-negative `DelayLevelWhenNextConsume` sends the PULL tail back or
   makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false` for the POP tail.
-- For concurrent non-FIFO delivery, `Retry` with a negative delay level forwards a PULL message directly. This client
-  also preserves that explicit request for POP by performing classic dead-letter send-back and ACKing the receipt only
-  after forwarding succeeds.
-  ACK, including the ACK after explicit dead-letter forwarding, is retried only while the original invisible deadline
-  remains valid; after expiry no further settlement is sent.
+- For concurrent non-FIFO delivery, `Retry` with a negative delay level sends a PULL message through classic dead-letter
+  send-back. For a POP delivery, the .NET adapter normalizes a negative value to level `0`; POP then follows its normal
+  Java-compatible `CHANGE_MESSAGE_INVISIBLETIME` retry schedule and never interprets a negative value as direct
+  dead-lettering.
 - `MessageGroup` FIFO and orderly singleton delivery ignore the consume context. Their `Retry` outcome remains locally
   serialized until it succeeds or reaches `MaxDeliveryAttempts`.
 - A PULL `Retry` that reaches `MaxDeliveryAttempts` follows classic send-back into the dead-letter queue. A POP `Retry`
@@ -475,14 +474,14 @@ consumer result model:
 There is no `DeadLetter` handler result. This matches Java's
 [`ConsumeConcurrentlyStatus`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 and the classic Go client's
-[`ConsumeResult`](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205).
+[`ConsumeResult`](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205).
 `DelayLevelWhenNextConsume` defaults to `0`, matching Java's
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java).
-PULL passes the level to classic send-back. POP maps a positive value through Java's POP-specific retry schedule;
-`0` selects that schedule by the zero-based reconsume count (`DeliveryAttempt - 1`). This schedule starts at 10 seconds
-and is distinct from the normal delayed-message level table. Classic PULL clients define a negative value as direct
-dead-lettering; preserving the same explicit request for POP is this client's extension, and the official Java POP
-retry-at-limit path does not use it.
+PULL passes the level to classic send-back. For POP, the adapter normalizes a negative value to level `0`, then maps the
+resulting level through Java's POP-specific retry schedule; `0` selects that schedule by the zero-based reconsume count
+(`DeliveryAttempt - 1`). This schedule starts at 10 seconds and is distinct from the normal delayed-message level table.
+Direct dead-lettering remains a classic PULL-only send-back behavior; POP retry never interprets a negative value as a
+direct dead-letter request.
 
 POP does not renew a receipt while its handler is active. The client checks the fixed invisible deadline before handler
 processing and again before settlement. If the deadline has passed, the late handler result is ignored and the Broker
@@ -537,9 +536,8 @@ Unit coverage must establish:
 - reset-offset serialization, late-handler result rejection, and deterministic shutdown ownership;
 - queue ID `-1`, retry receipt markers, and physical ACK targets;
 - POP in-flight flow control, fixed invisible deadlines with no handler-active renewal, pre/post-handler expiry checks,
-  one-shot Retry invisibility, maximum-attempt age-based defer and terminal ACK without implicit send-back,
-  ACK/explicit-dead-letter settlement retries only before the original deadline, explicit dead-letter ordering, and
-  stale settlement;
+  one-shot Retry invisibility, negative-delay normalization to level `0`, maximum-attempt age-based defer and terminal
+  ACK without implicit send-back, deadline-bounded receipt settlement, and stale settlement;
 - unchanged receive, process, commit, send-back, ACK, and invisible-time telemetry outcomes after responsibility moves;
 - public, Admin-returned, and LitePull-discovered queue identities resolving and heartbeating identically;
 - route replacement and route-refresh failure using resolver-owned latest or last-valid endpoints without queue-carried

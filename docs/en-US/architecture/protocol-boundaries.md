@@ -63,10 +63,11 @@ owns non-FIFO retry and dead-letter progression, while FIFO dead-letter forwardi
 Classic Remoting follows the concurrent callback model shared by the
 [Java client](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 and the
-[Go client](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205):
-it exposes `Success` and `Retry`, while a negative `RemotingPushConsumeContext.DelayLevelWhenNextConsume` requests
-direct dead-lettering. Compatibility tests lock each protocol's independently owned enum even though both currently
-contain two members with protocol-specific failure names.
+[Go client](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205):
+it exposes `Success` and `Retry`. A negative `RemotingPushConsumeContext.DelayLevelWhenNextConsume` requests direct
+dead-lettering only on the internal PULL path; POP normalizes it to the default retry level. Compatibility tests lock
+each protocol's independently owned enum even though both currently contain two members with protocol-specific
+failure names.
 
 Classic Remoting `ConsumerOptions.InitialPosition` uses the protocol-owned `ConsumeFromPosition` type. LitePull and
 Push apply it only when an assigned queue has no committed group position; a timestamp start also uses

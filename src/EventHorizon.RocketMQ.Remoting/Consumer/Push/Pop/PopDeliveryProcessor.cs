@@ -14,7 +14,6 @@
 // limitations under the License.
 
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Processing;
-using EventHorizon.RocketMQ.Remoting.Consumer.Settlement;
 using Microsoft.Extensions.Logging;
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
@@ -34,7 +33,6 @@ internal sealed class PopDeliveryProcessor
 
     private readonly RemotingPushConsumerOptions _options;
     private readonly PopWireClient _popClient;
-    private readonly IRemotingSettlementClient _settlementClient;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
     private readonly Func<
@@ -46,7 +44,6 @@ internal sealed class PopDeliveryProcessor
     public PopDeliveryProcessor(
         RemotingPushConsumerOptions options,
         PopWireClient popClient,
-        IRemotingSettlementClient settlementClient,
         TimeProvider timeProvider,
         ILogger logger,
         Func<
@@ -57,14 +54,12 @@ internal sealed class PopDeliveryProcessor
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(popClient);
-        ArgumentNullException.ThrowIfNull(settlementClient);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(messageHandler);
 
         _options = options;
         _popClient = popClient;
-        _settlementClient = settlementClient;
         _timeProvider = timeProvider;
         _logger = logger;
         _messageHandler = messageHandler;
@@ -131,9 +126,6 @@ internal sealed class PopDeliveryProcessor
             case ConsumeResult.Success:
                 await AcknowledgeAsync(state, cancellationToken).ConfigureAwait(false);
                 break;
-            case ConsumeResult.Retry when handlerOutcome.DelayLevelWhenNextConsume < 0:
-                await SendToDeadLetterQueueAsync(state, cancellationToken).ConfigureAwait(false);
-                break;
             case ConsumeResult.Retry:
                 await SettleRetryAsync(state, handlerOutcome.DelayLevelWhenNextConsume, cancellationToken)
                     .ConfigureAwait(false);
@@ -162,8 +154,11 @@ internal sealed class PopDeliveryProcessor
         }
         else
         {
+            // Java 5.5.0 POP has no PULL-style negative-delay dead-letter branch. Normalize that PULL-only sentinel to
+            // POP's default retry level so an internal receive-mode choice cannot turn it into an invalid table index.
+            var popDelayLevel = Math.Max(delayLevelWhenNextConsume, 0);
             invisibleDuration = PopRetryDelaySchedule.Resolve(
-                delayLevelWhenNextConsume,
+                popDelayLevel,
                 message.DeliveryAttempt);
         }
 
@@ -209,39 +204,6 @@ internal sealed class PopDeliveryProcessor
                 state.Receipt.QueueId,
                 state.Receipt.QueueOffset);
         }
-    }
-
-    private async Task SendToDeadLetterQueueAsync(
-        PopDeliveryState state,
-        CancellationToken cancellationToken)
-    {
-        var receipt = state.Receipt;
-        var physicalQueue = new RemotingConsumerQueue(
-            receipt.Topic,
-            receipt.BrokerName,
-            receipt.QueueId);
-        if (!await RetrySettlementAsync(
-                state,
-                "send to the dead-letter queue",
-                token => _settlementClient.SendBackAsync(
-                    physicalQueue,
-                    state.Message.Message,
-                    delayLevel: -1,
-                    _options.MaxDeliveryAttempts,
-                    token),
-                cancellationToken).ConfigureAwait(false))
-        {
-            return;
-        }
-
-        await RetrySettlementAsync(
-            state,
-            "acknowledge after dead-letter forwarding",
-            token => _popClient.AcknowledgeAsync(
-                state.Receipt,
-                state.Message.Message,
-                token),
-            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> RetrySettlementAsync(

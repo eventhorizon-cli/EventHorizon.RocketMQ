@@ -94,10 +94,11 @@ Push 唯一的 `IRemotingPushMessageHandler.HandleAsync` API 接收 `IReadOnlyLi
 
 `Success` 默认确认整个批次。并发、非 FIFO handler 可以在返回 `Success` 前把 `AckIndex` 设为最后一条已接受
 消息的从零开始索引；客户端会确认这个连续前缀，并只重试尾部消息。无论 `AckIndex` 为何，`Retry` 都会应用到批次
-中的每条消息。context 还提供 `DelayLevelWhenNextConsume`，用于失败批次或未确认的尾部：`0` 交由 Broker 决定
-重试时间，正值选择 RocketMQ 延迟级别，负值请求直接进入死信队列。这种双结果契约与 classic Java、Go 的并发消费
-设计一致；死信是重试策略的终态选择，不是独立的 handler 结果。广播模式没有 Broker 重试或死信路径，因此未确认的
-尾部消息会被跳过。
+中的每条消息。context 还提供 `DelayLevelWhenNextConsume`，用于失败批次或未确认的尾部：PULL 接收时，`0` 交由
+Broker 决定重试时间，正值选择 RocketMQ 延迟级别，负值请求直接进入死信队列。Push assignment 使用 POP 时，.NET
+适配器会先将负值归一化为 `0`，再按 Java 兼容的不可见时间重试表处理（包括 level `0`）；POP 不会把负值解释为直接死信。
+这种双结果契约与 classic Java、Go 的并发消费设计一致；死信是重试策略的终态选择，不是独立的 handler 结果。广播
+模式没有 Broker 重试或死信路径，因此未确认的尾部消息会被跳过。
 
 `ConsumeTimeout` 默认值为 15 分钟，仅适用于并发集群、非 FIFO 批次。超时后，客户端会取消 handler token，并为
 整批消息请求 Broker 重新投递。它不能强制终止忽略取消信号的应用代码，因此 handler 必须响应该 token，并保持幂等。

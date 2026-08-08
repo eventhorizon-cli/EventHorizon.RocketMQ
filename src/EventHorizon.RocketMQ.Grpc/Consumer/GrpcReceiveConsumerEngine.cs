@@ -224,7 +224,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             // passes false, leaving every explicit lease extension to its caller.
             // Design: docs/en-US/grpc/consumer-model.md#simpleconsumer and #pushconsumer.
             // Apache Proxy reference:
-            // https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140
+            // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140
             var request = new Proto.ReceiveMessageRequest
             {
                 Group = Resource(_groupName),
@@ -335,7 +335,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     // handler-active renewal.
     // Design: docs/en-US/grpc/consumer-model.md#simpleconsumer.
     // Apache Java reference:
-    // https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/SimpleConsumerImpl.java#L219-L258
+    // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/SimpleConsumerImpl.java#L219-L258
     public Task ChangeInvisibleDurationAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
@@ -348,7 +348,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     // is deliberately recorded as "nack" telemetry.
     // Design: docs/en-US/grpc/consumer-model.md#pushconsumer.
     // Apache Java reference:
-    // https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445
+    // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445
     public Task ScheduleRetryAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
@@ -359,7 +359,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     // ChangeInvisibleDuration operation. telemetryOperation classifies the caller's intent locally; the service receives
     // the same wire shape and applies the requested replacement deadline.
     // Apache Proxy reference:
-    // https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ChangeInvisibleDurationActivity.java#L43-L69
+    // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ChangeInvisibleDurationActivity.java#L43-L69
     private Task SetInvisibleDurationAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,

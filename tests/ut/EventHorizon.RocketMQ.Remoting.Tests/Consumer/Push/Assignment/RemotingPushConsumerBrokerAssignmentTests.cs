@@ -585,9 +585,10 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
     }
 
     [Fact]
-    public async Task BrokerAssignedPop_HandlerSelectsNegativeRetryDelay_ForwardsToDeadLetterWithoutChangingInvisibleTime()
+    public async Task BrokerAssignedPop_HandlerSelectsNegativeRetryDelay_UsesDefaultPopRetrySchedule()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
+        var settlementAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var remoting = new FakeRemotingClient(BrokerAssignmentClientId)
         {
             QueryAssignmentHandler = static (request, _) => Task.FromResult(
@@ -595,7 +596,20 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
                     ? AssignmentResponse("orders", -1, "POP")
                     : EmptyAssignmentResponse()),
             PopHandler = ReceiveOnePopThenWait(CreatePopSuccessResponse(invisibleTimeMilliseconds: 5_000)),
-            SendBackHandler = static (_, _) => Task.FromResult(BrokerSuccess()),
+            ChangeInvisibleHandler = (_, _) =>
+            {
+                settlementAttempted.TrySetResult();
+                return Task.FromResult(
+                    ChangeInvisibleTimeResponse(
+                        PopTimeMilliseconds + 1_000,
+                        invisibleTimeMilliseconds: 10_000,
+                        reviveQueueId: 4));
+            },
+            SendBackHandler = (_, _) =>
+            {
+                settlementAttempted.TrySetResult();
+                return Task.FromResult(BrokerSuccess());
+            },
             AckHandler = static (_, _) => Task.FromResult(BrokerSuccess())
         };
         var options = CreateBrokerAssignmentOptions(static (_, context, _) =>
@@ -606,18 +620,15 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
         await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
 
         await consumer.StartAsync(cancellationToken);
-        await WaitForBrokerRequestAsync(remoting, RequestCode.AckMessage, cancellationToken);
+        await settlementAttempted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
 
-        Assert.Equal(
-            [RequestCode.ConsumerSendMsgBack, RequestCode.AckMessage],
-            remoting.Requests
-                .Where(static request =>
-                    request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.AckMessage)
-                .Select(static request => request.Code)
-                .ToArray());
-        Assert.DoesNotContain(
+        var change = Assert.Single(
             remoting.Requests,
             static request => request.Code == RequestCode.ChangeMessageInvisibleTime);
+        Assert.Equal(false, change.ExtFields["suspend"]);
+        Assert.Equal(10_000L, Convert.ToInt64(change.ExtFields["invisibleTime"]));
+        Assert.DoesNotContain(remoting.Requests, static request =>
+            request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.AckMessage);
     }
 
     [Fact]
@@ -739,8 +750,11 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
         }
     }
 
-    [Fact]
-    public async Task BrokerAssignedPop_RetryChangeInvisibleResponseIsUncertain_DoesNotRetryOldReceipt()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task BrokerAssignedPop_RetryChangeInvisibleResponseIsUncertain_DoesNotRetryOldReceipt(
+        int delayLevelWhenNextConsume)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var firstChangeAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -767,8 +781,11 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
                     ChangeInvisibleTimeResponse(PopTimeMilliseconds + 1_000, invisibleTimeMilliseconds: 5_000, reviveQueueId: 4));
             }
         };
-        var options = CreateBrokerAssignmentOptions(
-            static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
+        var options = CreateBrokerAssignmentOptions((_, context, _) =>
+        {
+            context.DelayLevelWhenNextConsume = delayLevelWhenNextConsume;
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
         await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
 
         await consumer.StartAsync(cancellationToken);
@@ -777,6 +794,8 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
         await Assert.ThrowsAsync<TimeoutException>(() =>
             secondChangeAttempt.Task.WaitAsync(TimeSpan.FromMilliseconds(500), cancellationToken));
         Assert.Equal(1, Volatile.Read(ref changeAttempts));
+        Assert.DoesNotContain(remoting.Requests, static request =>
+            request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.AckMessage);
     }
 
     [Fact]
@@ -858,51 +877,6 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
             TimeSpan.FromSeconds(1),
             cancellationToken);
         Assert.Equal(43L, Convert.ToInt64(acknowledgement.ExtFields["offset"]));
-    }
-
-    [Fact]
-    public async Task BrokerAssignedPop_DeadLetterAckFails_RetriesAckWithoutForwardingAgain()
-    {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        var acknowledgementAttempts = 0;
-        var acknowledgementRetried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var remoting = new FakeRemotingClient(BrokerAssignmentClientId)
-        {
-            QueryAssignmentHandler = static (request, _) => Task.FromResult(
-                AssignmentQueryTopic(request) == "orders"
-                    ? AssignmentResponse("orders", -1, "POP")
-                    : EmptyAssignmentResponse()),
-            PopHandler = ReceiveOnePopThenWait(CreatePopSuccessResponse(invisibleTimeMilliseconds: 2_000)),
-            SendBackHandler = static (_, _) => Task.FromResult(BrokerSuccess()),
-            AckHandler = (_, _) =>
-            {
-                if (Interlocked.Increment(ref acknowledgementAttempts) == 1)
-                {
-                    return Task.FromException<RemotingCommand>(
-                        new InvalidOperationException("dead-letter acknowledgement failed"));
-                }
-
-                acknowledgementRetried.TrySetResult();
-                return Task.FromResult(BrokerSuccess());
-            }
-        };
-        var options = CreateBrokerAssignmentOptions(static (_, context, _) =>
-        {
-            context.DelayLevelWhenNextConsume = -1;
-            return ValueTask.FromResult(ConsumeResult.Retry);
-        });
-        await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
-
-        await consumer.StartAsync(cancellationToken);
-        await acknowledgementRetried.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
-
-        Assert.Equal(
-            [RequestCode.ConsumerSendMsgBack, RequestCode.AckMessage, RequestCode.AckMessage],
-            remoting.Requests
-                .Where(static request =>
-                    request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.AckMessage)
-                .Select(static request => request.Code)
-                .ToArray());
     }
 
     private static RemotingPushConsumerOptions CreateBrokerAssignmentOptions(

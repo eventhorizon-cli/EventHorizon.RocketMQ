@@ -16,7 +16,6 @@
 using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
-using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.IntegrationTests.Consumer.Push.Pop.Support;
 using EventHorizon.RocketMQ.Remoting.Producer;
@@ -25,33 +24,38 @@ using Xunit;
 
 namespace EventHorizon.RocketMQ.Remoting.IntegrationTests.Consumer.Push.Pop;
 
-public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
+public sealed class RocketMQBrokerAssignedPopNegativeDelayIntegrationTests(
     RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task BrokerAssignedPop_HandlerRequestsDeadLetter_ForwardsBeforeAcknowledgingReceipt()
+    public async Task BrokerAssignedPop_HandlerRequestsNegativeDelay_RedeliversWithoutDeadLetterAndAcknowledgesReceipt()
     {
         using var settlements = new RemotingSettlementObserver();
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
         var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
-        var consumerGroup = scope.CreateConsumerGroupName("remoting-broker-pop-dead-letter");
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-broker-pop-negative-delay");
         var deadLetterTopic = $"%DLQ%{consumerGroup}";
-        var tag = $"remoting-broker-pop-dead-letter-{Guid.NewGuid():N}";
-        var body = $"remoting-broker-pop-dead-letter-{Guid.NewGuid():N}";
-        var deadLetterRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tag = $"remoting-broker-pop-negative-delay-{Guid.NewGuid():N}";
+        var body = $"remoting-broker-pop-negative-delay-{Guid.NewGuid():N}";
+        var firstAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var redelivered = new TaskCompletionSource<RemotingMessageView>(TaskCreationOptions.RunContinuationsAsynchronously);
         var deliveryCount = 0;
         var services = new ServiceCollection();
         var rocketMQ = BrokerAssignedPopIntegrationTestSupport.AddRemotingClient(
             services,
             fixture,
-            $"remoting-broker-pop-dead-letter-{Guid.NewGuid():N}");
+            $"remoting-broker-pop-negative-delay-{Guid.NewGuid():N}");
         rocketMQ.AddRemotingProducer(options =>
-            options.GroupName = scope.CreateProducerGroupName("remoting-broker-pop-dead-letter-producer"));
-        rocketMQ.AddRemotingPushConsumerWithTestHandler<DeadLetterConsumerMarker>(options =>
+            options.GroupName = scope.CreateProducerGroupName("remoting-broker-pop-negative-delay-producer"));
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<NegativeDelayConsumerMarker>(options =>
         {
-            BrokerAssignedPopIntegrationTestSupport.ConfigureBrokerAssignedPop(options, consumerGroup, scope.Topic, tag);
+            BrokerAssignedPopIntegrationTestSupport.ConfigureBrokerAssignedPop(
+                options,
+                consumerGroup,
+                scope.Topic,
+                tag);
             options.PopBatchSize = 1;
             options.ConsumeMessageBatchSize = 1;
         }, (messages, context, _) =>
@@ -62,10 +66,16 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
                     return ValueTask.FromResult(ConsumeResult.Success);
                 }
 
-                Interlocked.Increment(ref deliveryCount);
-                deadLetterRequested.TrySetResult();
-                context.DelayLevelWhenNextConsume = -1;
-                return ValueTask.FromResult(ConsumeResult.Retry);
+                var attempt = Interlocked.Increment(ref deliveryCount);
+                if (attempt == 1)
+                {
+                    firstAttempt.TrySetResult();
+                    context.DelayLevelWhenNextConsume = -1;
+                    return ValueTask.FromResult(ConsumeResult.Retry);
+                }
+
+                redelivered.TrySetResult(message);
+                return ValueTask.FromResult(ConsumeResult.Success);
             });
 
         await using var provider = services.BuildServiceProvider(
@@ -89,26 +99,21 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
             var sent = await producer.SendAsync(
                 new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
                 cancellationToken);
-            await deadLetterRequested.Task.WaitAsync(
+            await firstAttempt.Task.WaitAsync(
                 BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
                 cancellationToken);
-            await BrokerAssignedPopIntegrationTestSupport.WaitUntilAsync(
-                async () => (await fixture.GetTopicListAsync(cancellationToken)).Contains(
-                    deadLetterTopic,
-                    StringComparison.Ordinal),
+            var redeliveredMessage = await redelivered.Task.WaitAsync(
                 BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
                 cancellationToken);
 
-            var deadLetter = await ConsumeDeadLetterAsync(
-                fixture,
-                scope,
-                deadLetterTopic,
-                body,
-                cancellationToken);
-            Assert.Equal(scope.Topic, deadLetter.Topic);
-            Assert.Equal(body, Encoding.UTF8.GetString(deadLetter.Body));
+            Assert.Equal(sent.MessageId, redeliveredMessage.MessageId);
+            Assert.Equal(scope.Topic, redeliveredMessage.Topic);
+            Assert.Equal(body, Encoding.UTF8.GetString(redeliveredMessage.Body));
+            Assert.Equal("broker-a", redeliveredMessage.BrokerName);
+            Assert.True(redeliveredMessage.QueueId >= 0);
+            Assert.True(redeliveredMessage.DeliveryAttempt >= 2);
             await settlements.WaitForAsync(
-                "reject",
+                "nack",
                 scope.Topic,
                 consumerGroup,
                 1,
@@ -123,7 +128,12 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
                 BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
                 cancellationToken,
                 sent.MessageId);
-            Assert.Equal(1, Volatile.Read(ref deliveryCount));
+            Assert.Equal(0, settlements.Count("reject", scope.Topic, consumerGroup, sent.MessageId));
+            Assert.Equal(2, Volatile.Read(ref deliveryCount));
+            Assert.DoesNotContain(
+                deadLetterTopic,
+                await fixture.GetTopicListAsync(cancellationToken),
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -132,53 +142,5 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
         }
     }
 
-    private static async Task<RemotingMessageView> ConsumeDeadLetterAsync(
-        RocketMQSingleBrokerContainerFixture fixture,
-        RocketMQTestScope scope,
-        string deadLetterTopic,
-        string expectedBody,
-        CancellationToken cancellationToken)
-    {
-        var services = new ServiceCollection();
-        services
-            .AddRocketMQRemoting(options => options.NamesrvAddr = fixture.NameServerAddress)
-            .AddRemotingLitePullConsumer(options =>
-            {
-                options.GroupName = scope.CreateConsumerGroupName("remoting-dead-letter-observer");
-                options.InitialPosition = ConsumeFromPosition.Beginning;
-                options.EnableAutoCommit = false;
-                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
-                options.PollTimeout = TimeSpan.FromSeconds(2);
-                options.Subscribe(deadLetterTopic);
-            });
-
-        await using var provider = services.BuildServiceProvider(
-            new ServiceProviderOptions { ValidateOnBuild = true });
-        var observer = provider.GetRequiredService<IRemotingLitePullConsumer>();
-        await observer.StartAsync(cancellationToken);
-        try
-        {
-            var deadline = DateTimeOffset.UtcNow + BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout;
-            do
-            {
-                var messages = await observer.PollAsync(cancellationToken: cancellationToken);
-                var matching = messages.SingleOrDefault(message =>
-                    Encoding.UTF8.GetString(message.Body) == expectedBody);
-                if (matching is not null)
-                {
-                    await observer.CommitAsync(cancellationToken);
-                    return matching;
-                }
-            }
-            while (DateTimeOffset.UtcNow < deadline);
-
-            throw new TimeoutException($"No matching message was consumed from dead-letter topic '{deadLetterTopic}'.");
-        }
-        finally
-        {
-            await observer.StopAsync(CancellationToken.None);
-        }
-    }
-
-    private sealed record DeadLetterConsumerMarker;
+    private sealed record NegativeDelayConsumerMarker;
 }

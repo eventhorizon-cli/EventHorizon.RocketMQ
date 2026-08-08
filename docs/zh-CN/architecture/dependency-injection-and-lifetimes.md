@@ -201,7 +201,8 @@ gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通�
 `IRemotingPushMessageHandler` API，在每次批量回调中传入 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`；其 `ConsumeMessageBatchSize` 默认值为 `1`，因此除非显式配置，否则仍是
 单消息投递。对于并发、非 FIFO 批次，handler 可以返回 `Success` 并设置 `AckIndex`，以确认连续前缀并重试
-尾部；`Retry` 仍是整批结果。需要直接进入死信队列时，在这个重试结果中把 `DelayLevelWhenNextConsume` 设为负值。
+尾部；`Retry` 仍是整批结果。只有内部 PULL 路径会把负数 `DelayLevelWhenNextConsume` 解释为直接死信；POP 会将其
+归一化为默认重试级别。
 
 对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token 并请求重新投递。handler
 执行期间的 receipt 续期由 `AutoRenew` 请求的 Proxy 负责，不属于 handler scope，也不由客户端定时器承担。
@@ -212,9 +213,9 @@ dispatcher 会忽略延迟返回的结果并释放消费循环的并发槽位，
 对于并发集群、非 FIFO 的 Remoting 批次，`ConsumeTimeout` 到期后会取消 handler token，并请求 Broker 重新投递。
 对于 POP 投递，handler 执行期间不会续租 receipt；客户端会在 handler 处理前和结算前检查固定不可见 deadline。
 过期结果会被忽略且不发送结算。`Retry` 结果只发起一次带 `suspend=false` 的
-`CHANGE_MESSAGE_INVISIBLETIME` 请求；对于不确定的失败，不会使用旧 receipt 重试。ACK，包括死信转发后的 ACK，
-只在原始 deadline 内重试。延迟返回的结果会被忽略，并可能与重新投递重叠，因此 handler 仍需自行配合取消并保持
-幂等；运行时不能强制停止应用代码。FIFO 和顺序投递为了保持顺序保证，不应用此机制。
+`CHANGE_MESSAGE_INVISIBLETIME` 请求；对于不确定的失败，不会使用旧 receipt 重试。ACK 只在原始 deadline 内重试。
+延迟返回的结果会被忽略，并可能与重新投递重叠，因此 handler 仍需自行配合取消并保持幂等；运行时不能强制停止
+应用代码。FIFO 和顺序投递为了保持顺序保证，不应用此机制。
 
 对应的 handler scope 逻辑位于
 [`GrpcPushMessageHandlerFactory`](../../../src/EventHorizon.RocketMQ.Grpc/Consumer/Push/GrpcPushMessageHandlerFactory.cs)

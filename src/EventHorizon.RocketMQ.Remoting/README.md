@@ -304,11 +304,13 @@ records the source-level Java and Broker references.
 
 `ConsumeMessageBatchSize` controls the largest list passed to one handler call. Return `Success` or `Retry`. For a
 concurrent non-FIFO batch, set `RemotingPushConsumeContext.AckIndex` before returning `Success` to acknowledge only a
-contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay; set it to a negative value before
-returning `Retry` to request direct dead-lettering. Its default value is `0`, which delegates retry timing to the Broker. At
-`MaxDeliveryAttempts`, PULL retry uses classic dead-letter send-back. POP retry follows the official Java age policy:
-it continues with age-selected invisibility changes and ACKs only after the message is older than twice the final POP
-retry delay, without implicit dead-letter forwarding.
+contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay. For PULL reception, set it to a negative
+value before returning `Retry` to request direct dead-letter send-back. For POP reception, the .NET adapter normalizes a
+negative value to level `0` and follows the normal Java-compatible invisibility retry schedule. Its default value is `0`;
+PULL uses Broker retry timing for that value, while POP applies the Java schedule. At `MaxDeliveryAttempts`, PULL retry
+uses classic dead-letter send-back. POP retry follows the official Java age policy: it continues with age-selected
+invisibility changes and ACKs only after the message is older than twice the final POP retry delay, without implicit
+dead-letter forwarding.
 
 `ServiceLifetime.Scoped` or `Transient` creates a fresh async scope for each handling attempt. A singleton handler
 must be thread-safe. Handlers must honor cancellation and remain idempotent because delivery is at least once.

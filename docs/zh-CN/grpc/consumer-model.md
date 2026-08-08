@@ -86,10 +86,10 @@ PushConsumer 启动后大致执行如下循环：
 ```
 
 handler 只返回 `ConsumeResult.Success` 或 `ConsumeResult.Failure`，与
-[Apache Java gRPC 客户端的公开结果](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java)
+[Apache Java gRPC 客户端的公开结果](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java)
 一致。对于并发、非 FIFO 投递，`Failure` 会按当前重试策略调整不可见时间，后续重试和死信推进由服务端负责。
 对于 FIFO 投递，客户端会在本地重试 handler，并在达到最大次数后通过内部协议 RPC 转入死信队列；这一行为与
-[Java process queue](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445)
+[Java process queue](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445)
 一致。handler 结果和 SimpleConsumer 都不暴露内部死信 RPC。重试调度对应的 OpenTelemetry 结算 operation 仍为
 `nack`，但它不是 RocketMQ handler 结果。只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认
 失败仍可能造成重复投递，因此 handler 必须具备幂等性。
@@ -98,8 +98,8 @@ handler 只返回 `ConsumeResult.Success` 或 `ConsumeResult.Failure`，与
 handler 执行期间通过客户端连接托管 receipt 续期；.NET dispatcher 不再额外启动一套客户端续期定时器。
 SimpleConsumer 设置 `AutoRenew=false`，因此初始不可见时间以及每次显式 `ChangeInvisibleDurationAsync` 都由调用方负责。
 这一职责划分与
-[Apache Java gRPC 客户端](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278)
-一致；[Proxy 只有在配置和请求都启用自动续期时才会登记 receipt](https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)。
+[Apache Java gRPC 客户端](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278)
+一致；[Proxy 只有在配置和请求都启用自动续期时才会登记 receipt](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)。
 classic Remoting Push 仍使用固定 POP deadline，不沿用这套续期机制。
 
 `MaxConcurrency` 控制消费循环数量，`MaxCachedMessages` 与 `MaxCachedMessageBytes` 限制本地缓冲。开启

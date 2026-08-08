@@ -292,8 +292,9 @@ PULL。Broker 分配查询失败时，Consumer 会等待下一轮协调，不会
 
 `ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success` 或 `Retry`。对于并发的非 FIFO
 批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
-`DelayLevelWhenNextConsume` 控制下一次重试的延迟；需要直接进入死信队列时，先把它设为负值，再返回 `Retry`。
-默认值为 `0`，由 Broker 决定重试时间。
+`DelayLevelWhenNextConsume` 控制下一次重试的延迟。PULL 接收时，可在返回 `Retry` 前将其设为负值，请求直接执行死信
+send-back。POP 接收时，.NET 适配器会先将负值归一化为 `0`，再按 Java 兼容的不可见时间重试表处理。默认值为 `0`；
+PULL 由 Broker 决定重试时间，POP 则按 Java 重试表处理。
 达到 `MaxDeliveryAttempts` 后，PULL 重试按 classic send-back 进入死信；POP 重试则遵循官方 Java 的消息年龄策略，继续按
 年龄修改不可见时间，只有消息年龄超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。
 

@@ -63,7 +63,10 @@ public sealed class RocketMQTestScope
     /// Creates an isolated consumer group with a configured maximum retry count.
     /// </summary>
     /// <param name="role">The role label included in the group name.</param>
-    /// <param name="retryMaxTimes">The non-negative maximum number of consumption retries.</param>
+    /// <param name="retryMaxTimes">
+    /// The non-negative maximum number of consumption retries. The integration group uses a one-second customized
+    /// backoff so retry workflows remain bounded.
+    /// </param>
     /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
     /// <returns>The created consumer group name.</returns>
     public async Task<string> CreateConsumerGroupAsync(
@@ -87,6 +90,27 @@ public sealed class RocketMQTestScope
     {
         var group = CreateGroupName(role);
         await _fixture.CreateConsumerGroupAsync(group, Topic, null, cancellationToken).ConfigureAwait(false);
+        return group;
+    }
+
+    /// <summary>
+    /// Creates and configures an isolated LitePush consumer group with a maximum retry count.
+    /// </summary>
+    /// <param name="role">The role label included in the group name.</param>
+    /// <param name="retryMaxTimes">
+    /// The non-negative maximum number of consumption retries. The integration group uses a one-second customized
+    /// backoff so retry workflows remain bounded.
+    /// </param>
+    /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
+    /// <returns>A LitePush consumer group name unique to this test scope.</returns>
+    public async Task<string> CreateLiteConsumerGroupAsync(
+        string role,
+        int retryMaxTimes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
+        var group = CreateGroupName(role);
+        await _fixture.CreateConsumerGroupAsync(group, Topic, retryMaxTimes, cancellationToken).ConfigureAwait(false);
         return group;
     }
 

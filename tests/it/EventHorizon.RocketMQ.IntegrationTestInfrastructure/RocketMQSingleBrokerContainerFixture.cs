@@ -329,6 +329,9 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
             {
                 createGroupCommand.Add("--retryMaxTimes");
                 createGroupCommand.Add(retryMaxTimes.Value.ToString(CultureInfo.InvariantCulture));
+                createGroupCommand.Add("--groupRetryPolicy");
+                createGroupCommand.Add(
+                    "{\"type\":\"CUSTOMIZED\",\"customizedRetryPolicy\":{\"next\":[1000]}}");
             }
 
             var createGroup = await _broker.ExecAsync(createGroupCommand, cancellationToken).ConfigureAwait(false);

@@ -54,10 +54,10 @@ Package 版本和发布依赖。
 gRPC Push 与 LitePush 遵循 Apache Java gRPC listener 契约，只公开 `Success` 和 `Failure`；非 FIFO 的重试与死信
 推进由服务端负责，FIFO 死信转发则是客户端内部行为。classic Remoting 遵循
 [Java 客户端](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
-与[Go 客户端](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205)
-共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`；需要直接进入死信队列时，把
-`RemotingPushConsumeContext.DelayLevelWhenNextConsume` 设为负数。兼容性测试仍分别锁定两边独立拥有的枚举；两者目前
-虽然都只有两个成员，但失败结果名称和协议语义并不相同。
+与[Go 客户端](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205)
+共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`。只有内部 PULL 路径会把负数
+`RemotingPushConsumeContext.DelayLevelWhenNextConsume` 解释为直接死信；POP 会将其归一化为默认重试级别。
+兼容性测试仍分别锁定两边独立拥有的枚举；两者目前虽然都只有两个成员，但失败结果名称和协议语义并不相同。
 
 classic Remoting 的 `ConsumerOptions.InitialPosition` 使用协议自有的 `ConsumeFromPosition` 类型。LitePull 与
 Push 只在已分配队列不存在消费组已提交位点时应用该配置；从时间戳开始时还会读取

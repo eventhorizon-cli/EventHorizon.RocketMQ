@@ -91,8 +91,8 @@ Ordinary Push and LitePush receive requests set `AutoRenew=true`. A compatible P
 enabled owns receipt renewal through the client connection while a handler is active; the .NET dispatcher does not
 run a second client-side renewal timer. SimpleConsumer sets `AutoRenew=false`, so its caller owns the initial invisible
 duration and every explicit `ChangeInvisibleDurationAsync` call. This follows the
-[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278),
-while the [Proxy registers auto-renew receipts](https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)
+[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ConsumerImpl.java#L263-L278),
+while the [Proxy registers auto-renew receipts](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140)
 only when both its configuration and the request enable the feature. Classic Remoting Push remains a separate model
 with a fixed POP deadline.
 
@@ -124,11 +124,11 @@ async DI scope for each handling attempt, allowing normal scoped application dep
 a `Singleton` handler is owned by its Consumer instance and must be safe for concurrent calls.
 
 The handler returns only `ConsumeResult.Success` or `ConsumeResult.Failure`, matching the public outcomes in the
-[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java).
+[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java).
 For concurrent non-FIFO delivery, `Failure` changes invisibility according to the effective retry policy and leaves
 retry and dead-letter progression to the service. For FIFO delivery, the client retries the handler locally and uses
 the protocol's dead-letter RPC internally after the maximum attempts are exhausted, matching the
-[Java process-queue behavior](https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445).
+[Java process-queue behavior](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445).
 Neither the handler result nor SimpleConsumer exposes that internal RPC. The OpenTelemetry settlement operation for
 retry scheduling remains `nack`; that telemetry term is not a RocketMQ handler result.
 

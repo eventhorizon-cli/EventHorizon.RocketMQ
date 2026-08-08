@@ -108,11 +108,13 @@ same Broker physical queue can be grouped and those batches can run in parallel 
 `Success` normally confirms the complete batch. A concurrent non-FIFO handler can set `AckIndex` to the zero-based
 index of the final accepted message before returning `Success`; the client confirms that contiguous prefix and retries
 only its tail. `Retry` applies to every message regardless of `AckIndex`. The context also exposes
-`DelayLevelWhenNextConsume` for the failed batch or unacknowledged tail: `0` delegates retry timing to the Broker, a
-positive value selects a RocketMQ delay level, and a negative value requests direct dead-lettering. This two-result
-contract matches the classic Java and Go concurrent consumers; dead-lettering is a retry-policy terminal choice rather
-than a separate handler result. Broadcasting does not have a Broker retry or dead-letter path, so an unacknowledged
-tail is skipped.
+`DelayLevelWhenNextConsume` for the failed batch or unacknowledged tail: for PULL reception, `0` delegates retry timing
+to the Broker, a positive value selects a RocketMQ delay level, and a negative value requests direct dead-lettering.
+When a Push assignment uses POP, the .NET adapter normalizes a negative value to level `0` and follows the normal
+Java-compatible invisibility retry schedule, including for level `0`; POP never interprets a negative value as direct
+dead-lettering. This two-result contract matches the classic Java and Go concurrent consumers; dead-lettering is a
+retry-policy terminal choice rather than a separate handler result. Broadcasting does not have a Broker retry or
+dead-letter path, so an unacknowledged tail is skipped.
 
 `ConsumeTimeout` defaults to 15 minutes and applies only to concurrent clustered non-FIFO batches. When it elapses,
 the client cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate

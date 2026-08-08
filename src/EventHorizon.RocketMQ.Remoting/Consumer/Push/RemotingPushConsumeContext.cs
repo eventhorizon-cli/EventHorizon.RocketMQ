@@ -20,10 +20,10 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// </summary>
 /// <remarks>
 /// For a concurrent non-FIFO batch, <see cref="AckIndex"/> selects the acknowledged prefix when the handler returns
-/// <see cref="ConsumeResult.Success"/>, while <see cref="DelayLevelWhenNextConsume"/> selects retry timing or direct
-/// dead-lettering when it returns <see cref="ConsumeResult.Retry"/>. This mirrors RocketMQ's concurrent-consumer
-/// acknowledgement model. FIFO <c>MessageGroup</c> and orderly deliveries are singleton paths and ignore these
-/// settings.
+/// <see cref="ConsumeResult.Success"/>, while <see cref="DelayLevelWhenNextConsume"/> selects retry timing when it
+/// returns <see cref="ConsumeResult.Retry"/>. A negative value requests direct dead-lettering only when the internal
+/// receiver uses PULL; POP normalizes it to the default retry level. FIFO <c>MessageGroup</c> and orderly deliveries are
+/// singleton paths and ignore these settings.
 /// </remarks>
 public sealed class RemotingPushConsumeContext
 {
@@ -53,20 +53,21 @@ public sealed class RemotingPushConsumeContext
     }
 
     /// <summary>
-    /// Gets or sets the RocketMQ delay level used when the consumer sends unacknowledged messages back.
+    /// Gets or sets the RocketMQ delay level used after an unsuccessful concurrent delivery.
     /// </summary>
     /// <remarks>
-    /// The default value is <c>0</c>, which lets the Broker choose the retry interval. Set it to a positive RocketMQ
-    /// delay level to select a Broker-defined interval, or to a negative value to explicitly request direct
-    /// dead-letter delivery. For POP retries at <see cref="RemotingPushConsumerOptions.MaxDeliveryAttempts"/>, the
-    /// official age-based terminal policy takes precedence over this value. If
+    /// The default value is <c>0</c>, which selects the receiver's default retry interval. A positive value selects a
+    /// receiver-specific RocketMQ retry interval. A negative value requests direct dead-letter delivery for PULL; POP
+    /// normalizes it to <c>0</c> and follows its normal invisibility retry schedule. For POP retries at
+    /// <see cref="RemotingPushConsumerOptions.MaxDeliveryAttempts"/>, the official age-based terminal policy takes
+    /// precedence over this value. If
     /// <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value and
     /// retries the complete batch using the Broker-selected interval.
     /// </remarks>
     /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java">
     /// Apache RocketMQ Java concurrent consume context.
     /// </seealso>
-    /// <seealso href="https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/primitive/ctx.go#L133-L152">
+    /// <seealso href="https://github.com/apache/rocketmq-client-go/blob/v2.1.2/primitive/ctx.go#L133-L152">
     /// Apache RocketMQ Go classic concurrent consume context.
     /// </seealso>
     public int DelayLevelWhenNextConsume { get; set; }

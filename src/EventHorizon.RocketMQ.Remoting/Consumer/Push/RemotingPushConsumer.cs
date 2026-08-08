@@ -87,7 +87,6 @@ internal sealed class RemotingPushConsumer : IRemotingPushConsumer
         var receiverFactory = new PushReceiverFactory(
             _options,
             popClient,
-            consumerEngine,
             timeProvider,
             logger);
         _assignmentCoordinator = new PushAssignmentCoordinator(

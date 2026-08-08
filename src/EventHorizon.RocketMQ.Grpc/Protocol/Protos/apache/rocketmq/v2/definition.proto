@@ -301,7 +301,7 @@ message Message {
   // If user_properties contain the reserved keys by RocketMQ,
   // the send message request will be aborted with status `INVALID_ARGUMENT`.
   // See below links for the reserved keys
-  // https://github.com/apache/rocketmq/blob/master/common/src/main/java/org/apache/rocketmq/common/message/MessageConst.java#L58
+  // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/common/src/main/java/org/apache/rocketmq/common/message/MessageConst.java#L58
   map<string, string> user_properties = 2;
 
   SystemProperties system_properties = 3;

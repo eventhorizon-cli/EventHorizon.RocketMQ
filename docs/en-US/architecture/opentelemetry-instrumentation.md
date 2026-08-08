@@ -103,11 +103,11 @@ a responsibility between internal types must not duplicate or drop its Activity 
 POP settlement telemetry records each actual wire operation independently: `ack` for acknowledgement and `nack` for
 the one-shot retry/defer `CHANGE_MESSAGE_INVISIBLETIME`. A normal `Retry` at the delivery-attempt limit remains `nack`
 while the Java-compatible message-age guard selects another delay, then becomes `ack` after the terminal age threshold;
-it never creates a `reject` operation. Explicit dead-letter forwarding requested by `Retry` with a negative delay and
-its follow-up ACK remain separate operations.
+The .NET adapter normalizes a negative handler delay to level `0` before POP scheduling, so POP retry remains on this
+ordinary invisibility-change path.
 A handler result that arrives after the fixed invisible deadline creates no settlement operation. An indeterminate
-`nack` failure is not retried with the old receipt; acknowledgement and the ACK after explicit dead-letter forwarding
-are retried only while the original deadline remains valid.
+`nack` failure is not retried with the old receipt; acknowledgement is retried only while the original deadline remains
+valid.
 
 Activities use OpenTelemetry messaging semantic-convention attributes such as `messaging.system`,
 `messaging.destination.name`, `messaging.consumer.group.name`, message ID, partition ID, body size, and batch size.

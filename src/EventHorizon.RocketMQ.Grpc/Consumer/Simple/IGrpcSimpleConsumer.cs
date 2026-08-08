@@ -97,7 +97,7 @@ public interface IGrpcSimpleConsumer : IAsyncDisposable
     /// <param name="invisibleDuration">The new positive invisible duration.</param>
     /// <param name="cancellationToken">A token that cancels the operation.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    /// <seealso href="https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/SimpleConsumerImpl.java#L219-L258">
+    /// <seealso href="https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/SimpleConsumerImpl.java#L219-L258">
     /// Apache RocketMQ Java SimpleConsumer invisibility change and receipt-handle refresh.
     /// </seealso>
     Task ChangeInvisibleDurationAsync(GrpcMessageView message, TimeSpan invisibleDuration, CancellationToken cancellationToken = default);

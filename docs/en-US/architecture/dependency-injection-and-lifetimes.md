@@ -194,7 +194,8 @@ invoke their `IGrpcPushMessageHandler` for each message. Remoting Push invokes i
 `ConsumeMessageBatchSize` defaults to `1`, so existing settings retain singleton delivery unless configured
 otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
 contiguous prefix and retry its tail; `Retry` remains a whole-batch outcome. A negative
-`DelayLevelWhenNextConsume` requests direct dead-lettering within that retry outcome.
+`DelayLevelWhenNextConsume` requests direct dead-lettering only on the internal PULL path; POP normalizes it to the
+default retry level.
 
 For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token and requests retry when the
 configured limit elapses. Receipt renewal while the handler is active belongs to the Proxy requested by `AutoRenew`,
@@ -207,9 +208,9 @@ For concurrent clustered non-FIFO Remoting batches, `ConsumeTimeout` cancels the
 redelivery when the configured limit elapses. For POP delivery, the receipt is not renewed while the handler is active;
 the fixed invisible deadline is checked before handler processing and again before settlement. An expired result is
 ignored without settlement. A `Retry` outcome makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false`;
-an indeterminate failure is not retried with the old receipt. ACK, including the ACK after dead-letter forwarding, is
-retried only while the original deadline remains valid. A late result is ignored and can overlap redelivery, so the
-handler still owns cancellation cooperation and must be idempotent; the runtime cannot forcibly stop application code.
+an indeterminate failure is not retried with the old receipt. ACK is retried only while the original deadline remains
+valid. A late result is ignored and can overlap redelivery, so the handler still owns cancellation cooperation and
+must be idempotent; the runtime cannot forcibly stop application code.
 FIFO and orderly delivery remain excluded to preserve ordering guarantees.
 
 ## Trade-offs and Constraints

@@ -124,8 +124,8 @@ it can progress. The value is therefore not a strict count of every message resi
 
 A Broker-assigned POP receiver uses separate receipt state rather than `PullProcessQueue` offsets. `PopBatchSize` controls
 each POP request, `PopInvisibleDuration` sets the initial lease, and `PopMaxInflightMessagesPerAssignment` bounds
-messages awaiting settlement for one assignment. The client renews receipts while a handler is active and always uses
-the latest renewed receipt for final settlement.
+messages awaiting settlement for one assignment. The client does not renew receipts while a handler is active. A late
+result after the fixed Broker deadline is ignored and the Broker may redeliver the message.
 
 ## Acknowledgement, retry, and offsets
 
@@ -144,7 +144,9 @@ request direct dead-letter delivery. PULL retries use classic send-back; POP ret
 classic POP retry schedule and change the receipt's invisibility. POP dead-letter handling forwards before
 acknowledging the receipt.
 `MessageGroup` FIFO, `ConsumeOrderly`, and broadcasting paths ignore this context setting. In clustering mode,
-`MaxDeliveryAttempts` bounds retry delivery; a retried message that reaches the limit is sent to the dead-letter queue.
+`MaxDeliveryAttempts` starts terminal retry handling. PULL sends the retried message to the dead-letter queue. POP
+follows the official Java age policy: it keeps changing invisibility using age-selected POP delays, then ACKs after the
+message age is strictly greater than twice the final POP delay without implicitly forwarding to the dead-letter queue.
 
 Every PULL `PullProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
 queue or Broker, cannot skip an earlier unresolved queue offset. Pulling may run ahead of handler completion. In

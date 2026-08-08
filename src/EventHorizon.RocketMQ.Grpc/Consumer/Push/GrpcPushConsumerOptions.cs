@@ -69,6 +69,9 @@ public class GrpcPushConsumerOptions : ConsumerOptions
     /// second renewal timer. A handler that does not observe cancellation cannot be forcibly stopped, and a late
     /// successful result is ignored. FIFO message groups are excluded so that their ordering is not broken.
     /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140">
+    /// Apache RocketMQ Proxy registration of receipts for server-managed automatic renewal.
+    /// </seealso>
     public TimeSpan ConsumeTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>

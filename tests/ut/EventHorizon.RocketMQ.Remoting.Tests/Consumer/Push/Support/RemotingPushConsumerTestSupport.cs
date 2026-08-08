@@ -151,7 +151,9 @@ public abstract class RemotingPushConsumerTestSupport
         string? messageGroup,
         long queueOffset,
         long commitLogOffset,
-        int queueId = 0)
+        int queueId = 0,
+        long bornTimestampMilliseconds = 1_700_000_000_000,
+        int reconsumeTimes = 0)
     {
         var body = Encoding.UTF8.GetBytes(messageId);
         var propertyText = $"UNIQ_KEY\u0001{messageId}\u0002";
@@ -170,11 +172,11 @@ public abstract class RemotingPushConsumerTestSupport
         WriteInt64(stream, queueOffset);
         WriteInt64(stream, commitLogOffset);
         WriteInt32(stream, 0);
-        WriteInt64(stream, 1_700_000_000_000);
+        WriteInt64(stream, bornTimestampMilliseconds);
         stream.Write(new byte[] { 127, 0, 0, 1, 0x2A, 0x9F, 0, 0 });
         WriteInt64(stream, 1_700_000_000_100);
         stream.Write(new byte[] { 127, 0, 0, 1, 0x2A, 0x9F, 0, 0 });
-        WriteInt32(stream, 0);
+        WriteInt32(stream, reconsumeTimes);
         WriteInt64(stream, 0);
         WriteInt32(stream, body.Length);
         stream.Write(body);

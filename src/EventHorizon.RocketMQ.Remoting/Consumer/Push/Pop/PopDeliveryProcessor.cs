@@ -20,7 +20,14 @@ using Microsoft.Extensions.Logging;
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 
 // Classic Remoting POP has a fixed receipt deadline. Unlike gRPC Push auto-renewal, this processor never extends a
-// receipt while the handler is active. CHANGE_MESSAGE_INVISIBLETIME is issued once only after a Retry result.
+// receipt while the handler is active. After a Retry result, it maps the requested delay level and delivery attempt to
+// one replacement invisible window. At the delivery limit it follows Java's message-age guard, continuing with an
+// age-selected invisible window or acknowledging an over-age message without implicit dead-letter send-back. An
+// indeterminate change failure is not retried because the Broker may already have replaced the checkpoint even when
+// its response was lost.
+// Design: docs/en-US/remoting/consumer-model.md#handler-outcomes-and-pop-fixed-deadlines.
+// Apache Java client reference:
+// https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L245-L310
 internal sealed class PopDeliveryProcessor
 {
     private static readonly TimeSpan MinimumOperationRetryDelay = TimeSpan.FromMilliseconds(100);
@@ -120,9 +127,7 @@ internal sealed class PopDeliveryProcessor
         }
 
         var outcome = handlerOutcome.Result;
-        if (outcome == ConsumeResult.Retry &&
-            (handlerOutcome.DelayLevelWhenNextConsume < 0 ||
-             state.Message.Message.DeliveryAttempt >= _options.MaxDeliveryAttempts))
+        if (outcome == ConsumeResult.Retry && handlerOutcome.DelayLevelWhenNextConsume < 0)
         {
             outcome = ConsumeResult.DeadLetter;
         }
@@ -130,20 +135,11 @@ internal sealed class PopDeliveryProcessor
         switch (outcome)
         {
             case ConsumeResult.Success:
-                await RetrySettlementAsync(
-                    state,
-                    "acknowledge",
-                    token => _popClient.AcknowledgeAsync(
-                        state.Receipt,
-                        state.Message.Message,
-                        token),
-                    cancellationToken).ConfigureAwait(false);
+                await AcknowledgeAsync(state, cancellationToken).ConfigureAwait(false);
                 break;
             case ConsumeResult.Retry:
-                await ChangeInvisibleTimeOnceAsync(
-                    state,
-                    handlerOutcome.DelayLevelWhenNextConsume,
-                    cancellationToken).ConfigureAwait(false);
+                await SettleRetryAsync(state, handlerOutcome.DelayLevelWhenNextConsume, cancellationToken)
+                    .ConfigureAwait(false);
                 break;
             case ConsumeResult.DeadLetter:
                 await SendToDeadLetterQueueAsync(state, cancellationToken).ConfigureAwait(false);
@@ -153,18 +149,55 @@ internal sealed class PopDeliveryProcessor
         }
     }
 
-    private async Task ChangeInvisibleTimeOnceAsync(
+    private async Task SettleRetryAsync(
         PopDeliveryState state,
         int delayLevelWhenNextConsume,
+        CancellationToken cancellationToken)
+    {
+        var message = state.Message.Message;
+        TimeSpan? invisibleDuration;
+        if (message.DeliveryAttempt >= _options.MaxDeliveryAttempts)
+        {
+            invisibleDuration = PopRetryDelaySchedule.ResolveAfterMaximumAttempts(
+                _timeProvider.GetUtcNow() - message.BornTimestamp);
+            if (invisibleDuration is null)
+            {
+                await AcknowledgeAsync(state, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+        else
+        {
+            invisibleDuration = PopRetryDelaySchedule.Resolve(
+                delayLevelWhenNextConsume,
+                message.DeliveryAttempt);
+        }
+
+        // The handler has finished, so this does not protect ongoing work. It replaces the current POP deadline with
+        // the retry delay, keeping the message hidden from this group until Broker-managed redelivery.
+        await ChangeInvisibleTimeOnceAsync(state, invisibleDuration.Value, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task AcknowledgeAsync(PopDeliveryState state, CancellationToken cancellationToken) =>
+        RetrySettlementAsync(
+            state,
+            "acknowledge",
+            token => _popClient.AcknowledgeAsync(
+                state.Receipt,
+                state.Message.Message,
+                token),
+            cancellationToken);
+
+    private async Task ChangeInvisibleTimeOnceAsync(
+        PopDeliveryState state,
+        TimeSpan invisibleDuration,
         CancellationToken cancellationToken)
     {
         try
         {
             await _popClient.ChangeInvisibleTimeAsync(
                 state.Receipt,
-                PopRetryDelaySchedule.Resolve(
-                    delayLevelWhenNextConsume,
-                    state.Message.Message.DeliveryAttempt),
+                invisibleDuration,
                 state.Message.Message,
                 cancellationToken).ConfigureAwait(false);
         }

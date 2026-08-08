@@ -85,6 +85,17 @@ internal sealed class RemotingSettlementObserver : IDisposable
         }
     }
 
+    public int Count(
+        string operationName,
+        string topic,
+        string consumerGroup,
+        string? messageId = null) =>
+        _observations.Count(observation =>
+            string.Equals(observation.OperationName, operationName, StringComparison.Ordinal) &&
+            string.Equals(observation.Topic, topic, StringComparison.Ordinal) &&
+            string.Equals(observation.ConsumerGroup, consumerGroup, StringComparison.Ordinal) &&
+            (messageId is null || string.Equals(observation.MessageId, messageId, StringComparison.Ordinal)));
+
     public void Dispose()
     {
         _listener.Dispose();

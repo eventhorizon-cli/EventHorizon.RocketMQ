@@ -217,6 +217,11 @@ internal sealed class PushAssignmentCoordinator
             StringComparer.Ordinal);
         if (_options.ConsumerMode == ConsumerMode.Clustering)
         {
+            // Classic Java Push adds %RETRY%{group} with SUB_ALL only for clustering consumers. It participates in the
+            // same heartbeat and assignment snapshot as application topics; the Broker forces retry-topic assignments
+            // to PULL even when an application topic uses POP.
+            // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/DefaultMQPushConsumerImpl.java#L1228-L1235
+            // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/QueryAssignmentProcessor.java#L112-L129
             subscriptions[retryTopic] = FilterExpression.All;
         }
 

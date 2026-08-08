@@ -144,7 +144,7 @@ organized by ownership rather than by a generic Consumer base class:
 | `Coordination/Rebalance` | Shared client-rebalance scheduling, registration, wakeup, and the deterministic average queue allocator. |
 | `Pull` | Stateless internal PULL request/response contracts and wire execution used by LitePull and Push PULL receivers; each pull receives its filter from the current receive target. |
 | `Offset` | Internal queue-position queries and consumer-group offset persistence. |
-| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution shared by Push PULL retry and POP dead-letter forwarding. |
+| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution shared by Push PULL retry and explicit POP dead-letter forwarding. |
 | `LitePull` and `Push` | The two public role facades and their role-specific assignment, receive, dispatch, and run state. |
 
 The protocol composition root still creates one `IRemotingConsumerEngine` per registered role. The engine owns only
@@ -380,7 +380,7 @@ DI.
 | `Pull/Offset/PullOffsetManager` | PULL initial and committed offsets, broadcasting storage, reset boundaries, and retry-topic initialization boundaries. | POP progress. |
 | `Pull/Receive/PullAssignmentReceiver` | One PULL assignment's identity, cancellation, observed Broker-lock lease, and completion boundary for its receive loop plus active consume requests. | POP wire operations or handler-result policy. |
 | `Pop/PopAssignmentReceiver` | One POP assignment's target-filtered long polling, receive batching, cancellation, and receive-failure isolation. | Handler invocation, receipt lifetime, or settlement. |
-| `Pop/PopDeliveryProcessor` | POP handler invocation, fixed invisible-deadline checks, one-shot retry invisibility, deadline-bounded ACK/dead-letter settlement, and dead-letter ordering. | Assignment reconciliation, receive polling, `PullProcessQueue`, or offset commits. |
+| `Pop/PopDeliveryProcessor` | POP handler invocation, fixed invisible-deadline checks, one-shot retry invisibility, maximum-attempt age handling, and deadline-bounded ACK/explicit-dead-letter settlement. | Assignment reconciliation, receive polling, `PullProcessQueue`, or offset commits. |
 | `Pull/Orderly/OrderlyPullQueueLockClient` and `Pop/PopWireClient` | Their respective lock/unlock and POP wire commands. The queue-lock client accepts only physical PULL lock targets. | Assignment policy or application-handler invocation. |
 
 The control and delivery flows are deliberately different:
@@ -405,7 +405,7 @@ orderly PULL receiver -> OrderlyPullReceiveLoop -> PushMessageHandlerInvoker
 
 POP receiver  -> PopDeliveryProcessor -> receipt and lease state
                                     \-> PushMessageHandlerInvoker
-                                    \-> POP ACK / invisible-time change / dead letter
+                                    \-> POP ACK / invisible-time change / explicit dead letter
 ```
 
 The following ownership rules are part of the behavior, not merely file organization:
@@ -457,24 +457,30 @@ The existing Push handler contract remains common to both receiver types:
 - `Success` settles the acknowledged prefix selected by `AckIndex`.
 - `Retry` sends the PULL tail back or makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false` for the POP
   tail, using `DelayLevelWhenNextConsume`.
-- `DeadLetter`, a negative delay level, or the delivery-attempt limit forwards a PULL message directly. For POP, the
-  client first performs classic dead-letter send-back and ACKs the receipt only after forwarding succeeds. ACK, including
-  the ACK after dead-letter forwarding, is retried only while the original invisible deadline remains valid; after
-  expiry no further settlement is sent.
+- `DeadLetter` or a negative delay level forwards a PULL message directly. This client also preserves that explicit
+  request for POP by performing classic dead-letter send-back and ACKing the receipt only after forwarding succeeds.
+  ACK, including the ACK after explicit dead-letter forwarding, is retried only while the original invisible deadline
+  remains valid; after expiry no further settlement is sent.
+- A PULL `Retry` that reaches `MaxDeliveryAttempts` follows classic send-back into the dead-letter queue. A POP `Retry`
+  at the same limit follows the Java client's `checkNeedAckOrDelay` path instead: it never performs implicit dead-letter
+  send-back. While the message age is at most twice the final POP delay, the client makes one
+  `CHANGE_MESSAGE_INVISIBLETIME` request using the next age-based POP delay bucket. Once the age is strictly greater
+  than that threshold, the client ACKs the receipt. With the official 7,200-second final delay, the threshold is four
+  hours. The handler-selected delay level is ignored in this maximum-attempt branch.
 
 `DelayLevelWhenNextConsume` defaults to `0`, matching Java's
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java).
 PULL passes the level to classic send-back. POP maps a positive value through Java's POP-specific retry schedule;
 `0` selects that schedule by the zero-based reconsume count (`DeliveryAttempt - 1`). This schedule starts at 10 seconds
-and is distinct from the normal delayed-message level table. A negative value selects dead-letter forwarding instead
-of changing invisibility.
+and is distinct from the normal delayed-message level table. A negative value is this client's explicit dead-letter
+extension; the official Java POP retry-at-limit path does not use it.
 
 POP does not renew a receipt while its handler is active. The client checks the fixed invisible deadline before handler
 processing and again before settlement. If the deadline has passed, the late handler result is ignored and the Broker
 may redeliver without a settlement operation. A `Retry` outcome makes exactly one `CHANGE_MESSAGE_INVISIBLETIME` request
 with `suspend=false`; an indeterminate failure is not retried with the old receipt. This follows the official Java
-result handling and guard: it consumes the context delay level in
-[`processConsumeResult`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L266-L299),
+result handling and guard: it consumes the context delay level and applies the maximum-attempt age rule in
+[`processConsumeResult`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L245-L310),
 and its POP consume request checks
 [`isPopTimeout`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L335-L360)
 before handling and checks it again before `processConsumeResult`, skipping settlement after expiry.
@@ -522,8 +528,9 @@ Unit coverage must establish:
 - reset-offset serialization, late-handler result rejection, and deterministic shutdown ownership;
 - queue ID `-1`, retry receipt markers, and physical ACK targets;
 - POP in-flight flow control, fixed invisible deadlines with no handler-active renewal, pre/post-handler expiry checks,
-  one-shot Retry invisibility, ACK/dead-letter settlement retries only before the original deadline, dead-letter ordering,
-  and stale settlement;
+  one-shot Retry invisibility, maximum-attempt age-based defer and terminal ACK without implicit send-back,
+  ACK/explicit-dead-letter settlement retries only before the original deadline, explicit dead-letter ordering, and
+  stale settlement;
 - unchanged receive, process, commit, send-back, ACK, and invisible-time telemetry outcomes after responsibility moves;
 - public, Admin-returned, and LitePull-discovered queue identities resolving and heartbeating identically;
 - route replacement and route-refresh failure using resolver-owned latest or last-valid endpoints without queue-carried

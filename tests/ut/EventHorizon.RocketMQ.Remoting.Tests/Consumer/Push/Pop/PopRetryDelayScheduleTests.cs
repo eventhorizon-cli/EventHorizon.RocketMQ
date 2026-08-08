@@ -35,4 +35,30 @@ public sealed class PopRetryDelayScheduleTests
 
         Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), result);
     }
+
+    [Theory]
+    [InlineData(0, 10)]
+    [InlineData(10, 30)]
+    [InlineData(30, 60)]
+    [InlineData(3_600, 7_200)]
+    [InlineData(7_200, 7_200)]
+    [InlineData(14_400, 7_200)]
+    public void ResolveAfterMaximumAttempts_AgeAtOrBelowCutoff_ReturnsNextJavaPopDelay(
+        int messageAgeSeconds,
+        int expectedDelaySeconds)
+    {
+        var result = PopRetryDelaySchedule.ResolveAfterMaximumAttempts(
+            TimeSpan.FromSeconds(messageAgeSeconds));
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedDelaySeconds), result);
+    }
+
+    [Fact]
+    public void ResolveAfterMaximumAttempts_AgeExceedsCutoff_ReturnsTerminalAcknowledgement()
+    {
+        var result = PopRetryDelaySchedule.ResolveAfterMaximumAttempts(
+            TimeSpan.FromHours(4) + TimeSpan.FromMilliseconds(1));
+
+        Assert.Null(result);
+    }
 }

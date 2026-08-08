@@ -15,8 +15,14 @@
 
 namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pop;
 
-// This is Java classic POP's zero-based retry schedule, not the normal delayed-message level table. Level 0 selects
-// by reconsume count; RemotingMessageView exposes that count as the one-based DeliveryAttempt.
+// This is Java classic POP's zero-based retry schedule, not the normal delayed-message level table. An application
+// delay level of 0 selects by reconsumeTimes; RemotingMessageView exposes the corresponding count as the one-based
+// DeliveryAttempt, hence the subtraction in Resolve. A positive level indexes this table directly, and an oversized
+// level is capped at the final delay just as the Java client does. Once the delivery limit is reached, Java selects the
+// next delay from message age and ACKs only after the age is strictly greater than twice the final delay.
+// Design: docs/en-US/remoting/consumer-model.md#handler-outcomes-and-pop-fixed-deadlines.
+// Apache Java reference:
+// https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L287-L298
 internal static class PopRetryDelaySchedule
 {
     private static ReadOnlySpan<int> DelaySeconds =>
@@ -55,6 +61,30 @@ internal static class PopRetryDelaySchedule
             ? deliveryAttempt - 1
             : delayLevelWhenNextConsume;
         index = Math.Min(index, DelaySeconds.Length - 1);
+        return TimeSpan.FromSeconds(DelaySeconds[index]);
+    }
+
+    public static TimeSpan? ResolveAfterMaximumAttempts(TimeSpan messageAge)
+    {
+        var maximumDelay = TimeSpan.FromSeconds(DelaySeconds[^1]);
+        if (messageAge > maximumDelay + maximumDelay)
+        {
+            return null;
+        }
+
+        var index = DelaySeconds.Length - 1;
+        for (; index >= 0; index--)
+        {
+            if (messageAge >= TimeSpan.FromSeconds(DelaySeconds[index]))
+            {
+                index++;
+                break;
+            }
+        }
+
+        // Reaching the maximum attempt before the first delay is not expected with this schedule, but clamping keeps
+        // malformed or future producer timestamps from turning a retry decision into an indexing failure.
+        index = Math.Clamp(index, 0, DelaySeconds.Length - 1);
         return TimeSpan.FromSeconds(DelaySeconds[index]);
     }
 }

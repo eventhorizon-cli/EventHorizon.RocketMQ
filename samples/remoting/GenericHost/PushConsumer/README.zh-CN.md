@@ -129,7 +129,8 @@ handler 为一个 batch 返回一个 `ConsumeResult`：
 RocketMQ 延迟级别时请求该级别，设为负值时请求直接进入死信队列。PULL 重试使用经典 send-back；POP 重试按
 classic POP 重试表将级别换算为不可见时间，并修改 receipt 不可见期。POP 死信处理则先转发、再确认 receipt。
 `MessageGroup` FIFO、`ConsumeOrderly` 和广播路径会忽略此 context 设置。在集群模式下，
-`MaxDeliveryAttempts` 限制重试投递次数；重试消息达到上限后会进入死信队列。
+`MaxDeliveryAttempts` 会启动终态重试处理：PULL 把重试消息送入死信；POP 则遵循官方 Java 的消息年龄策略，继续按年龄
+选择 POP 延迟并修改不可见时间，只有消息年龄严格超过最后一级 POP 延迟的两倍时才 ACK，不会隐式转入死信。
 
 每个 PULL `PullProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
 完成，也不能跳过前面尚未解决的队列位点。拉取可以先于 handler 完成继续前进。在集群模式下，Broker 已提交位点不能

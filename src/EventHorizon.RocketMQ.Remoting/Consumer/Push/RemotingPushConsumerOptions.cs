@@ -52,10 +52,18 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// Classic Remoting Push treats this as a fixed processing deadline. It does not renew the receipt while the
     /// message handler is active. If processing outlives the deadline, the client ignores the late result and the
     /// Broker may redeliver the message. A handler retry changes invisibility as a one-shot negative acknowledgement;
-    /// that operation is not an active-handler lease renewal.
+    /// that operation is not an active-handler lease renewal. The replacement deadline hides the message from the same
+    /// consumer group for the selected retry delay. If it expires without acknowledgement, the Broker makes the message
+    /// available through the POP retry path and increments its delivery attempt.
     /// </remarks>
     /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L266-L360">
     /// Apache RocketMQ classic POP result handling and fixed-deadline checks.
+    /// </seealso>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/ChangeInvisibleTimeProcessor.java#L172-L180">
+    /// Apache RocketMQ Broker replacement of a POP invisibility checkpoint.
+    /// </seealso>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/PopReviveService.java#L107-L154">
+    /// Apache RocketMQ Broker revival of an expired POP checkpoint into the retry topic.
     /// </seealso>
     public TimeSpan PopInvisibleDuration { get; set; } = TimeSpan.FromSeconds(60);
 
@@ -96,8 +104,13 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public int MaxMessageBytes { get; set; } = 32 * 1024 * 1024;
 
     /// <summary>
-    /// Gets or sets the maximum delivery attempt after which a retried message is sent to the dead-letter queue.
+    /// Gets or sets the maximum delivery attempt at which protocol-specific terminal retry handling begins.
     /// </summary>
+    /// <remarks>
+    /// PULL sends a retried message to the dead-letter queue at this limit. Classic POP follows the Apache Java
+    /// client's age-based terminal handling instead: it continues changing invisibility until the message is older
+    /// than twice the final POP retry delay, then acknowledges it without implicit dead-letter forwarding.
+    /// </remarks>
     public int MaxDeliveryAttempts { get; set; } = 16;
 
     /// <summary>

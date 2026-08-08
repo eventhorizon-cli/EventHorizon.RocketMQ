@@ -56,9 +56,11 @@ public sealed class RemotingPushConsumeContext
     /// </summary>
     /// <remarks>
     /// The default value is <c>0</c>, which lets the Broker choose the retry interval. Set it to a positive RocketMQ
-    /// delay level to select a Broker-defined interval, or to a negative value to request direct dead-letter delivery.
-    /// If <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value
-    /// and retries the complete batch using the Broker-selected interval.
+    /// delay level to select a Broker-defined interval, or to a negative value to explicitly request direct
+    /// dead-letter delivery. For POP retries at <see cref="RemotingPushConsumerOptions.MaxDeliveryAttempts"/>, the
+    /// official age-based terminal policy takes precedence over this value. If
+    /// <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value and
+    /// retries the complete batch using the Broker-selected interval.
     /// </remarks>
     public int DelayLevelWhenNextConsume { get; set; }
 }

@@ -134,7 +134,8 @@ semantics.
 The single-Broker fixture enables Broker-side assignment and the timer wheel while retaining PULL as the default
 message request mode. Remoting Broker-assigned Push cases use a test-only administrative operation to select POP for
 one unique topic/group, verify delivery, acknowledgement, fixed-deadline expiry, late-result rejection, one-shot retry,
-no-retry-on-indeterminate-failure, and dead-letter behavior, and restore PULL during cleanup. `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer
+no-retry-on-indeterminate-failure, maximum-attempt age handling without implicit dead-letter send-back, and explicit
+dead-letter behavior, and restore PULL during cleanup. `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer
 API. Ordinary LitePull and default Push workflows do not depend on Broker-side POP configuration.
 
 Single-Broker runtime is treated as a measured test-design constraint. On commit `9ef119f`, the local Remoting filter
@@ -159,7 +160,8 @@ The optimized suite keeps the same live-Broker coverage under these rules:
 - Parallel execution comes from independently isolated test classes within the four-collection runner limit. A class
   may be split only after its topics, groups, administrative changes, and offset assertions no longer share mutable
   state; raising the thread limit against the shared Broker is not a substitute for that isolation.
-- Retry, fixed-deadline expiry, late-result rejection, no-retry-on-indeterminate-failure, dead-letter ordering,
+- Retry, maximum-attempt age-based defer/ACK, fixed-deadline expiry, late-result rejection,
+  no-retry-on-indeterminate-failure, explicit dead-letter ordering,
   duplicate prevention, rebalance recovery, and persistence coverage remains.
   Runtime work is removed only when a deterministic signal proves the same invariant.
 - Performance changes record the same filtered command and compare test-phase wall time after at least one warm image

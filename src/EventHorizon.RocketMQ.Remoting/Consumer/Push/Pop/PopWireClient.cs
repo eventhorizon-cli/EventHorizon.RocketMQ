@@ -171,8 +171,17 @@ internal sealed class PopWireClient
         }
     }
 
-    // This is the POP Retry/NACK wire operation. Handler-active receipt renewal is deliberately not part of the
-    // classic Remoting Push model.
+    // This is the POP Retry/NACK wire operation, not handler-active lease renewal. The replacement invisible window
+    // keeps the message unavailable to this consumer group for the selected delay. In the Broker's classic revive-log
+    // path, it appends a replacement checkpoint and acknowledges the original checkpoint so the old deadline cannot
+    // also revive the message. If the replacement expires without an ACK, PopReviveService copies the business message
+    // to its POP retry topic (or keeps an existing retry topic) and increments reconsumeTimes because Suspend is false.
+    // Brokers using the POP KV service store the state differently but preserve the delayed-redelivery contract.
+    // Design: docs/en-US/remoting/consumer-model.md#handler-outcomes-and-pop-fixed-deadlines.
+    // Apache Broker references:
+    // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/ChangeInvisibleTimeProcessor.java#L172-L180
+    // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/ChangeInvisibleTimeProcessor.java#L310-L360
+    // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/PopReviveService.java#L107-L154
     public async Task<RemotingPopReceipt> ChangeInvisibleTimeAsync(
         RemotingPopReceipt receipt,
         TimeSpan invisibleDuration,
@@ -205,11 +214,15 @@ internal sealed class PopWireClient
                     Offset = receipt.QueueOffset,
                     InvisibleTime = ToPositiveMilliseconds(invisibleDuration),
                     Bname = receipt.BrokerName,
+                    // Retry semantics: the Broker increments reconsumeTimes when the replacement checkpoint revives.
                     Suspend = false
                 }),
                 _clientOptions.RequestTimeout,
                 cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response, "change the POP message invisibility");
+            // The response identifies the replacement checkpoint. Rebuild ExtraInfo from these values so any later
+            // operation uses the new receipt instead of the acknowledged original checkpoint. The current one-shot
+            // Retry path intentionally discards it because scheduling redelivery completes that delivery attempt.
             var changed = DecodeChangedReceipt(receipt, response);
             telemetry.Complete();
             return changed;

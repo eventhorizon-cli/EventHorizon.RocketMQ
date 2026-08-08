@@ -132,7 +132,7 @@ Broker endpoint 与建议 Broker ID 由内部路由解析器保存。topic 快�
 | `Coordination/Rebalance` | 共享的客户端 rebalance 调度、注册、唤醒以及确定性的平均队列分配策略。 |
 | `Pull` | 供 LitePull 与 Push PULL receiver 共用、且不保存订阅状态的内部 PULL request/response 契约和 wire 操作；每次 Pull 都从当前 receive target 获取 filter。 |
 | `Offset` | 内部 queue position 查询与 consumer-group offset 持久化。 |
-| `Settlement` | 供 Push PULL 重试和 POP 死信转发共用的 classic `CONSUMER_SEND_MSG_BACK`。 |
+| `Settlement` | 供 Push PULL 重试和 POP 显式死信转发共用的 classic `CONSUMER_SEND_MSG_BACK`。 |
 | `LitePull` 与 `Push` | 两个公开角色的门面，以及各自的 assignment、receive、dispatch 和运行态。 |
 
 Remoting 组合根仍会为每个已注册角色创建一个 `IRemotingConsumerEngine`。Engine 只管理角色生命周期，并将
@@ -346,7 +346,7 @@ receipt 的 retry marker 还决定 ACK 与不可见时间请求使用的真实 w
 | `Pull/Offset/PullOffsetManager` | PULL 初始与已提交 offset、广播存储、reset boundary 和 retry-topic 初始化 boundary。 | POP 进度。 |
 | `Pull/Receive/PullAssignmentReceiver` | 单个 PULL assignment 的 identity、取消、观察到的 Broker 队列锁 lease，以及覆盖接收循环和活动消费请求的完成边界。 | POP wire 操作或 handler 结果策略。 |
 | `Pop/PopAssignmentReceiver` | 单个 POP assignment 使用自身 target filter 的长轮询、接收分批、取消和接收故障隔离。 | handler 调用、receipt 生命周期或结算。 |
-| `Pop/PopDeliveryProcessor` | POP handler 调用、固定不可见 deadline 检查、一次性重试不可见时间变更、原始 deadline 内的 ACK/死信结算和死信顺序。 | assignment reconciliation、接收轮询、`PullProcessQueue` 或 offset commit。 |
+| `Pop/PopDeliveryProcessor` | POP handler 调用、固定不可见 deadline 检查、一次性重试不可见时间变更、最大投递次数下的消息年龄处理，以及原始 deadline 内的 ACK/显式死信结算。 | assignment reconciliation、接收轮询、`PullProcessQueue` 或 offset commit。 |
 | `Pull/Orderly/OrderlyPullQueueLockClient` 与 `Pop/PopWireClient` | 分别执行 lock/unlock 与 POP wire command；queue-lock client 只接受物理 PULL lock target。 | assignment 策略或应用 handler 调用。 |
 
 控制链路与投递链路刻意保持不同：
@@ -371,7 +371,7 @@ PULL receiver -> ConcurrentPullReceiveLoop -> PullDeliveryCoordinator -> PullPro
 
 POP receiver  -> PopDeliveryProcessor -> receipt 与 lease 状态
                                     \-> PushMessageHandlerInvoker
-                                    \-> POP ACK / 修改不可见时间 / 死信
+                                    \-> POP ACK / 修改不可见时间 / 显式死信
 ```
 
 以下规则属于行为契约，而不只是文件布局约定：
@@ -420,22 +420,26 @@ PULL 之上的 callback 门面，并把队列与 offset 状态放在门面以下
 - `Success` 根据 `AckIndex` 结算已确认前缀。
 - `Retry` 将 PULL 尾部 send-back，或对 POP 尾部使用一次 `suspend=false` 的
   `CHANGE_MESSAGE_INVISIBLETIME`，并使用 `DelayLevelWhenNextConsume`。
-- `DeadLetter`、负 delay level 或达到最大投递次数时，PULL 直接转入死信。POP 先执行 classic dead-letter
-  send-back，只有转发成功后才 ACK receipt。ACK，包括死信转发后的 ACK，只能在原始不可见 deadline 内重试；
-  deadline 过期后不再发送结算请求。
+- `DeadLetter` 或负 delay level 会让 PULL 直接转入死信。本客户端也为 POP 保留这项显式请求：先执行 classic
+  dead-letter send-back，只有转发成功后才 ACK receipt。ACK，包括显式死信转发后的 ACK，只能在原始不可见
+  deadline 内重试；deadline 过期后不再发送结算请求。
+- PULL 的 `Retry` 达到 `MaxDeliveryAttempts` 后继续按 classic send-back 进入死信。POP 的 `Retry` 达到同一上限时，
+  则遵循 Java 客户端的 `checkNeedAckOrDelay`，不会隐式执行死信 send-back。消息年龄不超过 POP 最后一级延迟的两倍时，
+  客户端按年龄选择下一个 POP 延迟档位，并只发送一次 `CHANGE_MESSAGE_INVISIBLETIME`；只有消息年龄严格超过该阈值才
+  ACK receipt。官方最后一级延迟为 7,200 秒，因此阈值为四小时。这个最大投递次数分支会忽略 handler 指定的 delay level。
 
 `DelayLevelWhenNextConsume` 默认为 `0`，与 Java 的
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java)
 一致。PULL 把该值传给 classic send-back；POP 则把正值映射到 Java 的 POP 专用重试表。值为 `0` 时，根据从零开始
-的重试次数（`DeliveryAttempt - 1`）选择表项。该表从 10 秒开始，并不是普通延迟消息的 level 表。负值直接选择死信
-转发，不修改不可见时间。
+的重试次数（`DeliveryAttempt - 1`）选择表项。该表从 10 秒开始，并不是普通延迟消息的 level 表。负值是本客户端提供的
+显式死信扩展；官方 Java POP 达到重试上限时不会使用它。
 
 POP handler 执行期间不会自动续租 receipt。客户端会在 handler 处理前和结算前检查固定不可见 deadline；如果已
 过期，则忽略迟到的 handler 结果，不创建结算 operation，并允许 Broker 重新投递。`Retry` 结果只发起一次带
 `suspend=false` 的 `CHANGE_MESSAGE_INVISIBLETIME` 请求；对于不确定的失败，不会使用旧 receipt 重试。这遵循官方 Java 的
 结果处理与关键保护：
-[`processConsumeResult`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L266-L299)
-会读取 context 中的 delay level；POP consume request 会在处理前检查
+[`processConsumeResult`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L245-L310)
+会读取 context 中的 delay level，并在最大投递次数分支按消息年龄处理；POP consume request 会在处理前检查
 [`isPopTimeout`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L335-L360)，
 并在调用 `processConsumeResult` 前再次检查；receipt 过期后不再执行结算。
 
@@ -479,7 +483,8 @@ Solution、单元测试、集成测试、benchmark、Generic Host 与非 Host sa
 - reset-offset 串行化、迟到 handler 结果拒绝和确定性的关闭所有权；
 - `queueId=-1`、retry receipt marker 和真实物理 ACK 目标；
 - POP in-flight 流控、无 handler 续租的固定不可见 deadline、handler 前后过期检查、一次性 Retry 不可见时间变更、
-  仅在原始 deadline 内重试 ACK/死信结算、死信顺序和迟到结算；
+  最大投递次数下按消息年龄延期或终态 ACK 且不隐式 send-back、仅在原始 deadline 内重试 ACK/显式死信结算、
+  显式死信顺序和迟到结算；
 - 职责迁移后，receive、process、commit、send-back、ACK 与不可见时间 telemetry 的结果保持不变；
 - 无论 queue identity 来自公开构造、Admin 返回还是 LitePull 发现，都应具有相同的 route 解析和 heartbeat 行为；
 - route 替换或刷新失败时，只使用 resolver 管理的最新或最后有效 endpoint；测试还需覆盖 suggested Broker 选择，以及

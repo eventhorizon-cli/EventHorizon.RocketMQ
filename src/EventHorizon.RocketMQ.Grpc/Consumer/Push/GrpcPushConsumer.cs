@@ -682,6 +682,8 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
             else
             {
+                // Processing has finished with failure. This NACK schedules service-owned redelivery; it is not a
+                // handler-active lease extension, which the Proxy owns through AutoRenew.
                 var retryDelay = _engine.GetRetryDelay(message, _options.RetryDelay);
                 await _engine.ScheduleRetryAsync(message, retryDelay, cancellationToken).ConfigureAwait(false);
             }
@@ -725,6 +727,8 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
             else
             {
+                // Do not acknowledge a corrupted non-FIFO message. Deferring it lets the service advance the normal
+                // retry/dead-letter policy without making it immediately available in a tight redelivery loop.
                 await _engine.ScheduleRetryAsync(
                     message,
                     _engine.GetRetryDelay(message, _options.RetryDelay),

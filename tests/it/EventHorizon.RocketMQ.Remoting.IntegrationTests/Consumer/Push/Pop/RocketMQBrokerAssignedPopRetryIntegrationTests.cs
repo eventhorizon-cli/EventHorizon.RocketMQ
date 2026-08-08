@@ -29,7 +29,7 @@ public sealed class RocketMQBrokerAssignedPopRetryIntegrationTests(
 {
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task BrokerAssignedPop_HandlerRequestsRetry_RedeliversAndAcknowledgesLatestReceipt()
+    public async Task BrokerAssignedPop_HandlerRequestsRetryAtDeliveryLimit_RedeliversWithoutDeadLetterAndAcknowledgesLatestReceipt()
     {
         using var settlements = new RemotingSettlementObserver();
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -53,6 +53,7 @@ public sealed class RocketMQBrokerAssignedPopRetryIntegrationTests(
             BrokerAssignedPopIntegrationTestSupport.ConfigureBrokerAssignedPop(options, consumerGroup, scope.Topic, tag);
             options.PopBatchSize = 1;
             options.ConsumeMessageBatchSize = 1;
+            options.MaxDeliveryAttempts = 1;
             options.RetryDelay = TimeSpan.FromSeconds(10);
         }, (messages, _, _) =>
             {
@@ -121,6 +122,9 @@ public sealed class RocketMQBrokerAssignedPopRetryIntegrationTests(
                 BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
                 cancellationToken,
                 sent.MessageId);
+            Assert.Equal(
+                0,
+                settlements.Count("reject", scope.Topic, consumerGroup, sent.MessageId));
             Assert.Equal(2, Volatile.Read(ref deliveryCount));
         }
         finally

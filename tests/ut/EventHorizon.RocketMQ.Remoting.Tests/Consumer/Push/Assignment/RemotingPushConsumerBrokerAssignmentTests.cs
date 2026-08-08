@@ -502,6 +502,89 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
     }
 
     [Fact]
+    public async Task BrokerAssignedPop_RetryAtDeliveryLimitBeforeAgeCutoff_ChangesInvisibleTimeFromMessageAge()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var body = CreateMessageRecord(
+            "orders",
+            "pop-message",
+            null,
+            42,
+            100,
+            queueId: 3,
+            bornTimestampMilliseconds: PopTimeMilliseconds - 3_600_000,
+            reconsumeTimes: 15);
+        var remoting = new FakeRemotingClient(BrokerAssignmentClientId)
+        {
+            QueryAssignmentHandler = static (request, _) => Task.FromResult(
+                AssignmentQueryTopic(request) == "orders"
+                    ? AssignmentResponse("orders", -1, "POP")
+                    : EmptyAssignmentResponse()),
+            PopHandler = ReceiveOnePopThenWait(
+                CreatePopSuccessResponse(body, invisibleTimeMilliseconds: 5_000, messageOffsets: "42")),
+            ChangeInvisibleHandler = static (_, _) => Task.FromResult(
+                ChangeInvisibleTimeResponse(PopTimeMilliseconds + 1_000, invisibleTimeMilliseconds: 7_200_000, reviveQueueId: 4)),
+            AckHandler = static (_, _) => Task.FromResult(BrokerSuccess()),
+            SendBackHandler = static (_, _) => Task.FromResult(BrokerSuccess())
+        };
+        var options = CreateBrokerAssignmentOptions(static (_, context, _) =>
+        {
+            context.DelayLevelWhenNextConsume = 2;
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
+        options.MaxDeliveryAttempts = 16;
+        await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
+
+        await consumer.StartAsync(cancellationToken);
+        var change = await WaitForBrokerRequestAsync(
+            remoting,
+            RequestCode.ChangeMessageInvisibleTime,
+            cancellationToken);
+
+        Assert.Equal(7_200_000L, Convert.ToInt64(change.ExtFields["invisibleTime"]));
+        Assert.DoesNotContain(remoting.Requests, static request =>
+            request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.AckMessage);
+    }
+
+    [Fact]
+    public async Task BrokerAssignedPop_RetryAtDeliveryLimitAfterAgeCutoff_AcknowledgesWithoutDeadLetterForwarding()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var body = CreateMessageRecord(
+            "orders",
+            "pop-message",
+            null,
+            42,
+            100,
+            queueId: 3,
+            bornTimestampMilliseconds: PopTimeMilliseconds - 14_400_001,
+            reconsumeTimes: 15);
+        var remoting = new FakeRemotingClient(BrokerAssignmentClientId)
+        {
+            QueryAssignmentHandler = static (request, _) => Task.FromResult(
+                AssignmentQueryTopic(request) == "orders"
+                    ? AssignmentResponse("orders", -1, "POP")
+                    : EmptyAssignmentResponse()),
+            PopHandler = ReceiveOnePopThenWait(
+                CreatePopSuccessResponse(body, invisibleTimeMilliseconds: 5_000, messageOffsets: "42")),
+            ChangeInvisibleHandler = static (_, _) => Task.FromResult(
+                ChangeInvisibleTimeResponse(PopTimeMilliseconds + 1_000, invisibleTimeMilliseconds: 7_200_000, reviveQueueId: 4)),
+            AckHandler = static (_, _) => Task.FromResult(BrokerSuccess()),
+            SendBackHandler = static (_, _) => Task.FromResult(BrokerSuccess())
+        };
+        var options = CreateBrokerAssignmentOptions(
+            static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
+        options.MaxDeliveryAttempts = 16;
+        await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
+
+        await consumer.StartAsync(cancellationToken);
+        await WaitForBrokerRequestAsync(remoting, RequestCode.AckMessage, cancellationToken);
+
+        Assert.DoesNotContain(remoting.Requests, static request =>
+            request.Code is RequestCode.ConsumerSendMsgBack or RequestCode.ChangeMessageInvisibleTime);
+    }
+
+    [Fact]
     public async Task BrokerAssignedPop_HandlerSelectsNegativeRetryDelay_ForwardsToDeadLetterWithoutChangingInvisibleTime()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

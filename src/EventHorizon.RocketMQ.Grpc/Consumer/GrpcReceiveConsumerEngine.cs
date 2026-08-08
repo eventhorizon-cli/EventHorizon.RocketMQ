@@ -219,6 +219,12 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             // The server may advertise its own internal request budget. The RPC deadline remains
             // the client-configured request timeout plus the long-poll duration, matching Apache clients.
             var timeout = _clientOptions.RequestTimeout + longPollingTimeout;
+            // Push and LitePush pass true so a compatible Proxy owns receipt renewal while a handler is active; the
+            // client does not run a second renewal timer or issue ChangeInvisibleDuration on that path. SimpleConsumer
+            // passes false, leaving every explicit lease extension to its caller.
+            // Design: docs/en-US/grpc/consumer-model.md#simpleconsumer and #pushconsumer.
+            // Apache Proxy reference:
+            // https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ReceiveMessageActivity.java#L100-L140
             var request = new Proto.ReceiveMessageRequest
             {
                 Group = Resource(_groupName),
@@ -323,18 +329,37 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         }, cancellationToken);
     }
 
+    // SimpleConsumer calls this before its current receipt expires when application processing needs more time. This is
+    // an explicit lease extension, recorded as "renew" telemetry; it does not acknowledge the message, and normal
+    // redelivery still applies if the replacement window expires. Push and LitePush instead rely on AutoRenew for
+    // handler-active renewal.
+    // Design: docs/en-US/grpc/consumer-model.md#simpleconsumer.
+    // Apache Java reference:
+    // https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/SimpleConsumerImpl.java#L219-L258
     public Task ChangeInvisibleDurationAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
         CancellationToken cancellationToken) =>
         SetInvisibleDurationAsync(message, invisibleDuration, "renew", cancellationToken);
 
+    // Push and LitePush call this only after processing has failed, timed out, or rejected a corrupted non-FIFO
+    // message. The handler is no longer being protected: the duration is a NACK delay after which the service may
+    // redeliver the message and advance its retry/dead-letter policy. It shares the wire RPC with explicit renewal but
+    // is deliberately recorded as "nack" telemetry.
+    // Design: docs/en-US/grpc/consumer-model.md#pushconsumer.
+    // Apache Java reference:
+    // https://github.com/apache/rocketmq-clients/blob/9fe1449d19449b41442aa3a97ab168ed6b5bd6b1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445
     public Task ScheduleRetryAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
         CancellationToken cancellationToken) =>
         SetInvisibleDurationAsync(message, invisibleDuration, "nack", cancellationToken);
 
+    // Renewal and retry intent deliberately converge here because the gRPC protocol exposes one
+    // ChangeInvisibleDuration operation. telemetryOperation classifies the caller's intent locally; the service receives
+    // the same wire shape and applies the requested replacement deadline.
+    // Apache Proxy reference:
+    // https://github.com/apache/rocketmq/blob/2238256de1d227a4384ba969dfa31473187b4d08/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ChangeInvisibleDurationActivity.java#L43-L69
     private Task SetInvisibleDurationAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
@@ -369,6 +394,8 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             GrpcStatus.EnsureSuccess(response.Status);
             if (!string.IsNullOrEmpty(response.ReceiptHandle))
             {
+                // The server may invalidate the old handle when it changes invisibility. Keep the message view current
+                // so a later SimpleConsumer renewal or acknowledgement targets the replacement receipt.
                 message.ReceiptHandle = response.ReceiptHandle;
             }
 

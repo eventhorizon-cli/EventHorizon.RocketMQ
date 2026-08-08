@@ -125,7 +125,8 @@ container suite 刻意继续使用专用 topic，且类内方法串行执行，�
 
 single-Broker fixture 会启用 Broker-side assignment 与 timer wheel，同时把消息请求模式默认保持为 PULL。
 Remoting Broker-assigned Push case 仅通过测试管理操作把一个唯一 topic/group 切换为 POP，验证投递、确认、固定 deadline
-过期、迟到结果拒绝、一次性重试、不对不确定失败重试和死信行为，并在清理时恢复 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产 Consumer
+过期、迟到结果拒绝、一次性重试、不对不确定失败重试、最大投递次数下不隐式 send-back 的消息年龄处理，以及显式死信
+行为，并在清理时恢复 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产 Consumer
 API。普通 LitePull 与默认 Push 工作流不依赖 Broker 侧 POP 配置。
 
 single-Broker 的运行时间也属于需要持续测量的测试设计约束。在 commit `9ef119f` 上，本地使用
@@ -147,7 +148,8 @@ fixture 启动约 44.6 秒。
   校验同一份快照，不能为每个 Queue 分别启动一个 JVM；并发轮询同一个 Group 不会增强证据，只会增加容器争用。
 - 测试并发来自 runner 四个 collection 上限内、状态已经隔离的测试类。只有 topic、group、管理操作和 offset 断言不再
   共享可变状态后，才能继续拆分测试类；直接提高共享 Broker 上的线程上限不能替代状态隔离。
-- 重试、固定 deadline 过期、迟到结果拒绝、不对不确定失败重试、死信顺序、防重复、rebalance 恢复与持久化覆盖必须保留。
+- 重试、最大投递次数下按消息年龄延期或 ACK、固定 deadline 过期、迟到结果拒绝、不对不确定失败重试、显式死信顺序、
+  防重复、rebalance 恢复与持久化覆盖必须保留。
   只有确定性信号能证明同一不变量时，才可以删除等待时间。
 - 性能改动应使用同一条筛选命令，并至少在镜像已预热的情况下比较测试阶段 wall-clock 时间。即使结果更快，只要
   聚焦工作流或完整筛选测试出现抖动，仍不能接受。

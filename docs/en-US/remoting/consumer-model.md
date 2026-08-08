@@ -452,15 +452,19 @@ not a source for POP semantics.
 
 ### Handler outcomes and POP fixed deadlines
 
-The existing Push handler contract remains common to both receiver types:
+The Push handler contract remains common to both receiver types and follows the classic Java and Go concurrent
+consumer result model:
 
 - `Success` settles the acknowledged prefix selected by `AckIndex`.
-- `Retry` sends the PULL tail back or makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false` for the POP
-  tail, using `DelayLevelWhenNextConsume`.
-- `DeadLetter` or a negative delay level forwards a PULL message directly. This client also preserves that explicit
-  request for POP by performing classic dead-letter send-back and ACKing the receipt only after forwarding succeeds.
+- For concurrent non-FIFO delivery, `Retry` with a non-negative `DelayLevelWhenNextConsume` sends the PULL tail back or
+  makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false` for the POP tail.
+- For concurrent non-FIFO delivery, `Retry` with a negative delay level forwards a PULL message directly. This client
+  also preserves that explicit request for POP by performing classic dead-letter send-back and ACKing the receipt only
+  after forwarding succeeds.
   ACK, including the ACK after explicit dead-letter forwarding, is retried only while the original invisible deadline
   remains valid; after expiry no further settlement is sent.
+- `MessageGroup` FIFO and orderly singleton delivery ignore the consume context. Their `Retry` outcome remains locally
+  serialized until it succeeds or reaches `MaxDeliveryAttempts`.
 - A PULL `Retry` that reaches `MaxDeliveryAttempts` follows classic send-back into the dead-letter queue. A POP `Retry`
   at the same limit follows the Java client's `checkNeedAckOrDelay` path instead: it never performs implicit dead-letter
   send-back. While the message age is at most twice the final POP delay, the client makes one
@@ -468,12 +472,17 @@ The existing Push handler contract remains common to both receiver types:
   than that threshold, the client ACKs the receipt. With the official 7,200-second final delay, the threshold is four
   hours. The handler-selected delay level is ignored in this maximum-attempt branch.
 
+There is no `DeadLetter` handler result. This matches Java's
+[`ConsumeConcurrentlyStatus`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
+and the classic Go client's
+[`ConsumeResult`](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205).
 `DelayLevelWhenNextConsume` defaults to `0`, matching Java's
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java).
 PULL passes the level to classic send-back. POP maps a positive value through Java's POP-specific retry schedule;
 `0` selects that schedule by the zero-based reconsume count (`DeliveryAttempt - 1`). This schedule starts at 10 seconds
-and is distinct from the normal delayed-message level table. A negative value is this client's explicit dead-letter
-extension; the official Java POP retry-at-limit path does not use it.
+and is distinct from the normal delayed-message level table. Classic PULL clients define a negative value as direct
+dead-lettering; preserving the same explicit request for POP is this client's extension, and the official Java POP
+retry-at-limit path does not use it.
 
 POP does not renew a receipt while its handler is active. The client checks the fixed invisible deadline before handler
 processing and again before settlement. If the deadline has passed, the late handler result is ignored and the Broker

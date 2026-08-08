@@ -82,8 +82,8 @@ producer send -> receive -> process(handler) -> acknowledge / retry / dead-lette
   Producer 上下文记录为 link。没有 receive 上下文时，传播的 Producer 上下文会成为 process parent。
 - 确认、重试或死信处理以及位点提交会创建独立的 settlement 操作。因此 handler 成功本身不能证明 Broker 结算完成。
 
-handler 异常、超时、`Retry`、`DeadLetter` 以及 Remoting 部分成功会把 process telemetry 标为失败并记录对应结果；
-异常还会记录 `error.type`。之后发生的结算失败记录在 settlement 操作上，不会改写已经完成的 process Activity。
+handler 异常、超时、gRPC `Failure`、Remoting `Retry` 以及 Remoting 部分成功会把 process telemetry 标为失败并记录
+对应结果；异常还会记录 `error.type`。之后发生的结算失败记录在 settlement 操作上，不会改写已经完成的 process Activity。
 
 两种协议的 meter 都产生 `rocketmq.client.operations`、`rocketmq.client.messages` 和
 `rocketmq.client.operation.duration`。协议专用 meter 标识客户端边界；measurement 会按实际情况携带操作、目标、
@@ -94,8 +94,7 @@ Consumer Group、成功状态和错误属性。直方图 view、采样、基数�
 `IGrpcPushMessageHandler.HandleAsync` 每次处理一个 `GrpcMessageView`，并返回 `ConsumeResult`：
 
 - `Success`：确认消息。
-- `Retry`：使消息可以重新投递；达到投递次数上限后可进入死信队列。
-- `DeadLetter`：请求立即转发到死信队列。
+- `Failure`：使消息可以重新投递；达到投递次数上限后可进入死信队列。
 
 损坏的 gRPC 消息不会进入应用 handler。普通损坏消息会重新变为可投递状态；FIFO 损坏消息会先进入死信队列，再
 释放同组下一条消息。非 FIFO handler 超过 `ConsumeTimeout` 时，其 token 会被取消，迟到结果会被忽略；忽略取消的
@@ -103,8 +102,8 @@ Consumer Group、成功状态和错误属性。直方图 view、采样、基数�
 
 `IRemotingPushMessageHandler.HandleAsync` 接收 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`。默认返回 `Success` 会确认完整批次。并发非 FIFO 批次可先把 `AckIndex` 设为最后一条
-已接受消息的从零开始索引，再返回 `Success`，从而确认连续前缀并只重试尾部；`-1` 表示一条也不确认。`Retry` 与
-`DeadLetter` 会忽略 `AckIndex` 并作用于整个批次。`DelayLevelWhenNextConsume` 控制重试时间或直接进入死信队列。
+已接受消息的从零开始索引，再返回 `Success`，从而确认连续前缀并只重试尾部；`-1` 表示一条也不确认。`Retry` 会忽略
+`AckIndex` 并作用于整个批次。`DelayLevelWhenNextConsume` 控制重试时间；负值请求直接进入死信队列。
 
 Remoting FIFO 与 orderly 路径只投递单消息列表，不支持批量部分确认。广播模式没有 Broker 重试或死信流程。并发
 集群非 FIFO 批次超过 `ConsumeTimeout` 后会请求重新投递；忽略取消的代码可能与重新投递重叠。Remoting

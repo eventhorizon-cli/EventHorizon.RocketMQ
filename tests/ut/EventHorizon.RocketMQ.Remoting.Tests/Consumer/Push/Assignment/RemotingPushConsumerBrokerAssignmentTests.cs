@@ -886,8 +886,11 @@ public sealed class RemotingPushConsumerBrokerAssignmentTests : RemotingPushCons
                 return Task.FromResult(BrokerSuccess());
             }
         };
-        var options = CreateBrokerAssignmentOptions(
-            static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter));
+        var options = CreateBrokerAssignmentOptions(static (_, context, _) =>
+        {
+            context.DelayLevelWhenNextConsume = -1;
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
         await using var consumer = CreateBrokerAssignmentConsumer(options, remoting);
 
         await consumer.StartAsync(cancellationToken);

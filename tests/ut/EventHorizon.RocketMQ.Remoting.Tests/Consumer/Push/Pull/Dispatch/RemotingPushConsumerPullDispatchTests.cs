@@ -91,11 +91,10 @@ public sealed class RemotingPushConsumerPullDispatchTests : RemotingPushConsumer
         }
     }
 
-    [Theory]
-    [InlineData(ConsumeResult.Retry)]
-    [InlineData(ConsumeResult.DeadLetter)]
-    public async Task UnsuccessfulHandlerResult_FailedProcessTelemetry_RecordsFailure(ConsumeResult result)
+    [Fact]
+    public async Task RetryHandlerResult_FailedProcessTelemetry_RecordsFailure()
     {
+        const ConsumeResult result = ConsumeResult.Retry;
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
@@ -245,8 +244,10 @@ public sealed class RemotingPushConsumerPullDispatchTests : RemotingPushConsumer
         Assert.Equal(5, Convert.ToInt32(pull.ExtFields["maxMsgNums"]));
     }
 
-    [Fact]
-    public async Task ConcurrentPushConsumer_BatchRetryResult_SendsBackEveryMessage()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task ConcurrentPushConsumer_BatchRetryDelay_SendsBackEveryMessage(int delayLevelWhenNextConsume)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -276,9 +277,10 @@ public sealed class RemotingPushConsumerPullDispatchTests : RemotingPushConsumer
             MaxConcurrency = 1,
             PullMaxCachedMessages = 2,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-        }, static (_, context, _) =>
+        }, (_, context, _) =>
             {
                 context.AckIndex = 0;
+                context.DelayLevelWhenNextConsume = delayLevelWhenNextConsume;
                 return ValueTask.FromResult(ConsumeResult.Retry);
             });
         options.Subscribe("orders");
@@ -292,9 +294,12 @@ public sealed class RemotingPushConsumerPullDispatchTests : RemotingPushConsumer
         await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 2, cancellationToken);
         await consumer.StopAsync(cancellationToken);
 
-        Assert.Equal(
-            2,
-            remoting.Requests.Count(static request => request.Code == RequestCode.ConsumerSendMsgBack));
+        var sendBackRequests = remoting.Requests
+            .Where(static request => request.Code == RequestCode.ConsumerSendMsgBack)
+            .ToArray();
+        Assert.Equal(2, sendBackRequests.Length);
+        Assert.All(sendBackRequests, request =>
+            Assert.Equal(delayLevelWhenNextConsume, Convert.ToInt32(request.ExtFields["delayLevel"])));
     }
 
     [Fact]

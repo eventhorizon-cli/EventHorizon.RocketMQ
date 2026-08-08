@@ -54,7 +54,7 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
             BrokerAssignedPopIntegrationTestSupport.ConfigureBrokerAssignedPop(options, consumerGroup, scope.Topic, tag);
             options.PopBatchSize = 1;
             options.ConsumeMessageBatchSize = 1;
-        }, (messages, _, _) =>
+        }, (messages, context, _) =>
             {
                 var message = Assert.Single(messages);
                 if (Encoding.UTF8.GetString(message.Body) != body)
@@ -64,7 +64,8 @@ public sealed class RocketMQBrokerAssignedPopDeadLetterIntegrationTests(
 
                 Interlocked.Increment(ref deliveryCount);
                 deadLetterRequested.TrySetResult();
-                return ValueTask.FromResult(ConsumeResult.DeadLetter);
+                context.DelayLevelWhenNextConsume = -1;
+                return ValueTask.FromResult(ConsumeResult.Retry);
             });
 
         await using var provider = services.BuildServiceProvider(

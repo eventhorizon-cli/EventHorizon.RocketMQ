@@ -93,8 +93,8 @@ client；内部职责迁移不能让同一个 Activity 或 metric 被重复完�
 
 POP 结算 telemetry 按每次实际的 wire operation 独立记录：确认使用 `ack`，一次性重试/延期
 `CHANGE_MESSAGE_INVISIBLETIME` 使用 `nack`（defer）。普通 `Retry` 达到最大投递次数后，如果 Java 兼容的消息年龄
-判断仍选择延期，继续记录为 `nack`；超过终态年龄阈值后记录为 `ack`，整个过程不会产生 `reject`。显式死信转发与
-后续 ACK 仍分别记录。handler 结果在固定不可见 deadline 之后到达时，不创建任何结算 operation。不确定的 `nack`
+判断仍选择延期，继续记录为 `nack`；超过终态年龄阈值后记录为 `ack`，整个过程不会产生 `reject`。由 `Retry` 搭配
+负 delay 请求的显式死信转发与后续 ACK 仍分别记录。handler 结果在固定不可见 deadline 之后到达时，不创建任何结算 operation。不确定的 `nack`
 失败不会使用旧 receipt 重试；确认以及显式死信转发后的 ACK 只在原始 deadline 内重试。
 
 Activity 使用 OpenTelemetry 消息语义约定属性，例如 `messaging.system`、`messaging.destination.name`、

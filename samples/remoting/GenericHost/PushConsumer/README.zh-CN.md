@@ -123,7 +123,7 @@ handler 为一个 batch 返回一个 `ConsumeResult`：
 - 默认返回 `Success` 会结算整个 batch：PULL 推进连续位点水位，POP 则确认 Broker receipt。
 - 对于并发、非 FIFO batch，可把 `context.AckIndex` 设为最后一条成功消息的从零开始索引，再返回 `Success`。
   客户端会结算连续前缀，只把尾部交给 Broker 重试。默认值 `int.MaxValue` 接受全部消息；`-1` 表示一条也不接受。
-- `Retry` 和 `DeadLetter` 会忽略 `AckIndex`，并应用到整个 batch。
+- `Retry` 会忽略 `AckIndex`，并应用到整个 batch。
 
 对于集群并发、非 FIFO batch，`context.DelayLevelWhenNextConsume` 默认为 `0`，由 Broker 选择重试间隔；设为正的
 RocketMQ 延迟级别时请求该级别，设为负值时请求直接进入死信队列。PULL 重试使用经典 send-back；POP 重试按
@@ -155,7 +155,7 @@ Broker 重新投递。assignment 被移除或切换模式时，旧 generation �
 阻塞当前队列，使后面的消息不能超越它。队列锁保持顺序，但不会改变至少一次投递，因此顺序 handler 也必须幂等。
 
 `Broadcasting` 会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点。它没有 group 所属的 Broker 重试或
-死信流程：`Retry`、`DeadLetter` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。当客户端标识不稳定时，应配置
+死信流程：`Retry` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。当客户端标识不稳定时，应配置
 稳定且每实例独立的 `LocalOffsetStorePath`。
 
 对于普通 PULL 队列，`InitialPosition` 只在当前模式使用的位点存储没有值时提供起点：集群模式读取 Broker group

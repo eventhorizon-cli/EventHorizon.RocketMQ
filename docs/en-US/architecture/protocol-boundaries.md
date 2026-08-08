@@ -10,8 +10,8 @@ the advertised Brokers. Their discovery, wire contracts, Consumer semantics, res
 server requirements are therefore different.
 
 The protocols also use a few models with similar behavior: `Message`, filters, `ConsumerOptions`, and the client
-exception base. Both protocols define a `ConsumeResult`, but its outcomes follow the owning consumer model rather
-than a cross-protocol shape. Putting those models in a third production Project
+exception base. Both protocols define a separately owned `ConsumeResult`; matching member counts do not make those
+types interchangeable. Putting those models in a third production Project
 would add another MSBuild boundary, Package version, and release dependency for a very small API
 surface.
 
@@ -58,11 +58,15 @@ The small foundational models are declared separately in each protocol namespace
 | Filter type | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | Client exception base | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-The two `ConsumeResult` types intentionally differ. gRPC Push and LitePush follow the Apache Java gRPC listener
-contract and expose `Success` and `Failure`; the service owns non-FIFO retry and dead-letter progression, while FIFO
-dead-letter forwarding is internal client behavior. Classic Remoting exposes `Success`, `Retry`, and `DeadLetter`
-because its callback settlement contract lets the application select those outcomes. Compatibility tests therefore
-lock each protocol's enum independently instead of requiring parity.
+gRPC Push and LitePush follow the Apache Java gRPC listener contract and expose `Success` and `Failure`; the service
+owns non-FIFO retry and dead-letter progression, while FIFO dead-letter forwarding is internal client behavior.
+Classic Remoting follows the concurrent callback model shared by the
+[Java client](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
+and the
+[Go client](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205):
+it exposes `Success` and `Retry`, while a negative `RemotingPushConsumeContext.DelayLevelWhenNextConsume` requests
+direct dead-lettering. Compatibility tests lock each protocol's independently owned enum even though both currently
+contain two members with protocol-specific failure names.
 
 Classic Remoting `ConsumerOptions.InitialPosition` uses the protocol-owned `ConsumeFromPosition` type. LitePull and
 Push apply it only when an assigned queue has no committed group position; a timestamp start also uses

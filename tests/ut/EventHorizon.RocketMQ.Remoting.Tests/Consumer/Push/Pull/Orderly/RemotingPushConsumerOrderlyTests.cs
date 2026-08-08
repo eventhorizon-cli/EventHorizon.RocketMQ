@@ -392,7 +392,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
     }
 
     [Fact]
-    public async Task OrderlyConsumer_DeadLetterResult_CommitsPastMessage()
+    public async Task OrderlyConsumer_RetryAtDeliveryLimit_CommitsPastDeadLetteredMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -416,9 +416,10 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
+            MaxDeliveryAttempts = 1,
             PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
-        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.DeadLetter));
+        }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(
             options,

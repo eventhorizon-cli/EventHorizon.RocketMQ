@@ -375,6 +375,7 @@ public sealed class RemotingPushConsumerSettlementTests : RemotingPushConsumerTe
             PullBatchSize = 1,
             ConsumeMessageBatchSize = 1,
             MaxConcurrency = 1,
+            MaxDeliveryAttempts = 1,
             PullMaxCachedMessages = 1,
             RetryDelay = TimeSpan.FromHours(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
@@ -385,7 +386,7 @@ public sealed class RemotingPushConsumerSettlementTests : RemotingPushConsumerTe
                     case "fifo-head":
                         predecessorStarted.TrySetResult();
                         await successorCached.Task.WaitAsync(token);
-                        return ConsumeResult.DeadLetter;
+                        return ConsumeResult.Retry;
                     case "fifo-successor":
                         Interlocked.Increment(ref successorCalls);
                         return ConsumeResult.Success;
@@ -556,6 +557,7 @@ public sealed class RemotingPushConsumerSettlementTests : RemotingPushConsumerTe
             InitialPosition = ConsumeFromPosition.Beginning,
             ConsumeMessageBatchSize = 2,
             MaxConcurrency = 2,
+            MaxDeliveryAttempts = 1,
             PullMaxCachedMessages = 2,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
@@ -569,7 +571,7 @@ public sealed class RemotingPushConsumerSettlementTests : RemotingPushConsumerTe
                     return ValueTask.FromResult(ConsumeResult.Success);
                 }
 
-                return ValueTask.FromResult(ConsumeResult.DeadLetter);
+                return ValueTask.FromResult(ConsumeResult.Retry);
             });
         options.Subscribe("orders");
         await using var consumer = CreateRemotingPushConsumer(

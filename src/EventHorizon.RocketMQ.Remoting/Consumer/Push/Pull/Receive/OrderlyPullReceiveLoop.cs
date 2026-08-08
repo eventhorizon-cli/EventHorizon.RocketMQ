@@ -234,8 +234,6 @@ internal sealed class OrderlyPullReceiveLoop
             {
                 case ConsumeResult.Success:
                     return OrderlyDeliveryOutcome.Success;
-                case ConsumeResult.DeadLetter:
-                    return OrderlyDeliveryOutcome.DeadLetter;
                 case ConsumeResult.Retry when _options.ConsumerMode == ConsumerMode.Broadcasting:
                     return OrderlyDeliveryOutcome.Retry;
                 case ConsumeResult.Retry when attempt >= _options.MaxDeliveryAttempts:

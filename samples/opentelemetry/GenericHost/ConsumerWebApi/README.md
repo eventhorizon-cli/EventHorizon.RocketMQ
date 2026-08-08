@@ -88,7 +88,7 @@ producer send -> receive -> process(handler) -> acknowledge / retry / dead-lette
 - Acknowledgement, retry or dead-letter work, and offset commits create separate settlement operations. Handler
   success therefore does not by itself prove that Broker settlement completed.
 
-Handler exceptions, timeouts, `Retry`, `DeadLetter`, and partial Remoting success mark process telemetry as
+Handler exceptions, timeouts, gRPC `Failure`, Remoting `Retry`, and partial Remoting success mark process telemetry as
 unsuccessful and record the relevant outcome; exceptions also record `error.type`. A later settlement failure is
 reported on the settlement operation rather than rewriting the completed process activity.
 
@@ -102,8 +102,7 @@ cardinality limits, and exporters remain application policy.
 `IGrpcPushMessageHandler.HandleAsync` handles one `GrpcMessageView` and returns `ConsumeResult`:
 
 - `Success` acknowledges the message.
-- `Retry` makes it available for redelivery; delivery-attempt limits can move it to the dead-letter queue.
-- `DeadLetter` requests immediate dead-letter forwarding.
+- `Failure` makes it available for redelivery; delivery-attempt limits can move it to the dead-letter queue.
 
 Corrupted gRPC messages do not reach the application handler. Ordinary corrupted messages become available for
 redelivery, while corrupted FIFO messages are dead-lettered before the next group member is released. If a non-FIFO
@@ -113,8 +112,8 @@ that ignored cancellation. Handlers must honor cancellation and remain idempoten
 `IRemotingPushMessageHandler.HandleAsync` receives an `IReadOnlyList<RemotingMessageView>` and a
 `RemotingPushConsumeContext`. Returning `Success` confirms the complete batch by default. For concurrent non-FIFO
 batches, set `AckIndex` to the zero-based last accepted index before returning `Success` to confirm a contiguous
-prefix and retry only the tail; `-1` confirms none. `Retry` and `DeadLetter` ignore `AckIndex` and apply to the whole
-batch. `DelayLevelWhenNextConsume` controls retry timing or direct dead-lettering.
+prefix and retry only the tail; `-1` confirms none. `Retry` ignores `AckIndex` and applies to the whole batch.
+`DelayLevelWhenNextConsume` controls retry timing; a negative value requests direct dead-lettering.
 
 Remoting FIFO and orderly paths deliver singleton lists and do not support partial batch confirmation. Broadcasting
 has no Broker retry or dead-letter flow. A concurrent clustered non-FIFO batch that exceeds `ConsumeTimeout` is

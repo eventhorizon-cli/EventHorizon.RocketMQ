@@ -290,9 +290,10 @@ PULL。Broker 分配查询失败时，Consumer 会等待下一轮协调，不会
 [PushConsumer 指南](https://rocketmq.apache.org/docs/4.x/consumer/02push/)。源码层面的 Java 与 Broker 依据记录在
 [Remoting Consumer 设计](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/docs/zh-CN/remoting/consumer-model.md)中。
 
-`ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success`、`Retry` 或 `DeadLetter`。
-对于并发的非 FIFO 批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
-`DelayLevelWhenNextConsume` 控制下一次重试的延迟，也可显式请求直接进入死信；默认值为 `0`，由 Broker 决定重试时间。
+`ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success` 或 `Retry`。对于并发的非 FIFO
+批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
+`DelayLevelWhenNextConsume` 控制下一次重试的延迟；需要直接进入死信队列时，先把它设为负值，再返回 `Retry`。
+默认值为 `0`，由 Broker 决定重试时间。
 达到 `MaxDeliveryAttempts` 后，PULL 重试按 classic send-back 进入死信；POP 重试则遵循官方 Java 的消息年龄策略，继续按
 年龄修改不可见时间，只有消息年龄超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。
 

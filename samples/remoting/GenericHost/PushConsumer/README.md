@@ -136,7 +136,7 @@ The handler returns one `ConsumeResult` for its batch:
 - For a concurrent non-FIFO batch, set `context.AckIndex` to the zero-based last successful index and return
   `Success`. The contiguous prefix is settled and only the tail is sent for Broker retry. The default
   `int.MaxValue` accepts all messages; `-1` accepts none.
-- `Retry` and `DeadLetter` ignore `AckIndex` and apply to the complete batch.
+- `Retry` ignores `AckIndex` and applies to the complete batch.
 
 For a clustered concurrent non-FIFO batch, `context.DelayLevelWhenNextConsume` defaults to `0`, allowing the Broker to
 select the retry interval. Set it to a positive RocketMQ delay level to request that level, or to a negative value to
@@ -179,8 +179,8 @@ cannot overtake it. Queue locks preserve order but do not change at-least-once d
 be idempotent.
 
 `Broadcasting` assigns every readable queue to every Consumer instance and stores offsets locally. It has no
-group-owned Broker retry or dead-letter flow: `Retry`, `DeadLetter`, and an unacknowledged batch tail are dropped while
-the local offset advances. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
+group-owned Broker retry or dead-letter flow: `Retry` and an unacknowledged batch tail are dropped while the local
+offset advances. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
 
 For a normal PULL queue, `InitialPosition` supplies a starting offset only when the active offset store has no
 value: the Broker group offset in clustering mode, or the instance's local offset file in broadcasting mode. It does

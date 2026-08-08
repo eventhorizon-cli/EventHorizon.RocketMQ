@@ -7,8 +7,8 @@
 RocketMQ 5 protobuf/gRPC 客户端连接 Proxy；classic Remoting 客户端则先向 NameServer 查询路由，再连接
 Broker。两条路径的服务发现、wire contract、Consumer 语义、结果类型和服务端要求都不相同。
 
-两种协议仍有少量行为相近的模型，例如 `Message`、过滤表达式、`ConsumerOptions` 和客户端异常基类。两边都定义了
-`ConsumeResult`，但其结果值应服从各自的消费模型，而不是强制保持跨协议一致。如果为这些类型增加第三个生产 Project，
+两种协议仍有少量行为相近的模型，例如 `Message`、过滤表达式、`ConsumerOptions` 和客户端异常基类。两边各自定义
+`ConsumeResult`；即使成员数量相同，它们也不是可以互换的类型。如果为这些类型增加第三个生产 Project，
 就会为了很小的 API 范围引入额外的 MSBuild 边界、
 Package 版本和发布依赖。
 
@@ -51,10 +51,13 @@ Package 版本和发布依赖。
 | 过滤类型 | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | 客户端异常基类 | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-两个 `ConsumeResult` 有意采用不同结果。gRPC Push 与 LitePush 遵循 Apache Java gRPC listener 契约，只公开
-`Success` 和 `Failure`；非 FIFO 的重试与死信推进由服务端负责，FIFO 死信转发则是客户端内部行为。classic Remoting
-的 callback 结算契约允许应用选择 `Success`、`Retry` 或 `DeadLetter`，因此继续公开这三个结果。兼容性测试分别锁定
-两边的枚举，而不再要求它们完全相同。
+gRPC Push 与 LitePush 遵循 Apache Java gRPC listener 契约，只公开 `Success` 和 `Failure`；非 FIFO 的重试与死信
+推进由服务端负责，FIFO 死信转发则是客户端内部行为。classic Remoting 遵循
+[Java 客户端](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
+与[Go 客户端](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205)
+共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`；需要直接进入死信队列时，把
+`RemotingPushConsumeContext.DelayLevelWhenNextConsume` 设为负数。兼容性测试仍分别锁定两边独立拥有的枚举；两者目前
+虽然都只有两个成员，但失败结果名称和协议语义并不相同。
 
 classic Remoting 的 `ConsumerOptions.InitialPosition` 使用协议自有的 `ConsumeFromPosition` 类型。LitePull 与
 Push 只在已分配队列不存在消费组已提交位点时应用该配置；从时间戳开始时还会读取

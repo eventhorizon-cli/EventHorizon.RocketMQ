@@ -126,26 +126,20 @@ internal sealed class PopDeliveryProcessor
             return;
         }
 
-        var outcome = handlerOutcome.Result;
-        if (outcome == ConsumeResult.Retry && handlerOutcome.DelayLevelWhenNextConsume < 0)
-        {
-            outcome = ConsumeResult.DeadLetter;
-        }
-
-        switch (outcome)
+        switch (handlerOutcome.Result)
         {
             case ConsumeResult.Success:
                 await AcknowledgeAsync(state, cancellationToken).ConfigureAwait(false);
+                break;
+            case ConsumeResult.Retry when handlerOutcome.DelayLevelWhenNextConsume < 0:
+                await SendToDeadLetterQueueAsync(state, cancellationToken).ConfigureAwait(false);
                 break;
             case ConsumeResult.Retry:
                 await SettleRetryAsync(state, handlerOutcome.DelayLevelWhenNextConsume, cancellationToken)
                     .ConfigureAwait(false);
                 break;
-            case ConsumeResult.DeadLetter:
-                await SendToDeadLetterQueueAsync(state, cancellationToken).ConfigureAwait(false);
-                break;
             default:
-                throw new InvalidOperationException($"Unsupported POP consume result '{outcome}'.");
+                throw new InvalidOperationException($"Unsupported POP consume result '{handlerOutcome.Result}'.");
         }
     }
 

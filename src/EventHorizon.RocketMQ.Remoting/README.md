@@ -302,10 +302,10 @@ This distinction follows Apache RocketMQ's classic
 [Remoting consumer design](https://github.com/eventhorizon-cli/EventHorizon.RocketMQ/blob/main/docs/en-US/remoting/consumer-model.md)
 records the source-level Java and Broker references.
 
-`ConsumeMessageBatchSize` controls the largest list passed to one handler call. Return `Success`, `Retry`, or
-`DeadLetter`. For a concurrent non-FIFO batch, set `RemotingPushConsumeContext.AckIndex` before returning
-`Success` to acknowledge only a contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay or an
-explicit direct-dead-letter request; its default value is `0`, which delegates retry timing to the Broker. At
+`ConsumeMessageBatchSize` controls the largest list passed to one handler call. Return `Success` or `Retry`. For a
+concurrent non-FIFO batch, set `RemotingPushConsumeContext.AckIndex` before returning `Success` to acknowledge only a
+contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay; set it to a negative value before
+returning `Retry` to request direct dead-lettering. Its default value is `0`, which delegates retry timing to the Broker. At
 `MaxDeliveryAttempts`, PULL retry uses classic dead-letter send-back. POP retry follows the official Java age policy:
 it continues with age-selected invisibility changes and ACKs only after the message is older than twice the final POP
 retry delay, without implicit dead-letter forwarding.

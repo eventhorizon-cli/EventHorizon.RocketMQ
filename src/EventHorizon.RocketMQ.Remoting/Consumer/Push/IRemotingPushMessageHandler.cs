@@ -24,7 +24,8 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// A handler registered with <see cref="ServiceLifetime.Singleton"/> can receive concurrent calls and must be
 /// thread-safe. Scoped and transient handlers are resolved for each batch handling attempt. A returned
 /// <see cref="ConsumeResult.Success"/> can acknowledge a prefix of a concurrent non-FIFO batch through the
-/// supplied <see cref="RemotingPushConsumeContext"/>. Other outcomes apply to every message in the batch.
+/// supplied <see cref="RemotingPushConsumeContext"/>. <see cref="ConsumeResult.Retry"/> applies to every message in
+/// the batch.
 /// </remarks>
 public interface IRemotingPushMessageHandler
 {

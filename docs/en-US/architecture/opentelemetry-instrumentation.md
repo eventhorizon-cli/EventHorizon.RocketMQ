@@ -103,7 +103,8 @@ a responsibility between internal types must not duplicate or drop its Activity 
 POP settlement telemetry records each actual wire operation independently: `ack` for acknowledgement and `nack` for
 the one-shot retry/defer `CHANGE_MESSAGE_INVISIBLETIME`. A normal `Retry` at the delivery-attempt limit remains `nack`
 while the Java-compatible message-age guard selects another delay, then becomes `ack` after the terminal age threshold;
-it never creates a `reject` operation. Explicit dead-letter forwarding and its follow-up ACK remain separate operations.
+it never creates a `reject` operation. Explicit dead-letter forwarding requested by `Retry` with a negative delay and
+its follow-up ACK remain separate operations.
 A handler result that arrives after the fixed invisible deadline creates no settlement operation. An indeterminate
 `nack` failure is not retried with the old receipt; acknowledgement and the ACK after explicit dead-letter forwarding
 are retried only while the original deadline remains valid.

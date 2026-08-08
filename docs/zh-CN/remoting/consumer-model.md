@@ -415,24 +415,30 @@ PULL 之上的 callback 门面，并把队列与 offset 状态放在门面以下
 
 ### Handler 结果与 POP 固定 deadline
 
-现有 Push handler 契约继续供两类 receiver 共用：
+Push handler 契约继续供两类 receiver 共用，并遵循 classic Java、Go 的并发消费结果模型：
 
 - `Success` 根据 `AckIndex` 结算已确认前缀。
-- `Retry` 将 PULL 尾部 send-back，或对 POP 尾部使用一次 `suspend=false` 的
-  `CHANGE_MESSAGE_INVISIBLETIME`，并使用 `DelayLevelWhenNextConsume`。
-- `DeadLetter` 或负 delay level 会让 PULL 直接转入死信。本客户端也为 POP 保留这项显式请求：先执行 classic
-  dead-letter send-back，只有转发成功后才 ACK receipt。ACK，包括显式死信转发后的 ACK，只能在原始不可见
-  deadline 内重试；deadline 过期后不再发送结算请求。
+- 对于并发、非 FIFO 投递，`Retry` 搭配非负 `DelayLevelWhenNextConsume` 时，将 PULL 尾部 send-back，或对 POP
+  尾部使用一次 `suspend=false` 的 `CHANGE_MESSAGE_INVISIBLETIME`。
+- 对于并发、非 FIFO 投递，`Retry` 搭配负 delay level 时，会让 PULL 直接转入死信。本客户端也为 POP 保留这项
+  显式请求：先执行 classic dead-letter send-back，只有转发成功后才 ACK receipt。ACK，包括显式死信转发后的 ACK，
+  只能在原始不可见 deadline 内重试；deadline 过期后不再发送结算请求。
+- `MessageGroup` FIFO 与 orderly 单消息投递会忽略 consume context；返回 `Retry` 后保持本地串行重试，直到成功或达到
+  `MaxDeliveryAttempts`。
 - PULL 的 `Retry` 达到 `MaxDeliveryAttempts` 后继续按 classic send-back 进入死信。POP 的 `Retry` 达到同一上限时，
   则遵循 Java 客户端的 `checkNeedAckOrDelay`，不会隐式执行死信 send-back。消息年龄不超过 POP 最后一级延迟的两倍时，
   客户端按年龄选择下一个 POP 延迟档位，并只发送一次 `CHANGE_MESSAGE_INVISIBLETIME`；只有消息年龄严格超过该阈值才
   ACK receipt。官方最后一级延迟为 7,200 秒，因此阈值为四小时。这个最大投递次数分支会忽略 handler 指定的 delay level。
 
-`DelayLevelWhenNextConsume` 默认为 `0`，与 Java 的
+handler 结果中不再包含 `DeadLetter`。这与 Java 的
+[`ConsumeConcurrentlyStatus`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
+以及 classic Go 客户端的
+[`ConsumeResult`](https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/consumer/consumer.go#L197-L205)
+一致。`DelayLevelWhenNextConsume` 默认为 `0`，与 Java 的
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java)
 一致。PULL 把该值传给 classic send-back；POP 则把正值映射到 Java 的 POP 专用重试表。值为 `0` 时，根据从零开始
 的重试次数（`DeliveryAttempt - 1`）选择表项。该表从 10 秒开始，并不是普通延迟消息的 level 表。负值是本客户端提供的
-显式死信扩展；官方 Java POP 达到重试上限时不会使用它。
+显式 POP 死信扩展；classic PULL 客户端本身就把负值定义为直接死信，但官方 Java POP 达到重试上限时不会使用它。
 
 POP handler 执行期间不会自动续租 receipt。客户端会在 handler 处理前和结算前检查固定不可见 deadline；如果已
 过期，则忽略迟到的 handler 结果，不创建结算 operation，并允许 Broker 重新投递。`Retry` 结果只发起一次带

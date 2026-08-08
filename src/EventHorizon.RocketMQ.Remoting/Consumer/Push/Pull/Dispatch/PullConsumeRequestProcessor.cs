@@ -129,12 +129,11 @@ internal sealed class PullConsumeRequestProcessor
                 }
 
                 var message = entry.Message;
-                var deadLetter = outcome.Result == ConsumeResult.DeadLetter ||
-                                 outcome.DelayLevelWhenNextConsume < 0 ||
+                var deadLetter = outcome.DelayLevelWhenNextConsume < 0 ||
                                  message.DeliveryAttempt >= _options.MaxDeliveryAttempts;
                 if (!request.PullProcessQueue.TryBeginSettlement(
                         entry,
-                        deadLetter ? ConsumeResult.DeadLetter : ConsumeResult.Retry,
+                        ConsumeResult.Retry,
                         deadLetter ? -1 : outcome.DelayLevelWhenNextConsume,
                         out var releasedReservation))
                 {
@@ -273,7 +272,7 @@ internal sealed class PullConsumeRequestProcessor
 
             if (attempt >= _options.MaxDeliveryAttempts)
             {
-                return new PushHandlerMessageOutcome(ConsumeResult.DeadLetter, outcome.DelayLevelWhenNextConsume);
+                return PushHandlerMessageOutcome.Retry(delayLevelWhenNextConsume: -1);
             }
 
             attempt++;

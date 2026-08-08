@@ -19,10 +19,11 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// Provides acknowledgement settings for one classic remoting Push consumer batch delivery.
 /// </summary>
 /// <remarks>
-/// For a concurrent non-FIFO batch, the consumer uses this context only when the handler returns
-/// <see cref="ConsumeResult.Success"/>. The messages through <see cref="AckIndex"/> are acknowledged,
-/// while the remaining messages are retried. This mirrors RocketMQ's concurrent-consumer acknowledgement
-/// model. FIFO <c>MessageGroup</c> and orderly deliveries are singleton paths and ignore these settings.
+/// For a concurrent non-FIFO batch, <see cref="AckIndex"/> selects the acknowledged prefix when the handler returns
+/// <see cref="ConsumeResult.Success"/>, while <see cref="DelayLevelWhenNextConsume"/> selects retry timing or direct
+/// dead-lettering when it returns <see cref="ConsumeResult.Retry"/>. This mirrors RocketMQ's concurrent-consumer
+/// acknowledgement model. FIFO <c>MessageGroup</c> and orderly deliveries are singleton paths and ignore these
+/// settings.
 /// </remarks>
 public sealed class RemotingPushConsumeContext
 {
@@ -34,8 +35,8 @@ public sealed class RemotingPushConsumeContext
     /// <remarks>
     /// The default value acknowledges the complete batch. A value of <c>-1</c> acknowledges no messages.
     /// Values greater than the last message index are treated as the last message index. This setting is
-    /// ignored when the handler returns <see cref="ConsumeResult.Retry"/> or
-    /// <see cref="ConsumeResult.DeadLetter"/>, because those outcomes apply to the complete batch.
+    /// ignored when the handler returns <see cref="ConsumeResult.Retry"/>, because that outcome applies to the
+    /// complete batch.
     /// </remarks>
     public int AckIndex
     {
@@ -62,5 +63,11 @@ public sealed class RemotingPushConsumeContext
     /// <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value and
     /// retries the complete batch using the Broker-selected interval.
     /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java">
+    /// Apache RocketMQ Java concurrent consume context.
+    /// </seealso>
+    /// <seealso href="https://github.com/apache/rocketmq-client-go/blob/99c433634e09f72fa2778ca04411de29d4fc9cff/primitive/ctx.go#L133-L152">
+    /// Apache RocketMQ Go classic concurrent consume context.
+    /// </seealso>
     public int DelayLevelWhenNextConsume { get; set; }
 }

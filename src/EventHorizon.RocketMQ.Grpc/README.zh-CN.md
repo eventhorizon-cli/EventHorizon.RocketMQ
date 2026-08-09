@@ -40,7 +40,7 @@ using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 | 事务消息 | `IGrpcProducer.SendTransactionAsync` | 在启动前声明事务 topic，并配置事务检查器。 |
 | 显式接收和结算 | `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync`、`AckAsync` 和不可见时间 API。 |
 | 自动分发 | `IGrpcPushConsumer` | typed handler 返回 `Success`、`Failure` 或 `Suspend`；普通 Push 会把 Suspend 归一化为 Failure。 |
-| Lite 自动分发 | `IGrpcLitePushConsumer` | 分发 LiteTopic，并支持携带时长的 Suspend 结果。 |
+| Lite 自动分发 | `IGrpcLitePushConsumer` | 分发 LiteTopic；FIFO 模式支持携带时长的 Suspend 结果。 |
 | Tag 和 SQL 过滤器 | `FilterExpression` | SQL 过滤需要匹配的服务端配置。 |
 | 运行时订阅 | `SubscribeAsync` / `UnsubscribeAsync` 及 Lite 等效 API | 由适用的 Consumer 角色支持。 |
 
@@ -238,11 +238,11 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 ```
 
 LitePush 不要调用 `Subscribe`。启动时使用 `LiteTopics`，启动后使用 `SubscribeLiteAsync` 和
-`UnsubscribeLiteAsync`。LitePush 会在本地重试 `Failure`，达到有效次数上限后尝试转发 DLQ；如果该结算失败，消息会保持
-未结算状态，仍可能再次投递。
-`ConsumeResult.Suspend(duration)` 使用调用方指定的时长和 `suspend=true` 修改不可见时间；下一次 receive 返回的
-投递次数由服务端负责。FIFO LitePush 还会暂停当前 receive batch 中尚未处理的同 LiteTopic 消息。时长不能短于
-50 毫秒。完整结果矩阵参见
+`UnsubscribeLiteAsync`。非 FIFO LitePush 的 `Failure` 与 `Suspend` 都由服务端推进重试和死信，并忽略 Suspend 指定的
+时长。FIFO LitePush 会在本地重试 `Failure`，达到有效次数上限后尝试转发 DLQ；如果该结算失败，消息会保持未结算状态，
+仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 使用调用方指定的时长和 `suspend=true` 修改不可见时间；
+下一次 receive 返回的投递次数由服务端负责，同时还会暂停当前 receive batch 中尚未处理的同 LiteTopic 消息。时长不能
+短于 50 毫秒。完整结果矩阵参见
 [Consumer 模型](../../docs/zh-CN/grpc/consumer-model.md)。
 
 LitePush 部署要求：

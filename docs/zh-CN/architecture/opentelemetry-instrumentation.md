@@ -82,8 +82,8 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 
 对于 gRPC，`ReceiveMessageRequest.AutoRenew` 请求的 Proxy 托管续约不是独立的客户端 wire operation，不能创建客户端
 settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：SimpleConsumer 显式延长租期使用
-`renew`；Consumer 按重试策略安排重新投递时使用 `nack`；LitePush 使用调用方指定时长发送 `suspend=true` 时使用
-`suspend`。共享接收引擎必须保留这些内部意图，即使它们最终使用同一个 RPC。Proxy 托管的
+`renew`；Consumer 按重试策略安排重新投递时使用 `nack`；FIFO LitePush 使用调用方指定时长发送 `suspend=true` 时使用
+`suspend`，非 FIFO LitePush 的 Suspend 仍走重试策略 `nack`。共享接收引擎必须保留这些内部意图，即使它们最终使用同一个 RPC。Proxy 托管的
 handler 续期不会在客户端重复创建定时器、span 或 metric。结果 tag 使用固定名称，调用方指定的时长不能进入
 metric 维度。
 

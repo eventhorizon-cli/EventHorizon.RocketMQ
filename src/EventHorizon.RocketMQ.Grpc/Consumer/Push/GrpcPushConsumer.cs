@@ -686,10 +686,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 cancellationToken).ConfigureAwait(false);
         }
 
-        // Keep the released Java ownership split explicit: standard non-FIFO Push delegates Failure progression to
-        // the service, while FIFO Push and both LitePush modes retain the message for local retries before forwarding.
+        // Keep the released Java ownership split explicit: standard non-FIFO Push and LitePush delegate Failure
+        // progression to the service, while FIFO Push and FIFO LitePush retain the message for local retries before
+        // forwarding.
         // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java
-        var retriesLocally = fifo || _kind == GrpcPushConsumerKind.Lite;
+        var retriesLocally = fifo;
         var localRetryCancellationToken = retriesLocally
             ? Volatile.Read(ref _localRetryCts)?.Token ?? CancellationToken.None
             : CancellationToken.None;
@@ -719,7 +720,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             {
                 await _engine.AckAsync(message, cancellationToken).ConfigureAwait(false);
             }
-            else if (completion.Result.SuspendDuration is { } suspendDuration)
+            else if (fifo && completion.Result.SuspendDuration is { } suspendDuration)
             {
                 await SuspendLiteMessagesAsync(
                     message,

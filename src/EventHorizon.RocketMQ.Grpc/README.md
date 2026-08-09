@@ -43,7 +43,7 @@ Register one client with `AddRocketMQGrpc`, then add one or more roles to the re
 | Transactional messages | `IGrpcProducer.SendTransactionAsync` | Declare transactional topics and configure a transaction checker before startup. |
 | Explicit receive and settlement | `IGrpcSimpleConsumer` | The application calls `ReceiveAsync`, `AckAsync`, and invisibility APIs. |
 | Automatic dispatch | `IGrpcPushConsumer` | Typed handlers return `Success`, `Failure`, or `Suspend`; regular Push normalizes Suspend to Failure. |
-| Lite automatic dispatch | `IGrpcLitePushConsumer` | Dispatches LiteTopics and honors duration-carrying Suspend results. |
+| Lite automatic dispatch | `IGrpcLitePushConsumer` | Dispatches LiteTopics; FIFO mode honors duration-carrying Suspend results. |
 | Tag and SQL filters | `FilterExpression` | SQL filtering requires matching server configuration. |
 | Runtime subscriptions | `SubscribeAsync` / `UnsubscribeAsync` and Lite equivalents | Supported by the applicable Consumer role. |
 
@@ -253,12 +253,12 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 ```
 
 Do not call `Subscribe` for LitePush. Use `LiteTopics` at startup or `SubscribeLiteAsync` and
-`UnsubscribeLiteAsync` after startup. LitePush retries `Failure` locally and attempts to forward the message to DLQ
+`UnsubscribeLiteAsync` after startup. Non-FIFO LitePush sends `Failure` and `Suspend` through service-owned retry/DLQ
+progression and ignores the Suspend duration. FIFO LitePush retries `Failure` locally and attempts DLQ forwarding
 after the effective attempt limit; if that completion fails, the message remains unsettled and may be redelivered.
-`ConsumeResult.Suspend(duration)` changes invisibility with the caller-selected duration and
-`suspend=true`; the service owns the delivery attempt reported by the next receive. For FIFO LitePush, the same
-suspension also covers unprocessed messages with the same LiteTopic from the current receive batch. Durations shorter
-than 50 milliseconds are rejected. See the
+FIFO `ConsumeResult.Suspend(duration)` changes invisibility with the caller-selected duration and `suspend=true`;
+the service owns the delivery attempt reported by the next receive. The same suspension also covers unprocessed
+messages with the same LiteTopic from the current receive batch. Durations shorter than 50 milliseconds are rejected. See the
 [consumer model](../../docs/en-US/grpc/consumer-model.md) for the complete result matrix.
 
 LitePush deployment requirements:

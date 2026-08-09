@@ -64,7 +64,7 @@ public sealed class RocketMQTestScope
     /// </summary>
     /// <param name="role">The role label included in the group name.</param>
     /// <param name="retryMaxTimes">
-    /// The non-negative maximum number of consumption retries. The integration group uses a one-second customized
+    /// The non-negative maximum number of consumption retries. The integration group uses a 100-millisecond customized
     /// backoff so retry workflows remain bounded.
     /// </param>
     /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
@@ -131,7 +131,7 @@ public sealed class RocketMQTestScope
     /// </summary>
     /// <param name="role">The role label included in the group name.</param>
     /// <param name="retryMaxTimes">
-    /// The non-negative maximum number of consumption retries. The integration group uses a one-second customized
+    /// The non-negative maximum number of consumption retries. The integration group uses a 100-millisecond customized
     /// backoff so retry workflows remain bounded.
     /// </param>
     /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>

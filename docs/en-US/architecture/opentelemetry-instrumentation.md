@@ -90,7 +90,8 @@ are preserved.
 For gRPC, Proxy-managed renewal requested by `ReceiveMessageRequest.AutoRenew` is not a separate client wire operation
 and must not create a client settlement span. A client-issued `ChangeInvisibleDuration` must be classified by intent:
 `renew` when SimpleConsumer explicitly extends a lease, `nack` when a consumer schedules retry-policy redelivery, and
-`suspend` when LitePush sends `suspend=true` with a caller-selected duration. The
+`suspend` when FIFO LitePush sends `suspend=true` with a caller-selected duration. Non-FIFO LitePush Suspend follows
+the retry-policy `nack` path. The
 shared receive engine keeps these intent-specific internal operations separate even though they use the same RPC.
 Proxy-managed handler renewal creates no duplicate client timer, span, or metric. Result tags use fixed outcome names;
 the caller-selected duration is not a metric dimension.

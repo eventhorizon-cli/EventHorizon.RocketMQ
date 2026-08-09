@@ -59,9 +59,10 @@ The small foundational models are declared separately in each protocol namespace
 | Client exception base | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
 gRPC Push and LitePush follow the released Apache Java gRPC listener contract and expose `Success`, `Failure`, and a
-duration-bearing `Suspend`. Regular Push normalizes Suspend to Failure. LitePush honors it with the protocol's
-caller-duration suspend operation; Lite failures retry locally and attempt internal dead-letter forwarding in both
-standard and FIFO modes. If that forwarding completion fails, the message remains unsettled and may be redelivered.
+duration-bearing `Suspend`. Regular Push normalizes Suspend to Failure. Non-FIFO LitePush sends Failure and Suspend
+through service-owned retry/DLQ progression and ignores the Suspend duration. FIFO LitePush uses the protocol's
+caller-duration suspend operation; FIFO failures retry locally and attempt internal dead-letter forwarding. If that
+forwarding completion fails, the message remains unsettled and may be redelivered.
 Classic Remoting follows the concurrent callback model shared by the
 [Java client](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 and the

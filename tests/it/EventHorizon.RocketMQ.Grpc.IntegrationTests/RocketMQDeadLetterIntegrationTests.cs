@@ -184,7 +184,7 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await AssertDeadLetterMessageAsync(fixture, consumerGroup, cancellationToken);
             await consumer.StopAsync(CancellationToken.None);
-            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Local);
+            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Service);
         }
         finally
         {
@@ -364,9 +364,9 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
         {
             if (Encoding.UTF8.GetString(message.Body) == observation.ExpectedBody)
             {
-                // Forward-to-DLQ returns after the Proxy accepts the send-back, while the Proxy performs its internal
-                // acknowledgement asynchronously. A duplicate from that settlement window succeeds so this test
-                // isolates the one configured retry from at-least-once delivery behavior.
+                // A duplicate may still arrive around service-owned DLQ progression or the Proxy's asynchronous
+                // acknowledgement after client forwarding. Succeed after the configured retry so this test isolates
+                // the one-retry policy from at-least-once settlement behavior.
                 var deliveryCount = observation.RecordDelivery(message);
                 return ValueTask.FromResult(deliveryCount <= 2 ? ConsumeResult.Failure : ConsumeResult.Success);
             }

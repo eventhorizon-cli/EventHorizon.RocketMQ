@@ -65,10 +65,11 @@ delivery still uses client-initiated long polling.
 ## Delivery and failure semantics
 
 LitePush uses the same `IGrpcPushMessageHandler` contract and dependency-injection lifetime rules as standard Push.
-`ConsumeResult.Success` acknowledges the message. `Failure` retries the handler locally and attempts to forward the
-message to DLQ after the effective attempt limit; if that completion fails, the message remains unsettled and may be
-redelivered. `ConsumeResult.Suspend(duration)` changes invisibility with `suspend=true`; the
-service owns the delivery attempt reported by the next receive. The minimum duration is 50 milliseconds. For FIFO LitePush, Suspend also covers every
+`ConsumeResult.Success` acknowledges the message. Non-FIFO `Failure` and `Suspend` use service-owned retry/DLQ
+progression, and Suspend ignores its requested duration. FIFO `Failure` retries the handler locally and attempts to
+forward the message to DLQ after the effective attempt limit; if that completion fails, the message remains unsettled
+and may be redelivered. FIFO `ConsumeResult.Suspend(duration)` changes invisibility with `suspend=true`; the service
+owns the delivery attempt reported by the next receive. The minimum duration is 50 milliseconds. It also covers every
 unprocessed same-LiteTopic message from the current receive batch without invoking those sibling handlers. Handler
 exceptions are treated as failures, and failed completion calls can produce duplicate delivery, so processing must be
 idempotent.
@@ -107,7 +108,7 @@ service with a Broker.
 | `SubscriptionSyncInterval` | Periodic reconciliation interval for the complete LiteTopic set. |
 | `MaxConcurrency`, `BatchSize`, and cache limits | Local handler parallelism, receive batch size, and bounded buffering inherited from Push. |
 | `InvisibleDuration` / `ConsumeTimeout` | Initial invisibility and the non-FIFO handler timeout behavior inherited from Push. |
-| `MaxDeliveryAttempts` / `RetryDelay` | Fallback local-attempt limit and retry delay when the Proxy does not supply a policy. Applies to FIFO and non-FIFO LitePush. |
+| `MaxDeliveryAttempts` / `RetryDelay` | Fallback FIFO local-attempt limit and retry delay when the Proxy does not supply a policy. Non-FIFO dead-letter progression remains service-owned. |
 | `LongPollingTimeout` | Maximum server wait for each receive long poll. |
 
 ## Run the sample

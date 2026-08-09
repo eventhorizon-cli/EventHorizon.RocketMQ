@@ -78,13 +78,13 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcLitePushConsumer_Suspend_RedeliversAfterRequestedDuration()
+    public async Task GrpcLitePushConsumer_FifoSuspend_RedeliversAfterRequestedDuration()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var requestedDuration = TimeSpan.FromMilliseconds(100);
+        var requestedDuration = TimeSpan.FromMilliseconds(250);
         var fixture = await registry.GetFixtureAsync(cancellationToken);
         var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
-        var consumerGroup = await scope.CreateLiteConsumerGroupAsync(
+        var consumerGroup = await scope.CreateOrderedLiteConsumerGroupAsync(
             "grpc-lite-suspend-consumer",
             retryMaxTimes: 1,
             cancellationToken: cancellationToken);

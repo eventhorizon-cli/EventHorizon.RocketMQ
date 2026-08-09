@@ -128,7 +128,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushFailure_NonFifoMessage_RetriesLocallyThenDeadLetters()
+    public async Task LitePushFailure_NonFifoMessage_UsesRetryPolicyNack()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var calls = 0;
@@ -143,8 +143,8 @@ public sealed class GrpcPushConsumerTests
             out var engine,
             options =>
             {
-                options.MaxDeliveryAttempts = 2;
-                options.RetryDelay = TimeSpan.FromMilliseconds(1);
+                options.MaxDeliveryAttempts = 1;
+                options.RetryDelay = TimeSpan.FromMilliseconds(125);
             },
             kind: GrpcPushConsumerKind.Lite);
 
@@ -154,14 +154,17 @@ public sealed class GrpcPushConsumerTests
             cancellationToken,
             Message("lite-failure", liteTopic: "lite-orders"));
 
-        Assert.Equal(2, calls);
-        Assert.Single(client.DeadLetterRequests);
-        Assert.Empty(client.ChangeInvisibleRequests);
+        Assert.Equal(1, calls);
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.False(request.Suspend);
+        Assert.Equal(TimeSpan.FromMilliseconds(125), request.InvisibleDuration.ToTimeSpan());
+        Assert.Equal("lite-orders", request.LiteTopic);
+        Assert.Empty(client.DeadLetterRequests);
         Assert.Empty(client.AckRequests);
     }
 
     [Fact]
-    public async Task LitePushSuspend_NonFifoMessage_SuspendsExactDurationWithoutRetryProgression()
+    public async Task LitePushSuspend_NonFifoMessage_UsesRetryPolicyNack()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var requestedDuration = TimeSpan.FromMilliseconds(175);
@@ -170,6 +173,7 @@ public sealed class GrpcPushConsumerTests
             client,
             (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(requestedDuration)),
             out var engine,
+            options => options.RetryDelay = TimeSpan.FromMilliseconds(125),
             kind: GrpcPushConsumerKind.Lite);
 
         await RunConsumeLoopAsync(
@@ -179,8 +183,8 @@ public sealed class GrpcPushConsumerTests
             Message("lite-suspend", liteTopic: "lite-orders"));
 
         var request = Assert.Single(client.ChangeInvisibleRequests);
-        Assert.True(request.Suspend);
-        Assert.Equal(requestedDuration, request.InvisibleDuration.ToTimeSpan());
+        Assert.False(request.Suspend);
+        Assert.Equal(TimeSpan.FromMilliseconds(125), request.InvisibleDuration.ToTimeSpan());
         Assert.Equal("lite-orders", request.LiteTopic);
         Assert.Empty(client.AckRequests);
         Assert.Empty(client.DeadLetterRequests);
@@ -994,7 +998,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task Stop_LiteNonFifoRetryDelay_InterruptsImmediately()
+    public async Task Stop_LiteFifoRetryDelay_InterruptsImmediately()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var queue = Queue();
@@ -1002,6 +1006,7 @@ public sealed class GrpcPushConsumerTests
         var receiveCalls = 0;
         var client = new FakeGrpcClient
         {
+            ServerSettings = FifoServerSettings(),
             QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
             ReceiveHandler = async (_, _, receiverCancellationToken) =>
             {
@@ -1009,7 +1014,10 @@ public sealed class GrpcPushConsumerTests
                 {
                     return
                     [
-                        new Proto.ReceiveMessageResponse { Message = ProtoMessage("lite-non-fifo") },
+                        new Proto.ReceiveMessageResponse
+                        {
+                            Message = ProtoMessage("lite-fifo", liteTopic: "lite-orders")
+                        },
                         ReceiveStatus(Proto.Code.Ok)
                     ];
                 }
@@ -1041,7 +1049,7 @@ public sealed class GrpcPushConsumerTests
 
         Assert.True(
             Stopwatch.GetElapsedTime(started) < TimeSpan.FromMilliseconds(750),
-            "Stopping the Lite consumer waited for the local retry delay to elapse.");
+            "Stopping the FIFO Lite consumer waited for the local retry delay to elapse.");
         Assert.Empty(client.DeadLetterRequests);
         Assert.Equal(0, consumer.CachedMessageBytes);
     }

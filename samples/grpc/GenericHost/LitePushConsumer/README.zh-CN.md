@@ -58,12 +58,11 @@ LiteTopic 订阅时生效。
 ## 投递与失败语义
 
 LitePush 与标准 Push 使用同一个 `IGrpcPushMessageHandler` 契约和依赖注入生命周期规则。
-`ConsumeResult.Success` 会确认消息。`Failure` 在本地重试 handler，达到有效次数上限后尝试转发 DLQ；转发结算失败时消息保持
-未结算，仍可能再次投递。
-`ConsumeResult.Suspend(duration)` 使用 `suspend=true` 和指定时长修改不可见时间；下一次 receive 返回的投递次数由
-服务端负责，且最短时长为 50 毫秒。对于 FIFO
-LitePush，Suspend 还会覆盖当前 receive batch 中尚未处理的同 LiteTopic 消息，并跳过这些消息的 handler。handler
-异常会被当作失败结果，完成操作失败也可能造成重复投递，因此处理逻辑必须幂等。
+`ConsumeResult.Success` 会确认消息。非 FIFO `Failure` 与 `Suspend` 由服务端推进重试和死信，并忽略 Suspend 指定的时长。
+FIFO `Failure` 在本地重试 handler，达到有效次数上限后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。
+FIFO `ConsumeResult.Suspend(duration)` 使用 `suspend=true` 和指定时长修改不可见时间；下一次 receive 返回的投递次数由
+服务端负责，且最短时长为 50 毫秒。它还会覆盖当前 receive batch 中尚未处理的同 LiteTopic 消息，并跳过这些消息的
+handler。handler 异常会被当作失败结果，完成操作失败也可能造成重复投递，因此处理逻辑必须幂等。
 
 损坏的消息不会进入应用 handler。客户端会重试非 FIFO 损坏消息；FIFO 损坏消息会在释放同一 LiteTopic 的下一条消息前
 尝试转发 DLQ。转发结算失败时消息保持未结算，仍可能再次投递。
@@ -96,7 +95,7 @@ LitePush 要求客户端、Proxy、Broker、Topic 和 consumer group 的配置�
 | `SubscriptionSyncInterval` | 定期协调完整 LiteTopic 集合的间隔。 |
 | `MaxConcurrency`、`BatchSize` 和缓存限制 | 从 Push 继承的本地 handler 并发、Receive 批量和有界缓冲。 |
 | `InvisibleDuration` / `ConsumeTimeout` | 从 Push 继承的初始不可见时长和非 FIFO handler 超时行为。 |
-| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供策略时使用的本地尝试次数与重试延迟回退值，适用于 FIFO 与非 FIFO LitePush。 |
+| `MaxDeliveryAttempts` / `RetryDelay` | Proxy 没有提供策略时使用的 FIFO 本地尝试次数与重试延迟回退值；非 FIFO 的死信推进仍由服务端负责。 |
 | `LongPollingTimeout` | 每次 Receive 长轮询允许服务端等待的最长时间。 |
 
 ## 运行示例

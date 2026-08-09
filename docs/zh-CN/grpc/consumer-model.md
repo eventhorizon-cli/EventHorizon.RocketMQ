@@ -93,7 +93,7 @@ handler 可以返回 `ConsumeResult.Success`、`ConsumeResult.Failure` 或
 | --- | --- | --- |
 | 普通非 FIFO Push | 按生效的重试策略修改不可见时间，由服务端推进重试与死信。 | 转换为 `Failure`，忽略指定时长。 |
 | 普通 FIFO Push | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。 | 转换为 `Failure`，忽略指定时长。 |
-| 非 FIFO LitePush | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。 | 使用指定时长、`lite_topic` 和 `suspend=true` 调用 `ChangeInvisibleDuration`。 |
+| 非 FIFO LitePush | 按生效的重试策略修改不可见时间，由服务端推进重试与死信。 | 与 `Failure` 一样走重试策略 NACK，忽略指定时长。 |
 | FIFO LitePush | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递；FIFO key 为 `LiteTopic`。 | 暂停当前消息，并跳过同一 receive batch 中尚未处理的同 `LiteTopic` 消息；其他 LiteTopic 继续处理。 |
 
 可选的 `MessageGroup` 或 `LiteTopic` 缺失时，服务端下发的 FIFO 设置仍是最终依据。这类消息会使用物理 queue fallback
@@ -105,10 +105,11 @@ key，对应 Java 的空 FIFO group，不会降级到非 FIFO 结算。对于 FI
 [`LiteStandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteStandardConsumeService.java)
 和
 [`LiteFifoConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteFifoConsumeService.java)
-的职责划分一致。协议已经包含 `suspend` 标志。Lite suspend 不会确认消息、选择重试策略的间隔、暂停无关
+的职责划分一致。协议已经包含 `suspend` 标志，但只有 FIFO LitePush 会采用调用方指定的时长并发送该标志；非 FIFO
+LitePush 会把 Suspend 当作一次未成功的标准投递，使用重试策略的间隔。FIFO Suspend 不会确认消息、暂停无关
 LiteTopic，也不会向 handler 暴露内部死信 RPC。该标志要求服务端不要把这次不可见时间变更计作重试；但后续 receive
 返回的 `DeliveryAttempt` 由服务端生成，客户端不会自行覆盖或保证其数值不变。OpenTelemetry 将按重试策略安排的
-重新投递记录为 `nack`，将调用方指定时长的 Lite 暂停记录为 `suspend`。只有业务处理真正持久化后才应返回
+重新投递记录为 `nack`，将 FIFO LitePush 使用调用方时长的暂停记录为 `suspend`。只有业务处理真正持久化后才应返回
 `Success`；网络超时、进程终止、结算失败，或重新投递与忽略取消的 handler 调用重叠，都可能造成重复投递，因此
 handler 必须保持幂等。
 

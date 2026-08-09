@@ -52,9 +52,9 @@ Package 版本和发布依赖。
 | 客户端异常基类 | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
 gRPC Push 与 LitePush 遵循 Apache Java 正式版的 gRPC listener 契约，公开 `Success`、`Failure` 和携带时长的
-`Suspend`。普通 Push 会把 Suspend 转换为 Failure；LitePush 则使用协议中由调用方指定时长的 suspend 操作。
-LitePush 的 Failure 在标准和 FIFO 模式下都由客户端本地重试，并尝试通过内部 RPC 转发死信；转发结算失败时消息保持
-未结算状态，仍可能再次投递。classic Remoting 遵循
+`Suspend`。普通 Push 会把 Suspend 转换为 Failure；非 FIFO LitePush 的 Failure 和 Suspend 都由服务端推进重试与死信，
+并忽略 Suspend 指定的时长。FIFO LitePush 才使用协议中由调用方指定时长的 suspend 操作；FIFO Failure 在客户端本地
+重试，并尝试通过内部 RPC 转发死信。转发结算失败时消息保持未结算状态，仍可能再次投递。classic Remoting 遵循
 [Java 客户端](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 与[Go 客户端](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205)
 共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`。只有内部 PULL 路径会把负数

@@ -55,9 +55,10 @@ that would be less clear with a mock.
 Focused consumer-result unit coverage includes:
 
 - gRPC regular Push normalizes `Suspend` to `Failure` (service retry/NACK for non-FIFO and local retry for FIFO);
-  LitePush sends the exact caller duration with `suspend=true`, suspends unprocessed same-`LiteTopic` siblings in a
-  FIFO receive batch, keeps other LiteTopics independent, and preserves FIFO behavior through the physical-queue
-  fallback when `MessageGroup` or `LiteTopic` is absent;
+  non-FIFO LitePush sends both `Failure` and `Suspend` through service retry/NACK, while FIFO LitePush sends the exact
+  caller duration with `suspend=true`, suspends unprocessed same-`LiteTopic` siblings in one receive batch, keeps other
+  LiteTopics independent, and preserves FIFO behavior through the physical-queue fallback when `MessageGroup` or
+  `LiteTopic` is absent;
 - gRPC local retry cancellation stops retry delays promptly, while completion failures leave the message unresolved,
   preserve FIFO blocking, and cancel cleanly during shutdown;
 - Remoting orderly PULL clamps caller and configured suspension to 10 milliseconds through 30 seconds, resets the
@@ -154,11 +155,13 @@ LitePull and default Push workflows do not depend on Broker-side POP configurati
 the explicit negative-delay request and retry-policy exhaustion.
 
 The gRPC DLQ integration suite has four workflows: regular FIFO Push, regular non-FIFO Push, non-FIFO LitePush, and
-FIFO LitePush. Each configures one retry (`MaxDeliveryAttempts=2`) and a `RetryDelay` of 100 milliseconds, then
-verifies the DLQ message and the ownership split: regular non-FIFO progression is service-owned, while FIFO and LitePush
-use client attempts to forward to DLQ. A forwarding/completion failure is treated as unresolved rather than as an ACK.
-The Lite suspend workflow separately requests exactly 100 milliseconds, verifies that redelivery is not early and that
-the receipt is replaced, and deliberately makes no numeric `DeliveryAttempt` assertion because that value is service-owned.
+FIFO LitePush. Each configures one retry at its owning boundary: FIFO uses `MaxDeliveryAttempts=2`, while non-FIFO
+groups use Broker `retryMaxTimes=1`; test retry intervals are 100 milliseconds. The suite verifies the DLQ message and
+the ownership split: regular and Lite non-FIFO progression is service-owned, while FIFO Push and FIFO LitePush use
+client attempts to forward to DLQ. A forwarding/completion failure is treated as unresolved rather than as an ACK.
+The FIFO Lite suspend workflow separately requests exactly 250 milliseconds, verifies that redelivery is not early
+and that the receipt is replaced, and deliberately makes no numeric `DeliveryAttempt` assertion because that value is
+service-owned.
 
 The Remoting PULL DLQ integration suite covers direct negative-delay send-back plus concurrent, `MessageGroup` FIFO,
 clustered orderly, and broadcasting orderly retry exhaustion. Retry-exhaustion cases use one retry

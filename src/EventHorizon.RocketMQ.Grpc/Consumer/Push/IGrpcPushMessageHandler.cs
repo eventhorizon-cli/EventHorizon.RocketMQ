@@ -23,9 +23,9 @@ namespace EventHorizon.RocketMQ.Grpc.Consumer.Push;
 /// <remarks>
 /// A handler registered with <see cref="ServiceLifetime.Singleton"/> can receive concurrent calls and must be
 /// thread-safe. Scoped and transient handlers are resolved for each message handling attempt. Regular Push converts
-/// <see cref="ConsumeResult.Suspend(TimeSpan)"/> to <see cref="ConsumeResult.Failure"/>. LitePush honors Suspend by
-/// sending the protocol suspend flag; a later delivery-attempt value remains service-owned. FIFO LitePush may skip
-/// later same-LiteTopic handlers from the same receive batch.
+/// <see cref="ConsumeResult.Suspend(TimeSpan)"/> to <see cref="ConsumeResult.Failure"/>. Non-FIFO LitePush ignores
+/// its duration and uses a retry-policy NACK. FIFO LitePush sends the protocol suspend flag; a later delivery-attempt
+/// value remains service-owned, and later same-LiteTopic handlers from the same receive batch may be skipped.
 /// </remarks>
 public interface IGrpcPushMessageHandler
 {

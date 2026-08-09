@@ -13,9 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Diagnostics;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Offset;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Receive;
 using EventHorizon.RocketMQ.Remoting.Instrumentation;
 using EventHorizon.RocketMQ.Remoting.Protocol;
 using EventHorizon.RocketMQ.Remoting.Tests.Consumer.Coordination.Rebalance;
@@ -29,6 +32,469 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push.Pull.Orderly;
 
 public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestSupport
 {
+    [Theory]
+    [InlineData(-1, 10)]
+    [InlineData(0, 10)]
+    [InlineData(9, 10)]
+    [InlineData(10, 10)]
+    [InlineData(30_000, 30_000)]
+    [InlineData(30_001, 30_000)]
+    public void ResolveSuspendDuration_CallerValue_ClampsToJavaRange(
+        int requestedMilliseconds,
+        int expectedMilliseconds)
+    {
+        var result = OrderlyPullReceiveLoop.ResolveSuspendDuration(
+            TimeSpan.FromMilliseconds(requestedMilliseconds),
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(expectedMilliseconds), result);
+    }
+
+    [Fact]
+    public void ResolveSuspendDuration_NoCallerValue_UsesConfiguredDefault()
+    {
+        var result = OrderlyPullReceiveLoop.ResolveSuspendDuration(
+            requested: null,
+            TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(250), result);
+    }
+
+    [Theory]
+    [InlineData(-1, 10)]
+    [InlineData(0, 10)]
+    [InlineData(9, 10)]
+    [InlineData(10, 10)]
+    [InlineData(30_000, 30_000)]
+    [InlineData(30_001, 30_000)]
+    public void ResolveSuspendDuration_ConfiguredValue_ClampsToJavaRange(
+        int configuredMilliseconds,
+        int expectedMilliseconds)
+    {
+        var result = OrderlyPullReceiveLoop.ResolveSuspendDuration(
+            requested: null,
+            TimeSpan.FromMilliseconds(configuredMilliseconds));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(expectedMilliseconds), result);
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_RetryWithContextDuration_UsesCallerOverride()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = new List<long>();
+        var contexts = new List<RemotingPushConsumeContext>();
+        var calls = 0;
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-suspend-override")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "suspend", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 3,
+            RetryDelay = TimeSpan.FromMilliseconds(10),
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (_, context, _) =>
+        {
+            contexts.Add(context);
+            lock (attempts)
+            {
+                attempts.Add(Stopwatch.GetTimestamp());
+            }
+
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(150);
+                return ValueTask.FromResult(ConsumeResult.Retry);
+            }
+
+            secondAttempt.TrySetResult();
+            return ValueTask.FromResult(ConsumeResult.Success);
+        });
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-suspend-override");
+
+        await consumer.StartAsync(cancellationToken);
+        await secondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(2, calls);
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(2, contexts.Count);
+        Assert.NotSame(contexts[0], contexts[1]);
+        Assert.Equal(TimeSpan.FromMilliseconds(150), contexts[0].SuspendCurrentQueueDuration);
+        Assert.Null(contexts[1].SuspendCurrentQueueDuration);
+        Assert.True(
+            Stopwatch.GetElapsedTime(attempts[0], attempts[1]) >= TimeSpan.FromMilliseconds(120),
+            "The orderly retry ignored the caller-selected suspension duration.");
+    }
+
+    [Fact]
+    public async Task OrderlyBroadcastConsumer_RetryBeforeDeliveryLimit_RetriesLocally()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var offsetPath = Path.Combine(
+            Path.GetTempPath(),
+            $"rocketmq-orderly-broadcast-suspend-{Guid.NewGuid():N}.json");
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-broadcast-suspend")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "broadcast", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumerMode = ConsumerMode.Broadcasting,
+            LocalOffsetStorePath = offsetPath,
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 2,
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (_, _, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                return ValueTask.FromResult(ConsumeResult.Retry);
+            }
+
+            secondAttempt.TrySetResult();
+            return ValueTask.FromResult(ConsumeResult.Success);
+        });
+        options.Subscribe("orders");
+        try
+        {
+            await using var consumer = CreateRemotingPushConsumer(
+                options,
+                CreateRouteServiceMock().Object,
+                remoting,
+                "orderly-broadcast-suspend");
+
+            await consumer.StartAsync(cancellationToken);
+            await secondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            await consumer.StopAsync(cancellationToken);
+
+            Assert.Equal(2, calls);
+            Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+        }
+        finally
+        {
+            File.Delete(offsetPath);
+        }
+    }
+
+    [Fact]
+    public async Task OrderlyBroadcastConsumer_RetryAtDeliveryLimit_SendsBackAndAdvances()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var offsetPath = Path.Combine(
+            Path.GetTempPath(),
+            $"rocketmq-orderly-broadcast-terminal-{Guid.NewGuid():N}.json");
+        var terminalAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-broadcast-terminal")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "broadcast-terminal", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumerMode = ConsumerMode.Broadcasting,
+            LocalOffsetStorePath = offsetPath,
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 2,
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (_, _, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 2)
+            {
+                terminalAttempt.TrySetResult();
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
+        options.Subscribe("orders");
+        try
+        {
+            await using var consumer = CreateRemotingPushConsumer(
+                options,
+                CreateRouteServiceMock().Object,
+                remoting,
+                "orderly-broadcast-terminal");
+
+            await consumer.StartAsync(cancellationToken);
+            await terminalAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+            var queue = new RemotingConsumerQueue("orders", "broker-a", 0);
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+            long? persistedOffset;
+            do
+            {
+                var store = new BroadcastOffsetStore(offsetPath, "unused-client", "unused-group");
+                persistedOffset = await store.ReadAsync(queue, cancellationToken);
+                if (persistedOffset != 1)
+                {
+                    await Task.Delay(10, cancellationToken);
+                }
+            }
+            while (persistedOffset != 1 && DateTimeOffset.UtcNow < deadline);
+
+            await consumer.StopAsync(cancellationToken);
+
+            Assert.Equal(2, calls);
+            Assert.Equal(1, persistedOffset);
+            var sendBack = Assert.Single(
+                remoting.Requests,
+                static request => request.Code == RequestCode.ConsumerSendMsgBack);
+            Assert.Equal(-1, Convert.ToInt32(sendBack.ExtFields["delayLevel"]));
+        }
+        finally
+        {
+            File.Delete(offsetPath);
+        }
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_DeadLetterSendBackFails_RetriesCurrentMessageWithCallerDuration()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = new List<long>();
+        var calls = 0;
+        var sendBackCalls = 0;
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-send-back-retry")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "send-back-retry", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            },
+            SendBackHandler = (_, _) => Interlocked.Increment(ref sendBackCalls) == 1
+                ? Task.FromException<RemotingCommand>(new IOException("send-back unavailable"))
+                : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess })
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 1,
+            RetryDelay = TimeSpan.FromMilliseconds(10),
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (_, context, _) =>
+        {
+            attempts.Add(Stopwatch.GetTimestamp());
+            context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(150);
+            if (Interlocked.Increment(ref calls) == 2)
+            {
+                secondAttempt.TrySetResult();
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-send-back-retry");
+
+        await consumer.StartAsync(cancellationToken);
+        await secondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        while (!remoting.UpdatedOffsets.Any(static update => update.Topic == "orders" && update.Offset == 1))
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(2, calls);
+        Assert.Equal(2, sendBackCalls);
+        Assert.True(
+            Stopwatch.GetElapsedTime(attempts[0], attempts[1]) >= TimeSpan.FromMilliseconds(120),
+            "The failed send-back did not retain the caller-selected orderly suspension duration.");
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_OneQueueSuspends_OtherQueueContinuesAndStopCancelsWait()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var firstQueueAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondQueueHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstQueueCalls = 0;
+        var delivered = new int[2];
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-queue-isolation")
+        {
+            PullHandler = async (request, token) =>
+            {
+                var queueId = Convert.ToInt32(request.ExtFields["queueId"]);
+                if (Interlocked.Exchange(ref delivered[queueId], 1) != 0)
+                {
+                    return await WaitForCanceledPullAsync(token);
+                }
+
+                return PullSuccess(
+                    CreateMessageRecord(
+                        "orders",
+                        $"queue-{queueId}",
+                        messageGroup: null,
+                        queueOffset: 0,
+                        commitLogOffset: 1_000 + queueId,
+                        queueId: queueId),
+                    nextOffset: 1);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 2,
+            MaxDeliveryAttempts = 3,
+            OrderlySuspendDuration = TimeSpan.FromSeconds(30),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (messages, context, _) =>
+        {
+            var message = Assert.Single(messages);
+            if (message.QueueId == 0)
+            {
+                Interlocked.Increment(ref firstQueueCalls);
+                context.SuspendCurrentQueueDuration = TimeSpan.FromSeconds(30);
+                firstQueueAttempted.TrySetResult();
+                return ValueTask.FromResult(ConsumeResult.Retry);
+            }
+
+            secondQueueHandled.TrySetResult();
+            return ValueTask.FromResult(ConsumeResult.Success);
+        });
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock(queueCount: 2).Object,
+            remoting,
+            "orderly-queue-isolation");
+
+        await consumer.StartAsync(cancellationToken);
+        await Task.WhenAll(firstQueueAttempted.Task, secondQueueHandled.Task)
+            .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(1, Volatile.Read(ref firstQueueCalls));
+        await consumer.StopAsync(cancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+    }
+
+    [Fact]
+    public async Task OrderlyConsumer_HandlerThrowsAfterSettingOverride_PreservesCallerOverride()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = new List<long>();
+        var calls = 0;
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-exception-fallback")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "exception", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 3,
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (_, context, _) =>
+        {
+            attempts.Add(Stopwatch.GetTimestamp());
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(150);
+                throw new InvalidOperationException("handler failed");
+            }
+
+            secondAttempt.TrySetResult();
+            return ValueTask.FromResult(ConsumeResult.Success);
+        });
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-exception-fallback");
+
+        await consumer.StartAsync(cancellationToken);
+        await secondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal(2, calls);
+        Assert.Equal(2, attempts.Count);
+        Assert.True(
+            Stopwatch.GetElapsedTime(attempts[0], attempts[1]) >= TimeSpan.FromMilliseconds(120),
+            "The failed handler's context override was discarded from the synthesized retry result.");
+    }
+
     [Fact]
     public async Task FifoRetry_SameGroupPredecessorAndBatchContext_KeepsSuccessorBlocked()
     {
@@ -73,6 +539,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
                 {
                     if (Interlocked.Increment(ref firstCalls) == 1)
                     {
+                        context.SuspendCurrentQueueDuration = TimeSpan.FromSeconds(30);
                         return ConsumeResult.Retry;
                     }
 

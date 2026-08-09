@@ -29,6 +29,27 @@ public sealed class RemotingPushConsumeContextTests
     }
 
     [Fact]
+    public void SuspendCurrentQueueDuration_NewContext_UsesConsumerDefault()
+    {
+        var context = new RemotingPushConsumeContext();
+
+        Assert.Null(context.SuspendCurrentQueueDuration);
+        Assert.Equal(TimeSpan.FromSeconds(1), new RemotingPushConsumerOptions().OrderlySuspendDuration);
+    }
+
+    [Fact]
+    public void SuspendCurrentQueueDuration_AssignedValue_PreservesCallerOverride()
+    {
+        var duration = TimeSpan.FromMilliseconds(250);
+        var context = new RemotingPushConsumeContext
+        {
+            SuspendCurrentQueueDuration = duration
+        };
+
+        Assert.Equal(duration, context.SuspendCurrentQueueDuration);
+    }
+
+    [Fact]
     public void AckIndex_CompleteBatchAcknowledgement_Defaults()
     {
         var context = new RemotingPushConsumeContext();

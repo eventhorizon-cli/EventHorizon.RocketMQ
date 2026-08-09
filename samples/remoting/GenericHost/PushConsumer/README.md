@@ -150,7 +150,7 @@ message age is strictly greater than twice the final POP delay without implicitl
 
 Every PULL `PullProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
 queue or Broker, cannot skip an earlier unresolved queue offset. Pulling may run ahead of handler completion. In
-clustering mode, the Broker-committed offset cannot run ahead of successful settlement; broadcasting instead treats
+clustering mode, the Broker-committed offset cannot run ahead of successful settlement; concurrent broadcasting treats
 unavailable retry and dead-letter outcomes as locally resolved drops, as described below.
 
 In the clustered concurrent `PullProcessQueue` path, failed retry/dead-letter settlement is retried locally after
@@ -178,9 +178,11 @@ every assigned physical queue. In clustering mode, orderly consumption acquires 
 cannot overtake it. Queue locks preserve order but do not change at-least-once delivery, so orderly handlers must also
 be idempotent.
 
-`Broadcasting` assigns every readable queue to every Consumer instance and stores offsets locally. It has no
-group-owned Broker retry or dead-letter flow: `Retry` and an unacknowledged batch tail are dropped while the local
-offset advances. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
+`Broadcasting` assigns every readable queue to every Consumer instance and stores offsets locally. Concurrent delivery
+has no group-owned Broker retry or dead-letter flow: `Retry` and an unacknowledged batch tail are dropped while the
+local offset advances. Orderly broadcasting instead retries the current message locally and attempts DLQ send-back at
+`MaxDeliveryAttempts`; send-back failure retains the message and offset and uses the current suspension duration before
+calling the handler again. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
 
 For a normal PULL queue, `InitialPosition` supplies a starting offset only when the active offset store has no
 value: the Broker group offset in clustering mode, or the instance's local offset file in broadcasting mode. It does

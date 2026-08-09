@@ -40,5 +40,10 @@ public enum ConsumeResult
     /// <summary>
     /// Indicates that message processing should be retried.
     /// </summary>
+    /// <remarks>
+    /// An orderly PULL handler may select the next local retry delay through
+    /// <see cref="Push.RemotingPushConsumeContext.SuspendCurrentQueueDuration"/>. Other delivery modes ignore that
+    /// property and retain their protocol-specific retry behavior.
+    /// </remarks>
     Retry
 }

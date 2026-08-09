@@ -39,8 +39,8 @@ using RemotingMessage = EventHorizon.RocketMQ.Remoting.Producer.Message;
 | Lite 消息 | `Message.LiteTopic` | 需要 Proxy 和 Broker 提供兼容支持。 |
 | 事务消息 | `IGrpcProducer.SendTransactionAsync` | 在启动前声明事务 topic，并配置事务检查器。 |
 | 显式接收和结算 | `IGrpcSimpleConsumer` | 应用调用 `ReceiveAsync`、`AckAsync` 和不可见时间 API。 |
-| 自动分发 | `IGrpcPushConsumer` | typed handler 返回 `Success` 或 `Failure`。 |
-| Lite 自动分发 | `IGrpcLitePushConsumer` | 在一个已配置的 bind topic 下分发 `LiteTopics`。 |
+| 自动分发 | `IGrpcPushConsumer` | typed handler 返回 `Success`、`Failure` 或 `Suspend`；普通 Push 会把 Suspend 归一化为 Failure。 |
+| Lite 自动分发 | `IGrpcLitePushConsumer` | 分发 LiteTopic；FIFO 模式支持携带时长的 Suspend 结果。 |
 | Tag 和 SQL 过滤器 | `FilterExpression` | SQL 过滤需要匹配的服务端配置。 |
 | 运行时订阅 | `SubscribeAsync` / `UnsubscribeAsync` 及 Lite 等效 API | 由适用的 Consumer 角色支持。 |
 
@@ -213,8 +213,11 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 }
 ```
 
-返回 `ConsumeResult.Success` 表示确认消息；返回 `Failure` 后，由当前生效的重试策略安排再次投递。由于可能发生
-重试和重复投递，handler 应保持幂等。`SubscribeAsync` 和 `UnsubscribeAsync` 可在运行时更新普通 Push 订阅。
+返回 `ConsumeResult.Success` 表示确认消息，返回 `Failure` 则按生效的重试策略处理。普通非 FIFO Push 由服务端推进
+重试与死信；FIFO Push 在本地重试，耗尽后由客户端尝试转发 DLQ。若该结算失败，消息会保持未结算状态，仍可能再次投递。
+普通 Push 会把 `ConsumeResult.Suspend(duration)` 当作 `Failure`，并忽略指定时长。只有业务处理已经持久化后才能返回
+`Success`；重试、结算失败和重复投递都可能发生，因此 handler 必须保持幂等。`SubscribeAsync` 和
+`UnsubscribeAsync` 可在运行时更新普通 Push 订阅。
 
 ## LitePushConsumer
 
@@ -235,7 +238,12 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 ```
 
 LitePush 不要调用 `Subscribe`。启动时使用 `LiteTopics`，启动后使用 `SubscribeLiteAsync` 和
-`UnsubscribeLiteAsync`。`IGrpcLitePushConsumer` 使用与 PushConsumer 相同的 handler 结果。
+`UnsubscribeLiteAsync`。非 FIFO LitePush 的 `Failure` 与 `Suspend` 都由服务端推进重试和死信，并忽略 Suspend 指定的
+时长。FIFO LitePush 会在本地重试 `Failure`，达到有效次数上限后尝试转发 DLQ；如果该结算失败，消息会保持未结算状态，
+仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 使用调用方指定的时长和 `suspend=true` 修改不可见时间；
+下一次 receive 返回的投递次数由服务端负责，同时还会暂停当前 receive batch 中尚未处理的同 LiteTopic 消息。时长不能
+短于 50 毫秒。完整结果矩阵参见
+[Consumer 模型](../../docs/zh-CN/grpc/consumer-model.md)。
 
 LitePush 部署要求：
 

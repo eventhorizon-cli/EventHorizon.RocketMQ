@@ -57,13 +57,14 @@ Generic Host 集成会为已注册角色调用 `StartAsync` 和 `StopAsync`。�
 | 结果 | SDK 行为 |
 | --- | --- |
 | `ConsumeResult.Success` | 确认消息。只有业务副作用已经持久化后才能返回该结果。 |
-| `ConsumeResult.Failure` | 由当前生效的重试策略安排再次投递。 |
+| `ConsumeResult.Failure` | 非 FIFO 投递由服务端推进重试；FIFO 投递在本地重试，耗尽后尝试转发 DLQ。转发结算失败时消息保持未结算，仍可能再次投递。 |
+| `ConsumeResult.Suspend(duration)` | 归一化为 `Failure`；普通 Push 不使用指定时长。 |
 
-未处理的 handler 异常会被当作 `Failure`。如果确认或重试调度失败，消息可能再次投递。因此，即使 handler 返回
-`Success`，处理逻辑仍必须幂等。
+未处理的 handler 异常会被当作 `Failure`。如果确认、重试调度或 DLQ 转发失败，消息可能再次投递。只有业务处理已经
+持久化后才能返回 `Success`，因此即使 handler 返回 `Success`，处理逻辑仍必须保持幂等。
 
-损坏的消息不会进入 `IGrpcPushMessageHandler`。非 FIFO 损坏消息会重新变为可投递状态；FIFO 损坏消息会在释放同一
-message group 的下一条消息前转入死信队列。
+损坏的消息不会进入 `IGrpcPushMessageHandler`。非 FIFO 损坏消息会重新变为可投递状态；对于 FIFO 损坏消息，客户端会在
+释放同一 message group 的下一条消息前尝试转发 DLQ。转发结算失败时消息保持未结算，仍可能再次投递。
 
 Push 请求会设置 `AutoRenew=true`，由兼容的 Proxy 在 handler 运行期间续期 receipt；.NET 客户端不会再启动一套续期
 定时器。对于非 FIFO 消息，`ConsumeTimeout` 限制 dispatcher 等待 handler 的时长：超时后会取消 handler token、

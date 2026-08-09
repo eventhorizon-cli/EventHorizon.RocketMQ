@@ -34,8 +34,9 @@ public interface IRemotingPushMessageHandler
     /// </summary>
     /// <param name="messages">The messages to process, in their delivery order.</param>
     /// <param name="context">
-    /// The acknowledgement settings for the current concurrent non-FIFO batch. FIFO <c>MessageGroup</c> and
-    /// orderly singleton deliveries ignore these settings.
+    /// Per-attempt delivery controls. Concurrent non-FIFO PULL uses acknowledgement and Broker-delay settings;
+    /// orderly PULL uses only <see cref="RemotingPushConsumeContext.SuspendCurrentQueueDuration"/>. POP and FIFO
+    /// <c>MessageGroup</c> delivery ignore the suspension duration.
     /// </param>
     /// <param name="cancellationToken">
     /// The token that cancels processing when the consumer stops and, for concurrent clustered non-FIFO batches,

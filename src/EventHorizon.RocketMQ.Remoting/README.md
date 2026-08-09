@@ -305,12 +305,22 @@ records the source-level Java and Broker references.
 `ConsumeMessageBatchSize` controls the largest list passed to one handler call. Return `Success` or `Retry`. For a
 concurrent non-FIFO batch, set `RemotingPushConsumeContext.AckIndex` before returning `Success` to acknowledge only a
 contiguous prefix. `DelayLevelWhenNextConsume` controls the next retry delay. For PULL reception, set it to a negative
-value before returning `Retry` to request direct dead-letter send-back. For POP reception, the .NET adapter normalizes a
-negative value to level `0` and follows the normal Java-compatible invisibility retry schedule. Its default value is `0`;
-PULL uses Broker retry timing for that value, while POP applies the Java schedule. At `MaxDeliveryAttempts`, PULL retry
-uses classic dead-letter send-back. POP retry follows the official Java age policy: it continues with age-selected
-invisibility changes and ACKs only after the message is older than twice the final POP retry delay, without implicit
-dead-letter forwarding.
+value before returning `Retry` to request direct dead-letter send-back. If that send-back completion fails, the offset
+remains unresolved and the message may be redelivered. For POP reception, the .NET adapter normalizes a negative value
+to level `0` and follows the normal Java-compatible invisibility retry schedule. Its default value is `0`; PULL uses
+Broker retry timing for that value, while POP applies the Java schedule. At `MaxDeliveryAttempts`, clustered PULL and
+orderly broadcasting attempt classic dead-letter send-back; a failed completion leaves the offset unresolved and the
+message may be redelivered. Concurrent broadcasting cannot use retry or DLQ send-back. POP retry follows the official Java age policy: it continues
+with age-selected invisibility changes and ACKs only after the message is older than twice the final POP retry delay,
+without implicit dead-letter forwarding.
+
+For orderly PULL delivery (`ConsumeOrderly = true`), set `RemotingPushConsumeContext.SuspendCurrentQueueDuration` before
+returning `Retry` to pause only that physical queue before its next local attempt. When unset, the consumer uses
+`OrderlySuspendDuration`, which defaults to one second; effective values are clamped to 10 milliseconds through 30
+seconds, and each handler invocation receives a fresh context. Concurrent PULL, POP, and `MessageGroup` FIFO delivery
+ignore this override. In both clustered and broadcasting orderly modes, reaching `MaxDeliveryAttempts` attempts to
+forward the message to the dead-letter queue. If send-back fails, the current message remains local, waits for the
+current attempt's suspension duration, and invokes the handler again without advancing the offset.
 
 `ServiceLifetime.Scoped` or `Transient` creates a fresh async scope for each handling attempt. A singleton handler
 must be thread-safe. Handlers must honor cancellation and remain idempotent because delivery is at least once.

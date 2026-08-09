@@ -109,12 +109,13 @@ same Broker physical queue can be grouped and those batches can run in parallel 
 index of the final accepted message before returning `Success`; the client confirms that contiguous prefix and retries
 only its tail. `Retry` applies to every message regardless of `AckIndex`. The context also exposes
 `DelayLevelWhenNextConsume` for the failed batch or unacknowledged tail: for PULL reception, `0` delegates retry timing
-to the Broker, a positive value selects a RocketMQ delay level, and a negative value requests direct dead-lettering.
-When a Push assignment uses POP, the .NET adapter normalizes a negative value to level `0` and follows the normal
+to the Broker, a positive value selects a RocketMQ delay level, and a negative value requests that the client attempt
+direct dead-lettering through PULL send-back. If that completion fails, the offset remains unresolved and the message may be
+redelivered. When a Push assignment uses POP, the .NET adapter normalizes a negative value to level `0` and follows the normal
 Java-compatible invisibility retry schedule, including for level `0`; POP never interprets a negative value as direct
 dead-lettering. This two-result contract matches the classic Java and Go concurrent consumers; dead-lettering is a
-retry-policy terminal choice rather than a separate handler result. Broadcasting does not have a Broker retry or
-dead-letter path, so an unacknowledged tail is skipped.
+retry-policy terminal choice rather than a separate handler result. Concurrent broadcasting does not have a Broker
+retry or dead-letter path, so an unacknowledged tail is skipped.
 
 `ConsumeTimeout` defaults to 15 minutes and applies only to concurrent clustered non-FIFO batches. When it elapses,
 the client cancels the handler token and requests Broker redelivery for the whole batch. It cannot forcibly terminate
@@ -168,6 +169,9 @@ readiness handshake. Integration tests must not use the default end position to 
 
 For orderly Push, a denied initial lock or a failed lock renewal leaves reconciliation incomplete so the participant
 retries it. The consumer never dispatches a queue until the Broker has granted its lock.
+Both clustering and broadcasting orderly delivery retry the current physical queue locally and attempt terminal DLQ
+send-back. A failed send-back keeps the current message and offset unresolved, then uses that attempt's suspension
+duration before invoking the handler again.
 
 Members of one Push group must use identical topic/filter subscriptions, clustering or broadcasting mode, orderly
 mode, and initial position. Concurrency, timeouts, and typed handlers remain instance-local. These are group-wide

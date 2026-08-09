@@ -420,13 +420,18 @@ Push handler 契约继续供两类 receiver 共用，并遵循 classic Java、Go
 - `Success` 根据 `AckIndex` 结算已确认前缀。
 - 对于并发、非 FIFO 投递，`Retry` 搭配非负 `DelayLevelWhenNextConsume` 时，将 PULL 尾部 send-back，或对 POP
   尾部使用一次 `suspend=false` 的 `CHANGE_MESSAGE_INVISIBLETIME`。
-- 对于并发、非 FIFO 投递，`Retry` 搭配负 delay level 时，PULL 会通过 classic dead-letter send-back 直接转入死信。
-  对于 POP，.NET 适配器会先将负值归一化为 `0`，再按 Java 兼容的 `CHANGE_MESSAGE_INVISIBLETIME` 重试表处理；
-  POP 不会把负值解释为直接死信。
-- `MessageGroup` FIFO 与 orderly 单消息投递会忽略 consume context；返回 `Retry` 后保持本地串行重试，直到成功或达到
-  `MaxDeliveryAttempts`。
-- PULL 的 `Retry` 达到 `MaxDeliveryAttempts` 后继续按 classic send-back 进入死信。POP 的 `Retry` 达到同一上限时，
-  则遵循 Java 客户端的 `checkNeedAckOrDelay`，不会隐式执行死信 send-back。消息年龄不超过 POP 最后一级延迟的两倍时，
+- 对于并发、非 FIFO 投递，`Retry` 搭配负 delay level 时，PULL 会尝试通过 classic dead-letter send-back 直接转入死信。
+  如果 send-back 结算失败，队列位点会保持未解决，消息仍可能再次投递。对于 POP，.NET 适配器会先将负值归一化为 `0`，
+  再按 Java 兼容的 `CHANGE_MESSAGE_INVISIBLETIME` 重试表处理；POP 不会把负值解释为直接死信。
+- `MessageGroup` FIFO 会忽略 consume context，并继续使用 `RetryDelay` 安排本地重试。
+- orderly PULL handler 可以在返回 `Retry` 前设置 `SuspendCurrentQueueDuration`。只有当前物理 queue 会暂停，其他
+  已分配 queue 继续消费；未设置时使用 `OrderlySuspendDuration`，最终时长按 Java 的 10 毫秒至 30 秒范围限制。
+  每次尝试都会创建新的 context，因此 override 只影响下一次本地重试。并发 PULL、POP 和 `MessageGroup` 路径在
+  结构上都不会读取该值。
+- 集群 PULL 和 orderly 广播的 `Retry` 达到 `MaxDeliveryAttempts` 后都会尝试按 classic send-back 进入死信。orderly
+  send-back 失败时，当前消息会继续留在本地，按本次尝试选择的暂停时长等待后重新调用 handler，且不会推进位点。并发广播
+  仍不拥有 Broker retry 或 DLQ，会丢弃未成功的尾部。POP 的 `Retry` 达到同一上限时，则遵循 Java 客户端的
+  `checkNeedAckOrDelay`，不会隐式执行死信 send-back。消息年龄不超过 POP 最后一级延迟的两倍时，
   客户端按年龄选择下一个 POP 延迟档位，并只发送一次 `CHANGE_MESSAGE_INVISIBLETIME`；只有消息年龄严格超过该阈值才
   ACK receipt。官方最后一级延迟为 7,200 秒，因此阈值为四小时。这个最大投递次数分支会忽略 handler 指定的 delay level。
 
@@ -438,7 +443,22 @@ handler 结果中不再包含 `DeadLetter`。这与 Java 的
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java)
 一致。PULL 把该值传给 classic send-back；POP 会先将负值归一化为 `0`，再按 Java 的 POP 专用重试表处理。归一化后的
 值根据从零开始的重试次数（`DeliveryAttempt - 1`）选择表项。该表从 10 秒开始，并不是普通延迟消息的 level 表。
-直接死信仍然只适用于 PULL 的 classic send-back；POP 重试不会把负值解释为直接死信请求。
+直接死信仍然只适用于 PULL 的 classic send-back；客户端会尝试执行 send-back，结算失败时位点保持未解决，消息仍可能再次
+投递。POP 重试不会把负值解释为直接死信请求。
+
+orderly 时长契约遵循正式版 `rocketmq-all-5.5.0` 的
+[`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
+及其一秒默认值。集群和广播 orderly Consumer 都会先执行本地暂停，并在达到本客户端配置的投递上限后尝试 DLQ
+send-back。终态 send-back 失败时，当前消息继续留在本地，并按本次尝试的暂停时长等待后重新调用 handler。handler 在设置 `SuspendCurrentQueueDuration` 后抛出异常时，
+当前尝试仍保留该 override，这与正式版 Java 5.5.0 一致；未设置时才使用配置的 orderly 默认值。取消会终止本地等待且不执行结算。
+queue lock 丢失不会唤醒正在运行的 timer；客户端会在 timer 结束后、再次调用 handler 前发现
+失锁，这与 Java 的定时重试一致。本地等待只是客户端调度，不会创建 ACK、NACK、reject 或 commit settlement
+operation。失败的死信 send-back 会记录自己的失败 settlement operation，之后的本地等待不会重复记录。
+
+Java orderly 在 `maxReconsumeTimes=-1` 时默认近似无限重试，并在再次调用 handler 前递增可变的消息重试次数。本客户端
+保留显式的一基 `MaxDeliveryAttempts`，默认值为 16；本地尝试次数单独维护，`RemotingMessageView.DeliveryAttempt` 始终是
+Broker 返回的不可变值。这些是有意保留的 .NET API 差异；暂停时长、物理 queue 隔离、终态 send-back 及其失败恢复
+遵循正式版 Java 的设计。
 
 POP handler 执行期间不会自动续租 receipt。客户端会在 handler 处理前和结算前检查固定不可见 deadline；如果已
 过期，则忽略迟到的 handler 结果，不创建结算 operation，并允许 Broker 重新投递。`Retry` 结果只发起一次带

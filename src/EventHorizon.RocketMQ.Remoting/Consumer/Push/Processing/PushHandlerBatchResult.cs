@@ -19,7 +19,8 @@ internal readonly record struct PushHandlerBatchResult(
     ConsumeResult Result,
     int AcknowledgedCount,
     int DelayLevelWhenNextConsume,
-    int MessageCount)
+    int MessageCount,
+    TimeSpan? SuspendCurrentQueueDuration)
 {
     public bool IsFullySuccessful => Result == ConsumeResult.Success && AcknowledgedCount == MessageCount;
 
@@ -30,6 +31,7 @@ internal readonly record struct PushHandlerBatchResult(
         ConsumeResult result,
         int acknowledgementIndex,
         int delayLevelWhenNextConsume,
+        TimeSpan? suspendCurrentQueueDuration,
         int messageCount)
     {
         if (messageCount <= 0)
@@ -40,17 +42,30 @@ internal readonly record struct PushHandlerBatchResult(
         var acknowledgedCount = result == ConsumeResult.Success
             ? Math.Min(acknowledgementIndex, messageCount - 1) + 1
             : 0;
-        return new PushHandlerBatchResult(result, acknowledgedCount, delayLevelWhenNextConsume, messageCount);
+        return new PushHandlerBatchResult(
+            result,
+            acknowledgedCount,
+            delayLevelWhenNextConsume,
+            messageCount,
+            suspendCurrentQueueDuration);
     }
 
     public static PushHandlerBatchResult All(
         ConsumeResult result,
         int messageCount,
         int delayLevelWhenNextConsume) =>
-        new(result, result == ConsumeResult.Success ? messageCount : 0, delayLevelWhenNextConsume, messageCount);
+        new(result, result == ConsumeResult.Success ? messageCount : 0, delayLevelWhenNextConsume, messageCount, null);
 
-    public static PushHandlerBatchResult Retry(int messageCount, int delayLevelWhenNextConsume) =>
-        new(ConsumeResult.Retry, 0, delayLevelWhenNextConsume, messageCount);
+    public static PushHandlerBatchResult Retry(
+        int messageCount,
+        int delayLevelWhenNextConsume,
+        TimeSpan? suspendCurrentQueueDuration = null) =>
+        new(
+            ConsumeResult.Retry,
+            0,
+            delayLevelWhenNextConsume,
+            messageCount,
+            suspendCurrentQueueDuration);
 
     public PushHandlerMessageOutcome GetOutcome(int index)
     {

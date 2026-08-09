@@ -42,8 +42,8 @@ Register one client with `AddRocketMQGrpc`, then add one or more roles to the re
 | Lite messages | `Message.LiteTopic` | Requires compatible Proxy and Broker support. |
 | Transactional messages | `IGrpcProducer.SendTransactionAsync` | Declare transactional topics and configure a transaction checker before startup. |
 | Explicit receive and settlement | `IGrpcSimpleConsumer` | The application calls `ReceiveAsync`, `AckAsync`, and invisibility APIs. |
-| Automatic dispatch | `IGrpcPushConsumer` | Typed handlers return `Success` or `Failure`. |
-| Lite automatic dispatch | `IGrpcLitePushConsumer` | Dispatches LiteTopics under one configured bind topic. |
+| Automatic dispatch | `IGrpcPushConsumer` | Typed handlers return `Success`, `Failure`, or `Suspend`; regular Push normalizes Suspend to Failure. |
+| Lite automatic dispatch | `IGrpcLitePushConsumer` | Dispatches LiteTopics; FIFO mode honors duration-carrying Suspend results. |
 | Tag and SQL filters | `FilterExpression` | SQL filtering requires matching server configuration. |
 | Runtime subscriptions | `SubscribeAsync` / `UnsubscribeAsync` and Lite equivalents | Supported by the applicable Consumer role. |
 
@@ -226,8 +226,12 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 }
 ```
 
-Return `ConsumeResult.Success` to acknowledge or `Failure` to let the effective retry policy schedule another
-delivery. Handlers should be idempotent because retries and duplicate delivery are possible.
+Return `ConsumeResult.Success` to acknowledge or `Failure` to follow the effective retry policy. Regular non-FIFO
+Push lets the service advance retry and dead-letter state. FIFO Push retries locally, then the client attempts to
+forward the message to DLQ after exhaustion; if that completion fails, the message remains unsettled and may be
+redelivered. Regular Push treats `ConsumeResult.Suspend(duration)` as `Failure` and ignores its duration. Return
+`Success` only after durable business processing; retries, failed completion, and duplicate delivery mean handlers
+must remain idempotent.
 `SubscribeAsync` and `UnsubscribeAsync` update ordinary Push subscriptions at runtime.
 
 ## LitePushConsumer
@@ -249,7 +253,13 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 ```
 
 Do not call `Subscribe` for LitePush. Use `LiteTopics` at startup or `SubscribeLiteAsync` and
-`UnsubscribeLiteAsync` after startup. `IGrpcLitePushConsumer` uses the same handler outcomes as PushConsumer.
+`UnsubscribeLiteAsync` after startup. Non-FIFO LitePush sends `Failure` and `Suspend` through service-owned retry/DLQ
+progression and ignores the Suspend duration. FIFO LitePush retries `Failure` locally and attempts DLQ forwarding
+after the effective attempt limit; if that completion fails, the message remains unsettled and may be redelivered.
+FIFO `ConsumeResult.Suspend(duration)` changes invisibility with the caller-selected duration and `suspend=true`;
+the service owns the delivery attempt reported by the next receive. The same suspension also covers unprocessed
+messages with the same LiteTopic from the current receive batch. Durations shorter than 50 milliseconds are rejected. See the
+[consumer model](../../docs/en-US/grpc/consumer-model.md) for the complete result matrix.
 
 LitePush deployment requirements:
 

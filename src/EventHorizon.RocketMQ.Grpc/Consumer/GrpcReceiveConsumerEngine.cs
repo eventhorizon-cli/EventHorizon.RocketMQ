@@ -50,6 +50,8 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     private GrpcSessionManager? _sessions;
     private int _started;
 
+    public Proto.ClientType ClientType => _clientType;
+
     public GrpcReceiveConsumerEngine(
         IRocketMQGrpcClient client,
         IGrpcRouteService routes,
@@ -202,6 +204,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             var endpoint = GrpcEndpoint.FromProtobuf(queue.Broker.Endpoints, _clientOptions.UseTLS);
             await GetSessions().EnsureAsync([endpoint], BuildSettings(), cancellationToken).ConfigureAwait(false);
             var serverSettings = GetServerSettings(endpoint);
+            var fifo = serverSettings?.Subscription is { HasFifo: true, Fifo: true };
             if (IsPushConsumer())
             {
                 var subscription = serverSettings?.Subscription;
@@ -257,6 +260,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
                         break;
                     case Proto.ReceiveMessageResponse.ContentOneofCase.Message:
                         var message = GrpcMessageViewFactory.Create(response.Message, queue, endpoint);
+                        message.IsFifo = fifo;
                         BindMessage(message);
                         messages.Add(message);
                         break;
@@ -355,16 +359,23 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         CancellationToken cancellationToken) =>
         SetInvisibleDurationAsync(message, invisibleDuration, "nack", cancellationToken);
 
-    // Renewal and retry intent deliberately converge here because the gRPC protocol exposes one
+    public Task SuspendAsync(
+        GrpcMessageView message,
+        TimeSpan invisibleDuration,
+        CancellationToken cancellationToken) =>
+        SetInvisibleDurationAsync(message, invisibleDuration, "suspend", cancellationToken, suspend: true);
+
+    // Renewal, retry, and Lite suspension deliberately converge here because the gRPC protocol exposes one
     // ChangeInvisibleDuration operation. telemetryOperation classifies the caller's intent locally; the service receives
-    // the same wire shape and applies the requested replacement deadline.
+    // the matching wire shape and applies the requested replacement deadline.
     // Apache Proxy reference:
     // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/proxy/src/main/java/org/apache/rocketmq/proxy/grpc/v2/consumer/ChangeInvisibleDurationActivity.java#L43-L69
     private Task SetInvisibleDurationAsync(
         GrpcMessageView message,
         TimeSpan invisibleDuration,
         string telemetryOperation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suspend = false)
     {
         var endpoint = ValidateCompletionMessage(message);
         if (invisibleDuration <= TimeSpan.Zero)
@@ -385,6 +396,11 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             if (!string.IsNullOrEmpty(message.LiteTopic))
             {
                 request.LiteTopic = message.LiteTopic;
+            }
+
+            if (suspend)
+            {
+                request.Suspend = true;
             }
 
             var response = await _client.ChangeInvisibleDurationAsync(

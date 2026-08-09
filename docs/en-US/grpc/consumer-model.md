@@ -123,14 +123,36 @@ method. There is no delegate handler on the options object. A `Scoped` or `Trans
 async DI scope for each handling attempt, allowing normal scoped application dependencies such as database contexts;
 a `Singleton` handler is owned by its Consumer instance and must be safe for concurrent calls.
 
-The handler returns only `ConsumeResult.Success` or `ConsumeResult.Failure`, matching the public outcomes in the
-[Apache Java gRPC client](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java).
-For concurrent non-FIFO delivery, `Failure` changes invisibility according to the effective retry policy and leaves
-retry and dead-letter progression to the service. For FIFO delivery, the client retries the handler locally and uses
-the protocol's dead-letter RPC internally after the maximum attempts are exhausted, matching the
-[Java process-queue behavior](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445).
-Neither the handler result nor SimpleConsumer exposes that internal RPC. The OpenTelemetry settlement operation for
-retry scheduling remains `nack`; that telemetry term is not a RocketMQ handler result.
+The handler returns `ConsumeResult.Success`, `ConsumeResult.Failure`, or `ConsumeResult.Suspend(duration)`. Suspend
+durations shorter than 50 milliseconds are rejected. The dispatcher applies the result according to the explicit
+client role and the Proxy-synchronized `Subscription.Fifo` setting; it does not infer the consume mode from optional
+message fields:
+
+| Client mode | `Failure` | `Suspend(duration)` |
+| --- | --- | --- |
+| Regular non-FIFO Push | Change invisibility using the effective retry policy; the service owns retry and dead-letter progression. | Convert to `Failure`; ignore the requested duration. |
+| Regular FIFO Push | Retry the handler locally, then the client attempts DLQ forwarding after exhaustion. A failed forwarding completion leaves the message unsettled for possible redelivery. | Convert to `Failure`; ignore the requested duration. |
+| Non-FIFO LitePush | Change invisibility using the effective retry policy; the service owns retry and dead-letter progression. | Follow the same retry-policy NACK path as `Failure`; ignore the requested duration. |
+| FIFO LitePush | Retry the handler locally, then the client attempts DLQ forwarding after exhaustion. A failed forwarding completion leaves the message unsettled for possible redelivery. The FIFO key is `LiteTopic`. | Suspend the current message and every unprocessed same-`LiteTopic` message from the same receive batch without invoking those sibling handlers; other LiteTopics continue. |
+
+The server's FIFO setting remains authoritative when the optional `MessageGroup` or `LiteTopic` field is absent. Such
+messages use a physical-queue fallback key, matching Java's null FIFO group, rather than falling back to non-FIFO
+settlement. For FIFO LitePush, unkeyed siblings in the same receive batch therefore share the suspend decision.
+
+This matches the released Java `java-5.2.1` split between
+[`StandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/StandardConsumeService.java),
+[`LiteStandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteStandardConsumeService.java), and
+[`LiteFifoConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteFifoConsumeService.java).
+The protocol already carries the `suspend` flag. Only FIFO LitePush applies the caller duration and sends that flag;
+non-FIFO LitePush treats Suspend as an unsuccessful standard delivery and chooses its retry-policy delay. FIFO Suspend
+does not acknowledge the message, pause unrelated LiteTopics, or expose the internal dead-letter RPC. The flag asks
+the service not to count the invisibility change as a retry, but the client does not synthesize or preserve the
+`DeliveryAttempt` reported by a later receive. OpenTelemetry records retry-policy redelivery as `nack` and FIFO
+caller-duration Lite suspension as `suspend`.
+
+Return `Success` only after durable business processing. Network timeouts, process termination, failed settlement, or
+redelivery overlapping a handler that ignored cancellation can all produce duplicates, so handlers must remain
+idempotent.
 
 ### LitePushConsumer
 

@@ -82,9 +82,10 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 
 对于 gRPC，`ReceiveMessageRequest.AutoRenew` 请求的 Proxy 托管续约不是独立的客户端 wire operation，不能创建客户端
 settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：SimpleConsumer 显式延长租期使用
-`renew`；Push 或 LitePush 因重试结果、handler 超时或消息损坏而安排重新投递时使用 `nack`。共享接收引擎必须保留
-这两种内部操作的意图区分，即使它们最终使用同一个 RPC。Proxy 托管的 handler 续期不会在客户端重复创建定时器、
-span 或 metric。
+`renew`；Consumer 按重试策略安排重新投递时使用 `nack`；FIFO LitePush 使用调用方指定时长发送 `suspend=true` 时使用
+`suspend`，非 FIFO LitePush 的 Suspend 仍走重试策略 `nack`。共享接收引擎必须保留这些内部意图，即使它们最终使用同一个 RPC。Proxy 托管的
+handler 续期不会在客户端重复创建定时器、span 或 metric。结果 tag 使用固定名称，调用方指定的时长不能进入
+metric 维度。
 
 classic Remoting 的埋点归属应跟随实际 wire operation。`PullWireClient` 负责记录并完成非空、空结果、取消与失败 PULL 的
 receive 埋点；`RemotingConsumerOffsetClient` 负责 commit settlement；`RemotingSettlementClient` 负责 PULL 重试与
@@ -96,6 +97,11 @@ POP 结算 telemetry 按每次实际的 wire operation 独立记录：确认使�
 判断仍选择延期，继续记录为 `nack`；超过终态年龄阈值后记录为 `ack`。在 POP 调度前，.NET 适配器会将负 delay 归一化为 `0`，因此
 POP 重试继续使用这条普通的不可见时间变更路径。handler 结果在固定不可见 deadline 之后到达时，不创建任何结算
 operation。不确定的 `nack` 失败不会使用旧 receipt 重试；确认只在原始 deadline 内重试。
+
+classic orderly suspend 只是本地调度决策。每次 handler 调用仍分别拥有一个 process Activity，但两次尝试之间的
+等待不会创建 settlement Activity 或 metric，因为期间没有 wire operation。达到终态上限时，集群和广播模式都会记录
+一次 `reject` settlement；若该操作失败，随后的本地暂停不会额外记录 settlement，之后再次 send-back 时才创建新的
+`reject` operation。
 
 Activity 使用 OpenTelemetry 消息语义约定属性，例如 `messaging.system`、`messaging.destination.name`、
 `messaging.consumer.group.name`、消息 ID、分区 ID、body 大小和 batch 大小。失败时会把 Activity 状态设为 error，

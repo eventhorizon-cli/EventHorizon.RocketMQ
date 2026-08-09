@@ -37,13 +37,14 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private readonly HashSet<string> _blockedFifoGroups = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<GrpcMessageView, FifoOrder> _fifoOrders = new();
     private readonly ConcurrentDictionary<GrpcMessageView, ByteReservation> _cachedMessageBytes = new();
+    private readonly ConcurrentDictionary<GrpcMessageView, ReceiveBatch> _receiveBatches = new();
     private readonly SemaphoreSlim _subscriptionSignal = new(0, 1);
     private Channel<GrpcMessageView> _messages;
     private ByteCapacityGate _messageByteCapacity;
     private TaskCompletionSource _fifoBlockedSignal = NewFifoBlockedSignal();
     private CancellationTokenSource? _receivingCts;
     private CancellationTokenSource? _processingCts;
-    private CancellationTokenSource? _fifoRetryCts;
+    private CancellationTokenSource? _localRetryCts;
     private Task[] _receivers = Array.Empty<Task>();
     private Task[] _consumeLoopTasks = Array.Empty<Task>();
     private int _started;
@@ -90,10 +91,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
 
             _fifoOrders.Clear();
+            _receiveBatches.Clear();
             DrainSubscriptionSignal();
             _receivingCts = new CancellationTokenSource();
             _processingCts = new CancellationTokenSource();
-            _fifoRetryCts = new CancellationTokenSource();
+            _localRetryCts = new CancellationTokenSource();
             try
             {
                 await _engine.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -110,10 +112,10 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 _processingCts.Cancel();
                 _receivingCts.Dispose();
                 _processingCts.Dispose();
-                _fifoRetryCts.Dispose();
+                _localRetryCts.Dispose();
                 _receivingCts = null;
                 _processingCts = null;
-                _fifoRetryCts = null;
+                _localRetryCts = null;
                 await _engine.StopAsync().ConfigureAwait(false);
                 throw;
             }
@@ -200,6 +202,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 }
 
                 _fifoOrders.Clear();
+                _receiveBatches.Clear();
                 await _engine.DisposeAsync().ConfigureAwait(false);
             }
         }
@@ -213,10 +216,10 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     {
         var receivingCts = _receivingCts!;
         var processingCts = _processingCts!;
-        var fifoRetryCts = _fifoRetryCts!;
+        var localRetryCts = _localRetryCts!;
         var consumeLoopsDetached = false;
         receivingCts.Cancel();
-        fifoRetryCts.Cancel();
+        localRetryCts.Cancel();
         try
         {
             try
@@ -246,7 +249,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 processingCts.Cancel();
-                ObserveConsumeLoops(consumeLoops, processingCts, fifoRetryCts);
+                ObserveConsumeLoops(consumeLoops, processingCts, localRetryCts);
                 consumeLoopsDetached = true;
                 throw;
             }
@@ -288,12 +291,12 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     if (!consumeLoopsDetached)
                     {
                         processingCts.Dispose();
-                        fifoRetryCts.Dispose();
+                        localRetryCts.Dispose();
                     }
 
                     _receivingCts = null;
                     _processingCts = null;
-                    _fifoRetryCts = null;
+                    _localRetryCts = null;
                     _receivers = Array.Empty<Task>();
                     _consumeLoopTasks = Array.Empty<Task>();
                     DrainMessageChannel();
@@ -304,6 +307,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     }
 
                     _fifoOrders.Clear();
+                    _receiveBatches.Clear();
                     ReleaseAllCachedMessageBytes();
                 }
             }
@@ -527,10 +531,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     _options.LongPollingTimeout,
                     true,
                     cancellationToken).ConfigureAwait(false);
-                foreach (var message in messages)
-                {
-                    await EnqueueAsync(message, cancellationToken).ConfigureAwait(false);
-                }
+                await EnqueueBatchAsync(messages, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -580,7 +581,13 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
     }
 
-    private async ValueTask EnqueueAsync(GrpcMessageView message, CancellationToken cancellationToken)
+    private ValueTask EnqueueAsync(GrpcMessageView message, CancellationToken cancellationToken) =>
+        EnqueueCoreAsync(message, new ReceiveBatch([message]), cancellationToken);
+
+    private async ValueTask EnqueueCoreAsync(
+        GrpcMessageView message,
+        ReceiveBatch batch,
+        CancellationToken cancellationToken)
     {
         var byteCapacity = _messageByteCapacity;
         var reservedBytes = await byteCapacity.ReserveAsync(message.Body.Length, cancellationToken).ConfigureAwait(false);
@@ -595,6 +602,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             }
 
             tracked = true;
+            if (!_receiveBatches.TryAdd(message, batch))
+            {
+                throw new InvalidOperationException($"Message '{message.MessageId}' was enqueued more than once.");
+            }
+
             order = ReserveFifoOrder(message);
             await _messages.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
         }
@@ -614,16 +626,38 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         }
     }
 
+    internal async ValueTask EnqueueBatchAsync(
+        IReadOnlyList<GrpcMessageView> messages,
+        CancellationToken cancellationToken)
+    {
+        var batch = new ReceiveBatch(messages);
+        foreach (var message in messages)
+        {
+            await EnqueueCoreAsync(message, batch, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private async Task ProcessOrderedMessageAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
+        _receiveBatches.TryGetValue(message, out var batch);
         if (!_fifoOrders.TryGetValue(message, out var order))
         {
-            await ProcessMessageAsync(message, false, cancellationToken).ConfigureAwait(false);
+            if (batch is null || batch.TryBegin(message))
+            {
+                await ProcessMessageAsync(message, message.IsFifo, batch, cancellationToken).ConfigureAwait(false);
+            }
+
             return;
         }
 
         await order.Predecessor.WaitAsync(cancellationToken).ConfigureAwait(false);
-        if (await ProcessMessageAsync(message, true, cancellationToken).ConfigureAwait(false))
+        if (batch is not null && !batch.TryBegin(message))
+        {
+            CompleteFifoOrder(message, order);
+            return;
+        }
+
+        if (await ProcessMessageAsync(message, true, batch, cancellationToken).ConfigureAwait(false))
         {
             CompleteFifoOrder(message, order);
         }
@@ -636,6 +670,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private async Task<bool> ProcessMessageAsync(
         GrpcMessageView message,
         bool fifo,
+        ReceiveBatch? batch,
         CancellationToken cancellationToken)
     {
         var maxDeliveryAttempts = _engine.GetMaxDeliveryAttempts(message, _options.MaxDeliveryAttempts);
@@ -648,8 +683,13 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var fifoRetryCancellationToken = fifo
-            ? Volatile.Read(ref _fifoRetryCts)?.Token ?? CancellationToken.None
+        // Keep the released Java ownership split explicit: standard non-FIFO Push and LitePush delegate Failure
+        // progression to the service, while FIFO Push and FIFO LitePush retain the message for local retries before
+        // forwarding.
+        // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java
+        var retriesLocally = fifo;
+        var localRetryCancellationToken = retriesLocally
+            ? Volatile.Read(ref _localRetryCts)?.Token ?? CancellationToken.None
             : CancellationToken.None;
         HandlerCompletion completion;
         try
@@ -657,15 +697,16 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             completion = await HandleMessageAsync(
                 message,
                 fifo,
+                retriesLocally,
                 maxDeliveryAttempts,
-                fifoRetryCancellationToken,
+                localRetryCancellationToken,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException) when (fifo && fifoRetryCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (retriesLocally && localRetryCancellationToken.IsCancellationRequested)
         {
             return false;
         }
@@ -675,6 +716,15 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             if (completion.Result == ConsumeResult.Success)
             {
                 await _engine.AckAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            else if (fifo && completion.Result.SuspendDuration is { } suspendDuration)
+            {
+                await SuspendLiteMessagesAsync(
+                    message,
+                    batch,
+                    fifo,
+                    suspendDuration,
+                    cancellationToken).ConfigureAwait(false);
             }
             else if (completion.ForwardToDeadLetterQueue)
             {
@@ -754,8 +804,9 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private async ValueTask<HandlerCompletion> HandleMessageAsync(
         GrpcMessageView message,
         bool fifo,
+        bool retriesLocally,
         int maxDeliveryAttempts,
-        CancellationToken fifoRetryCancellationToken,
+        CancellationToken localRetryCancellationToken,
         CancellationToken cancellationToken)
     {
         var attempt = Math.Max(1, message.DeliveryAttempt);
@@ -780,12 +831,18 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                result = execution.Result;
+                result = execution.Result
+                    ?? throw new InvalidOperationException("The gRPC message handler returned a null consume result.");
+                if (_engine.ClientType != Proto.ClientType.LitePushConsumer && result.SuspendDuration is not null)
+                {
+                    result = ConsumeResult.Failure;
+                }
+
                 CompleteMessageProcessingTelemetry(
                     telemetry,
                     message,
                     result == ConsumeResult.Success,
-                    execution.TimedOut ? "timeout" : result.ToString());
+                    execution.TimedOut ? "timeout" : result.Name);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -806,7 +863,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 DisposeMessageProcessingTelemetry(telemetry, message);
             }
 
-            if (!fifo || result != ConsumeResult.Failure)
+            if (!retriesLocally || result != ConsumeResult.Failure)
             {
                 return new HandlerCompletion(result, false);
             }
@@ -820,16 +877,33 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             attempt++;
             message.DeliveryAttempt = attempt;
             _logger.LogDebug(
-                "Retrying FIFO message {MessageId} locally with attempt {Attempt} of {MaxAttempts} in {Delay}",
+                "Retrying message {MessageId} locally with attempt {Attempt} of {MaxAttempts} in {Delay}",
                 message.MessageId,
                 attempt,
                 maxDeliveryAttempts,
                 retryDelay);
-            await DelayFifoRetryAsync(
+            await DelayLocalRetryAsync(
                 retryDelay,
-                fifoRetryCancellationToken,
+                localRetryCancellationToken,
                 cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async Task SuspendLiteMessagesAsync(
+        GrpcMessageView message,
+        ReceiveBatch? batch,
+        bool fifo,
+        TimeSpan suspendDuration,
+        CancellationToken cancellationToken)
+    {
+        // FIFO LitePush suspends unprocessed siblings sharing the LiteTopic only within this receive batch. Other
+        // LiteTopics and later batches remain independently dispatchable, matching the released Java process queue.
+        // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java
+        var messages = fifo && batch is not null
+            ? batch.ClaimSameLiteTopicForSuspend(message)
+            : [message];
+        await Task.WhenAll(messages.Select(suspendedMessage =>
+            _engine.SuspendAsync(suspendedMessage, suspendDuration, cancellationToken))).ConfigureAwait(false);
     }
 
     private void HandleUnexpectedMessageProcessingFailure(
@@ -1008,13 +1082,13 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private void ObserveConsumeLoops(
         Task consumeLoops,
         CancellationTokenSource processingCts,
-        CancellationTokenSource fifoRetryCts) =>
-        _ = ObserveConsumeLoopsAsync(consumeLoops, processingCts, fifoRetryCts);
+        CancellationTokenSource localRetryCts) =>
+        _ = ObserveConsumeLoopsAsync(consumeLoops, processingCts, localRetryCts);
 
     private async Task ObserveConsumeLoopsAsync(
         Task consumeLoops,
         CancellationTokenSource processingCts,
-        CancellationTokenSource fifoRetryCts)
+        CancellationTokenSource localRetryCts)
     {
         try
         {
@@ -1032,23 +1106,23 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         finally
         {
             processingCts.Dispose();
-            fifoRetryCts.Dispose();
+            localRetryCts.Dispose();
         }
     }
 
-    private static async Task DelayFifoRetryAsync(
+    private static async Task DelayLocalRetryAsync(
         TimeSpan delay,
-        CancellationToken fifoRetryCancellationToken,
+        CancellationToken localRetryCancellationToken,
         CancellationToken cancellationToken)
     {
-        if (!fifoRetryCancellationToken.CanBeCanceled)
+        if (!localRetryCancellationToken.CanBeCanceled)
         {
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            fifoRetryCancellationToken,
+            localRetryCancellationToken,
             cancellationToken);
         await Task.Delay(delay, linked.Token).ConfigureAwait(false);
     }
@@ -1065,12 +1139,20 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
     private FifoOrder? ReserveFifoOrder(GrpcMessageView message)
     {
-        if (string.IsNullOrEmpty(message.MessageGroup))
+        if (!message.IsFifo)
         {
             return null;
         }
 
-        var key = $"{message.Topic}\0{message.MessageGroup}";
+        var fifoKey = _engine.ClientType == Proto.ClientType.LitePushConsumer
+            ? message.LiteTopic
+            : message.MessageGroup;
+        // Released Java keeps an absent optional grouping field in FIFO mode by placing it in the process queue's null
+        // group. This physical-queue fallback is the equivalent boundary in the shared .NET dispatcher.
+        // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/FifoConsumeService.java
+        var key = string.IsNullOrEmpty(fifoKey)
+            ? $"queue\0{message.Endpoint.AbsoluteUri}\0{message.Topic}\0{message.QueueId}"
+            : $"group\0{message.Topic}\0{fifoKey}";
         lock (_fifoGate)
         {
             var predecessor = _fifoTails.TryGetValue(key, out var tail) ? tail : Task.CompletedTask;
@@ -1116,6 +1198,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
     private void ReleaseCachedMessageBytes(GrpcMessageView message)
     {
+        _receiveBatches.TryRemove(message, out _);
         if (_cachedMessageBytes.TryRemove(message, out var reservation))
         {
             reservation.Capacity.Release(reservation.ReservedBytes);
@@ -1156,6 +1239,50 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         public string Key { get; }
         public Task Predecessor { get; }
         public TaskCompletionSource Completion { get; }
+    }
+
+    private sealed class ReceiveBatch
+    {
+        private readonly object _gate = new();
+        private readonly HashSet<GrpcMessageView> _pending;
+        private readonly HashSet<GrpcMessageView> _suppressed = [];
+
+        public ReceiveBatch(IEnumerable<GrpcMessageView> messages)
+        {
+            _pending = [.. messages];
+        }
+
+        public bool TryBegin(GrpcMessageView message)
+        {
+            lock (_gate)
+            {
+                if (_suppressed.Contains(message))
+                {
+                    return false;
+                }
+
+                return _pending.Remove(message);
+            }
+        }
+
+        public GrpcMessageView[] ClaimSameLiteTopicForSuspend(GrpcMessageView current)
+        {
+            lock (_gate)
+            {
+                var claimed = _pending
+                    .Where(message =>
+                        !ReferenceEquals(message, current) &&
+                        string.Equals(message.LiteTopic, current.LiteTopic, StringComparison.Ordinal))
+                    .ToArray();
+                foreach (var message in claimed)
+                {
+                    _pending.Remove(message);
+                    _suppressed.Add(message);
+                }
+
+                return [current, .. claimed];
+            }
+        }
     }
 
     private sealed class NoopTelemetryOperation : IGrpcRocketMQTelemetryOperation

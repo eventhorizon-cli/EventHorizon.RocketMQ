@@ -70,6 +70,22 @@ internal sealed class PushMessageHandlerInvoker : IDisposable
             messages,
             enableTimeoutRecovery,
             canInvoke: null,
+            consumeContext: null,
+            cancellationToken).ConfigureAwait(false);
+        return result!.Value;
+    }
+
+    public async ValueTask<PushHandlerBatchResult> InvokeOrderlyAsync(
+        IReadOnlyList<RemotingMessageView> messages,
+        RemotingPushConsumeContext consumeContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(consumeContext);
+        var result = await InvokeCoreAsync(
+            messages,
+            enableTimeoutRecovery: false,
+            canInvoke: null,
+            consumeContext,
             cancellationToken).ConfigureAwait(false);
         return result!.Value;
     }
@@ -81,13 +97,19 @@ internal sealed class PushMessageHandlerInvoker : IDisposable
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(canInvoke);
-        return InvokeCoreAsync(messages, enableTimeoutRecovery, canInvoke, cancellationToken);
+        return InvokeCoreAsync(
+            messages,
+            enableTimeoutRecovery,
+            canInvoke,
+            consumeContext: null,
+            cancellationToken);
     }
 
     private async ValueTask<PushHandlerBatchResult?> InvokeCoreAsync(
         IReadOnlyList<RemotingMessageView> messages,
         bool enableTimeoutRecovery,
         Func<bool>? canInvoke,
+        RemotingPushConsumeContext? consumeContext,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(messages);
@@ -108,7 +130,7 @@ internal sealed class PushMessageHandlerInvoker : IDisposable
                 ? await InvokeWithTimeoutAsync(messages, cancellationToken).ConfigureAwait(false)
                 : await InvokeTrackedAsync(
                     messages,
-                    CreateConsumeContext(),
+                    consumeContext ?? CreateConsumeContext(),
                     cancellationToken,
                     StartTelemetry(messages)).ConfigureAwait(false);
         }
@@ -204,6 +226,7 @@ internal sealed class PushMessageHandlerInvoker : IDisposable
                 result,
                 context.AckIndex,
                 context.DelayLevelWhenNextConsume,
+                context.SuspendCurrentQueueDuration,
                 messages.Count);
             telemetry.Complete(handlerResult.IsFullySuccessful, handlerResult.TelemetryOutcome);
             return handlerResult;

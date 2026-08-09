@@ -89,10 +89,12 @@ are preserved.
 
 For gRPC, Proxy-managed renewal requested by `ReceiveMessageRequest.AutoRenew` is not a separate client wire operation
 and must not create a client settlement span. A client-issued `ChangeInvisibleDuration` must be classified by intent:
-`renew` when SimpleConsumer explicitly extends a lease, and `nack` when Push or LitePush schedules redelivery after a
-retry result, handler timeout, or corrupted message. The shared receive engine keeps these intent-specific internal
-operations separate even though they use the same RPC. Proxy-managed handler renewal creates no duplicate client
-timer, span, or metric.
+`renew` when SimpleConsumer explicitly extends a lease, `nack` when a consumer schedules retry-policy redelivery, and
+`suspend` when FIFO LitePush sends `suspend=true` with a caller-selected duration. Non-FIFO LitePush Suspend follows
+the retry-policy `nack` path. The
+shared receive engine keeps these intent-specific internal operations separate even though they use the same RPC.
+Proxy-managed handler renewal creates no duplicate client timer, span, or metric. Result tags use fixed outcome names;
+the caller-selected duration is not a metric dimension.
 
 Classic Remoting instrumentation follows the wire-operation owner. `PullWireClient` owns receive completion for
 non-empty, empty, canceled, and failed PULL operations. `RemotingConsumerOffsetClient` owns commit settlement, while
@@ -108,6 +110,11 @@ ordinary invisibility-change path.
 A handler result that arrives after the fixed invisible deadline creates no settlement operation. An indeterminate
 `nack` failure is not retried with the old receipt; acknowledgement is retried only while the original deadline remains
 valid.
+
+Classic orderly suspension is a local scheduler decision. Each handler invocation still owns one process Activity,
+but the delay between attempts creates no settlement Activity or metric because no wire operation occurs. At the
+terminal limit, clustering and broadcasting each record a `reject` settlement attempt. If it fails, the next local
+suspension creates no additional settlement signal; the later send-back attempt records a new `reject` operation.
 
 Activities use OpenTelemetry messaging semantic-convention attributes such as `messaging.system`,
 `messaging.destination.name`, `messaging.consumer.group.name`, message ID, partition ID, body size, and batch size.

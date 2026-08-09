@@ -42,7 +42,11 @@ public sealed class ProtocolModelParityTests
     [Fact]
     public void ConsumeResults_ProtocolSpecificSemantics_ExposeExpectedOutcomes()
     {
-        Assert.Equal(["Success", "Failure"], Enum.GetNames<GrpcConsumeResult>());
+        Assert.False(typeof(GrpcConsumeResult).IsEnum);
+        Assert.Same(GrpcConsumeResult.Success, GrpcConsumeResult.Success);
+        Assert.Same(GrpcConsumeResult.Failure, GrpcConsumeResult.Failure);
+        Assert.Equal(TimeSpan.FromMilliseconds(50),
+            GrpcConsumeResult.Suspend(TimeSpan.FromMilliseconds(50)).SuspendDuration);
         Assert.Equal(["Success", "Retry"], Enum.GetNames<RemotingConsumeResult>());
     }
 

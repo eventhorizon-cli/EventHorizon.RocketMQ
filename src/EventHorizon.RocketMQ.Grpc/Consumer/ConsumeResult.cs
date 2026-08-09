@@ -16,17 +16,72 @@
 namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 /// <summary>
-/// Specifies the outcome of processing a consumed message.
+/// Specifies the outcome of processing a consumed Push or LitePush message.
 /// </summary>
-public enum ConsumeResult
+/// <remarks>
+/// Regular Push normalizes <see cref="Suspend(TimeSpan)"/> to <see cref="Failure"/>. Non-FIFO LitePush sends Suspend
+/// through its retry-policy NACK path; FIFO LitePush preserves the caller duration and protocol suspend flag.
+/// Non-FIFO Push and LitePush use service-owned retry progression, while their FIFO modes retry locally before
+/// client-owned dead-letter forwarding.
+/// </remarks>
+/// <seealso href="https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResultSuspend.java">
+/// Apache RocketMQ Java duration-carrying suspend result.
+/// </seealso>
+public sealed record ConsumeResult
 {
+    private static readonly TimeSpan MinimumSuspendDuration = TimeSpan.FromMilliseconds(50);
+
+    private ConsumeResult(string name, TimeSpan? suspendDuration = null)
+    {
+        Name = name;
+        SuspendDuration = suspendDuration;
+    }
+
     /// <summary>
     /// Indicates that the message was processed successfully and can be acknowledged.
     /// </summary>
-    Success,
+    public static ConsumeResult Success { get; } = new("Success");
 
     /// <summary>
-    /// Indicates that message processing failed and the effective retry policy should schedule another delivery.
+    /// Indicates that message processing failed and should follow the effective retry policy.
     /// </summary>
-    Failure
+    public static ConsumeResult Failure { get; } = new("Failure");
+
+    /// <summary>
+    /// Gets the requested LitePush suspension duration, or <see langword="null"/> for Success and Failure.
+    /// </summary>
+    public TimeSpan? SuspendDuration { get; }
+
+    internal string Name { get; }
+
+    /// <summary>
+    /// Creates a LitePush result that delays redelivery using the protocol suspension operation.
+    /// </summary>
+    /// <remarks>
+    /// Regular Push treats this result as <see cref="Failure"/> and ignores the duration. Non-FIFO LitePush also
+    /// ignores the duration and follows its retry-policy NACK path. FIFO LitePush sends the protocol suspend flag,
+    /// which asks the service not to count the invisibility change as a retry; a later delivery-attempt value remains
+    /// service-owned. It also suspends unprocessed messages with the same LiteTopic from the current receive batch
+    /// without invoking their handlers.
+    /// </remarks>
+    /// <param name="duration">The requested invisible duration. The minimum value is 50 milliseconds.</param>
+    /// <returns>A duration-carrying suspend result.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="duration"/> is shorter than 50 milliseconds.
+    /// </exception>
+    public static ConsumeResult Suspend(TimeSpan duration)
+    {
+        if (duration < MinimumSuspendDuration)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(duration),
+                duration,
+                $"Suspend duration must be at least {MinimumSuspendDuration}.");
+        }
+
+        return new ConsumeResult("Suspend", duration);
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => Name;
 }

@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
@@ -66,6 +68,65 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 
             var messageId = await consumed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
             Assert.Equal(receipt.MessageId, messageId);
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GrpcLitePushConsumer_FifoSuspend_RedeliversAfterRequestedDuration()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var requestedDuration = TimeSpan.FromMilliseconds(250);
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
+        var consumerGroup = await scope.CreateOrderedLiteConsumerGroupAsync(
+            "grpc-lite-suspend-consumer",
+            retryMaxTimes: 1,
+            cancellationToken: cancellationToken);
+        var liteTopic = $"lite-suspend-{Guid.NewGuid():N}";
+        var expected = $"grpc-lite-suspend-{Guid.NewGuid():N}";
+        var observation = new LiteSuspendObservation(expected, requestedDuration);
+        var services = new ServiceCollection();
+        services.AddSingleton(observation);
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
+            .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
+            .AddGrpcLitePushConsumer<LiteSuspendMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = consumerGroup;
+                options.BindTopic = scope.Topic;
+                options.LiteTopics.Add(liteTopic);
+                options.MaxConcurrency = 1;
+                options.BatchSize = 1;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IGrpcProducer>();
+        var consumer = provider.GetRequiredService<IGrpcLitePushConsumer>();
+        await producer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        try
+        {
+            await producer.SendAsync(new Message(
+                scope.Topic,
+                Encoding.UTF8.GetBytes(expected))
+            {
+                LiteTopic = liteTopic
+            }, cancellationToken);
+
+            await observation.SecondDelivery.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            var deliveries = observation.Deliveries;
+            Assert.Equal(2, deliveries.Count);
+            Assert.NotEqual(deliveries[0].ReceiptHandle, deliveries[1].ReceiptHandle);
+            Assert.True(
+                Stopwatch.GetElapsedTime(deliveries[0].Timestamp, deliveries[1].Timestamp) >= requestedDuration,
+                $"The Lite suspend redelivery arrived before the requested {requestedDuration} duration.");
         }
         finally
         {
@@ -193,6 +254,56 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
             }
 
             return ValueTask.FromResult(ConsumeResult.Success);
+        }
+    }
+
+    private sealed class LiteSuspendObservation(string expectedBody, TimeSpan suspendDuration)
+    {
+        private readonly ConcurrentQueue<LiteSuspendDelivery> _deliveries = [];
+        private int _deliveryCount;
+
+        public string ExpectedBody { get; } = expectedBody;
+
+        public TimeSpan SuspendDuration { get; } = suspendDuration;
+
+        public TaskCompletionSource SecondDelivery { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<LiteSuspendDelivery> Deliveries => _deliveries.ToArray();
+
+        public bool RecordDelivery(GrpcMessageView message)
+        {
+            var deliveryNumber = Interlocked.Increment(ref _deliveryCount);
+            _deliveries.Enqueue(new LiteSuspendDelivery(
+                message.DeliveryAttempt,
+                message.ReceiptHandle,
+                Stopwatch.GetTimestamp()));
+            if (deliveryNumber >= 2)
+            {
+                SecondDelivery.TrySetResult();
+            }
+
+            return deliveryNumber == 1;
+        }
+    }
+
+    private sealed record LiteSuspendDelivery(int DeliveryAttempt, string ReceiptHandle, long Timestamp);
+
+    private sealed class LiteSuspendMessageHandler(LiteSuspendObservation observation) : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken)
+        {
+            if (!string.Equals(Encoding.UTF8.GetString(message.Body), observation.ExpectedBody, StringComparison.Ordinal))
+            {
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+
+            return ValueTask.FromResult(
+                observation.RecordDelivery(message)
+                    ? ConsumeResult.Suspend(observation.SuspendDuration)
+                    : ConsumeResult.Success);
         }
     }
 

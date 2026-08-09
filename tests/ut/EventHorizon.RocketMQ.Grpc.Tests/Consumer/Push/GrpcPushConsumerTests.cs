@@ -39,6 +39,329 @@ namespace EventHorizon.RocketMQ.Grpc.Tests.Consumer.Push;
 public sealed class GrpcPushConsumerTests
 {
     [Fact]
+    public async Task RegularPushSuspend_NonFifoMessage_UsesRetryPolicyNack()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(TimeSpan.FromSeconds(5))),
+            out var engine,
+            options => options.RetryDelay = TimeSpan.FromMilliseconds(125));
+
+        await RunConsumeLoopAsync(consumer, engine, cancellationToken, Message("regular-suspend"));
+
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.False(request.Suspend);
+        Assert.Equal(TimeSpan.FromMilliseconds(125), request.InvisibleDuration.ToTimeSpan());
+        Assert.Empty(client.AckRequests);
+        Assert.Empty(client.DeadLetterRequests);
+    }
+
+    [Fact]
+    public async Task RegularPushSuspend_FifoMessage_RetriesLocallyThenDeadLetters()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var calls = 0;
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(ConsumeResult.Suspend(TimeSpan.FromSeconds(5)));
+            },
+            out var engine,
+            options =>
+            {
+                options.MaxDeliveryAttempts = 2;
+                options.RetryDelay = TimeSpan.FromMilliseconds(1);
+            });
+
+        await RunOrderedConsumeLoopsAsync(
+            consumer,
+            engine,
+            1,
+            cancellationToken,
+            Message("regular-fifo-suspend", "account-7", fifo: true));
+
+        Assert.Equal(2, calls);
+        Assert.Single(client.DeadLetterRequests);
+        Assert.Empty(client.ChangeInvisibleRequests);
+        Assert.Empty(client.AckRequests);
+    }
+
+    [Fact]
+    public async Task RegularPushFailure_FifoMessagesWithoutGroup_RemainOrderedAndRetryLocally()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new ConcurrentQueue<string>();
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(
+                    message.MessageId == "first" ? ConsumeResult.Failure : ConsumeResult.Success);
+            },
+            out var engine,
+            options =>
+            {
+                options.MaxConcurrency = 2;
+                options.MaxDeliveryAttempts = 2;
+                options.RetryDelay = TimeSpan.FromMilliseconds(1);
+            });
+
+        await RunOrderedConsumeLoopsAsync(
+            consumer,
+            engine,
+            2,
+            cancellationToken,
+            Message("first", fifo: true),
+            Message("second", fifo: true));
+
+        Assert.Equal(new[] { "first", "first", "second" }, handled);
+        Assert.Equal("first", Assert.Single(client.DeadLetterRequests).MessageId);
+        Assert.Equal("second", Assert.Single(client.AckRequests).Entries.Single().MessageId);
+        Assert.Empty(client.ChangeInvisibleRequests);
+    }
+
+    [Fact]
+    public async Task LitePushFailure_NonFifoMessage_UsesRetryPolicyNack()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var calls = 0;
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(ConsumeResult.Failure);
+            },
+            out var engine,
+            options =>
+            {
+                options.MaxDeliveryAttempts = 1;
+                options.RetryDelay = TimeSpan.FromMilliseconds(125);
+            },
+            clientType: Proto.ClientType.LitePushConsumer);
+
+        await RunConsumeLoopAsync(
+            consumer,
+            engine,
+            cancellationToken,
+            Message("lite-failure", liteTopic: "lite-orders"));
+
+        Assert.Equal(1, calls);
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.False(request.Suspend);
+        Assert.Equal(TimeSpan.FromMilliseconds(125), request.InvisibleDuration.ToTimeSpan());
+        Assert.Equal("lite-orders", request.LiteTopic);
+        Assert.Empty(client.DeadLetterRequests);
+        Assert.Empty(client.AckRequests);
+    }
+
+    [Fact]
+    public async Task LitePushSuspend_NonFifoMessage_UsesRetryPolicyNack()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var requestedDuration = TimeSpan.FromMilliseconds(175);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(requestedDuration)),
+            out var engine,
+            options => options.RetryDelay = TimeSpan.FromMilliseconds(125),
+            clientType: Proto.ClientType.LitePushConsumer);
+
+        await RunConsumeLoopAsync(
+            consumer,
+            engine,
+            cancellationToken,
+            Message("lite-suspend", liteTopic: "lite-orders"));
+
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.False(request.Suspend);
+        Assert.Equal(TimeSpan.FromMilliseconds(125), request.InvisibleDuration.ToTimeSpan());
+        Assert.Equal("lite-orders", request.LiteTopic);
+        Assert.Empty(client.AckRequests);
+        Assert.Empty(client.DeadLetterRequests);
+    }
+
+    [Fact]
+    public async Task LitePushSuspend_FifoReceiveBatch_SuspendsSameLiteTopicAndSkipsSiblingHandler()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new ConcurrentQueue<string>();
+        var requestedDuration = TimeSpan.FromMilliseconds(150);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(
+                    message.MessageId == "first" ? ConsumeResult.Suspend(requestedDuration) : ConsumeResult.Success);
+            },
+            out var engine,
+            options => options.MaxConcurrency = 3,
+            clientType: Proto.ClientType.LitePushConsumer);
+        var first = Message("first", liteTopic: "lite-a", fifo: true);
+        var sameLiteTopic = Message("same-lite-topic", liteTopic: "lite-a", fifo: true);
+        var otherLiteTopic = Message("other-lite-topic", liteTopic: "lite-b", fifo: true);
+
+        await RunBatchConsumeLoopsAsync(
+            consumer,
+            engine,
+            3,
+            cancellationToken,
+            first,
+            sameLiteTopic,
+            otherLiteTopic);
+
+        Assert.Equal(new[] { "first", "other-lite-topic" }, handled.OrderBy(static value => value, StringComparer.Ordinal));
+        var suspended = client.ChangeInvisibleRequests.OrderBy(static request => request.MessageId).ToArray();
+        Assert.Equal(2, suspended.Length);
+        Assert.All(suspended, request =>
+        {
+            Assert.True(request.Suspend);
+            Assert.Equal(requestedDuration, request.InvisibleDuration.ToTimeSpan());
+            Assert.Equal("lite-a", request.LiteTopic);
+        });
+        Assert.Equal("other-lite-topic", Assert.Single(client.AckRequests).Entries.Single().MessageId);
+        Assert.Empty(client.DeadLetterRequests);
+    }
+
+    [Fact]
+    public async Task LitePushSuspend_FifoBatchWithoutLiteTopic_SuspendsUnkeyedSiblings()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new ConcurrentQueue<string>();
+        var requestedDuration = TimeSpan.FromMilliseconds(150);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(
+                    message.MessageId == "first" ? ConsumeResult.Suspend(requestedDuration) : ConsumeResult.Success);
+            },
+            out var engine,
+            options => options.MaxConcurrency = 2,
+            clientType: Proto.ClientType.LitePushConsumer);
+
+        await RunBatchConsumeLoopsAsync(
+            consumer,
+            engine,
+            2,
+            cancellationToken,
+            Message("first", fifo: true),
+            Message("second", fifo: true));
+
+        Assert.Equal(new[] { "first" }, handled);
+        Assert.Equal(2, client.ChangeInvisibleRequests.Count);
+        Assert.All(client.ChangeInvisibleRequests, request =>
+        {
+            Assert.True(request.Suspend);
+            Assert.Equal(requestedDuration, request.InvisibleDuration.ToTimeSpan());
+            Assert.Empty(request.LiteTopic);
+        });
+        Assert.Empty(client.AckRequests);
+        Assert.Empty(client.DeadLetterRequests);
+    }
+
+    [Fact]
+    public async Task LitePushSuspend_FifoMessagesInSeparateBatches_DoesNotSkipLaterBatch()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new ConcurrentQueue<string>();
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(
+                    message.MessageId == "first"
+                        ? ConsumeResult.Suspend(TimeSpan.FromMilliseconds(100))
+                        : ConsumeResult.Success);
+            },
+            out var engine,
+            options => options.MaxConcurrency = 2,
+            clientType: Proto.ClientType.LitePushConsumer);
+        var first = Message("first", liteTopic: "lite-a", fifo: true);
+        var laterBatch = Message("later-batch", liteTopic: "lite-a", fifo: true);
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var consumeLoops = Enumerable.Range(0, 2)
+            .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken])))
+            .ToArray();
+        engine.BindMessage(first);
+        engine.BindMessage(laterBatch);
+
+        await consumer.EnqueueBatchAsync([first], cancellationToken);
+        await consumer.EnqueueBatchAsync([laterBatch], cancellationToken);
+        channel.Writer.Complete();
+        await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+        Assert.Equal(new[] { "first", "later-batch" }, handled);
+        Assert.Equal("first", Assert.Single(client.ChangeInvisibleRequests).MessageId);
+        Assert.Equal("later-batch", Assert.Single(client.AckRequests).Entries.Single().MessageId);
+    }
+
+    [Fact]
+    public async Task LitePushSuspend_FifoSettlementFailure_BlocksSameLiteTopicSuccessor()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var handled = new ConcurrentQueue<string>();
+        var client = new FakeGrpcClient
+        {
+            ChangeInvisibleHandler = static _ =>
+                Task.FromException<Proto.ChangeInvisibleDurationResponse>(new IOException("suspend unavailable"))
+        };
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(ConsumeResult.Suspend(TimeSpan.FromMilliseconds(100)));
+            },
+            out var engine,
+            options => options.MaxConcurrency = 2,
+            clientType: Proto.ClientType.LitePushConsumer);
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var blockedSignal = Assert.IsType<TaskCompletionSource>(blockedSignalField?.GetValue(consumer));
+        var consumeLoops = Enumerable.Range(0, 2)
+            .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [processingCancellation.Token])))
+            .ToArray();
+        var first = Message("first", liteTopic: "lite-a", fifo: true);
+        var successor = Message("successor", liteTopic: "lite-a", fifo: true);
+        engine.BindMessage(first);
+        engine.BindMessage(successor);
+
+        await consumer.EnqueueBatchAsync([first, successor], cancellationToken);
+        channel.Writer.Complete();
+        await blockedSignal.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(new[] { "first" }, handled);
+        Assert.Equal(6, client.ChangeInvisibleRequests.Count);
+        Assert.Empty(client.AckRequests);
+        Assert.Empty(client.DeadLetterRequests);
+
+        processingCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(3), cancellationToken));
+    }
+
+    [Fact]
     public async Task FifoMessages_SameGroup_ProcessedInArrivalOrder()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -548,6 +871,7 @@ public sealed class GrpcPushConsumerTests
         var ackCalls = 0;
         var client = new FakeGrpcClient
         {
+            ServerSettings = FifoServerSettings(),
             QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
             ReceiveHandler = async (_, _, receiverCancellationToken) =>
             {
@@ -622,6 +946,7 @@ public sealed class GrpcPushConsumerTests
         var receiveCalls = 0;
         var client = new FakeGrpcClient
         {
+            ServerSettings = FifoServerSettings(),
             QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
             ReceiveHandler = async (_, _, receiverCancellationToken) =>
             {
@@ -673,6 +998,63 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
+    public async Task Stop_LiteFifoRetryDelay_InterruptsImmediately()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var firstHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiveCalls = 0;
+        var client = new FakeGrpcClient
+        {
+            ServerSettings = FifoServerSettings(),
+            QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
+            ReceiveHandler = async (_, _, receiverCancellationToken) =>
+            {
+                if (Interlocked.Increment(ref receiveCalls) == 1)
+                {
+                    return
+                    [
+                        new Proto.ReceiveMessageResponse
+                        {
+                            Message = ProtoMessage("lite-fifo", liteTopic: "lite-orders")
+                        },
+                        ReceiveStatus(Proto.Code.Ok)
+                    ];
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, receiverCancellationToken);
+                return [];
+            }
+        };
+        await using var consumer = CreateConsumer(
+            client,
+            (_, _) =>
+            {
+                firstHandled.TrySetResult();
+                return ValueTask.FromResult(ConsumeResult.Failure);
+            },
+            options =>
+            {
+                options.MaxDeliveryAttempts = 3;
+                options.RetryDelay = TimeSpan.FromMilliseconds(1_500);
+            },
+            CreateRouteService(queue),
+            clientType: Proto.ClientType.LitePushConsumer);
+
+        await consumer.StartAsync(cancellationToken);
+        await firstHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        var started = Stopwatch.GetTimestamp();
+        await consumer.StopAsync(cancellationToken).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.True(
+            Stopwatch.GetElapsedTime(started) < TimeSpan.FromMilliseconds(750),
+            "Stopping the FIFO Lite consumer waited for the local retry delay to elapse.");
+        Assert.Empty(client.DeadLetterRequests);
+        Assert.Equal(0, consumer.CachedMessageBytes);
+    }
+
+    [Fact]
     public async Task StopAsync_NonCooperativeFifoHandlerAndLateSuccess_CancelsAndIgnores()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -682,6 +1064,7 @@ public sealed class GrpcPushConsumerTests
         var receiveCalls = 0;
         var client = new FakeGrpcClient
         {
+            ServerSettings = FifoServerSettings(),
             QueryAssignmentHandler = (_, _) => Task.FromResult(AssignmentResponse(queue)),
             ReceiveHandler = async (_, _, receiverCancellationToken) =>
             {
@@ -914,6 +1297,7 @@ public sealed class GrpcPushConsumerTests
     public async Task ConsumeLoop_UnexpectedProcessingFailure_Continues()
     {
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine.SetupGet(value => value.ClientType).Returns(Proto.ClientType.PushConsumer);
         engine
             .Setup(value => value.GetMaxDeliveryAttempts(It.IsAny<GrpcMessageView>(), It.IsAny<int>()))
             .Returns((GrpcMessageView message, int fallback) =>
@@ -968,6 +1352,7 @@ public sealed class GrpcPushConsumerTests
         var cancellationToken = TestContext.Current.CancellationToken;
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine.SetupGet(value => value.ClientType).Returns(Proto.ClientType.PushConsumer);
         engine
             .Setup(value => value.GetMaxDeliveryAttempts(
                 It.Is<GrpcMessageView>(message => message.MessageId == "first"),
@@ -1093,6 +1478,65 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
+    public async Task ConsumeLoop_NullResult_TreatsHandlerContractViolationAsFailure()
+    {
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            static (_, _) => ValueTask.FromResult<ConsumeResult>(null!),
+            out var engine,
+            options => options.RetryDelay = TimeSpan.FromMilliseconds(75));
+
+        await RunConsumeLoopAsync(
+            consumer,
+            engine,
+            TestContext.Current.CancellationToken,
+            Message("null-result"));
+
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.Equal(TimeSpan.FromMilliseconds(75), request.InvisibleDuration.ToTimeSpan());
+        Assert.False(request.Suspend);
+        Assert.Empty(client.AckRequests);
+        Assert.Empty(client.DeadLetterRequests);
+    }
+
+    [Fact]
+    public async Task ConsumeLoop_LiteSuspendResult_RecordsFixedProcessOutcome()
+    {
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete(false, "Suspend"));
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartProcess(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<long>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<ActivityContext?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        await using var consumer = CreateConsumer(
+            client,
+            static (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(TimeSpan.FromMilliseconds(125))),
+            out var engine,
+            telemetry: telemetry.Object,
+            clientType: Proto.ClientType.LitePushConsumer);
+
+        await RunConsumeLoopAsync(
+            consumer,
+            engine,
+            TestContext.Current.CancellationToken,
+            Message("suspend-outcome", liteTopic: "lite-a"));
+
+        operation.Verify(value => value.Complete(false, "Suspend"), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
+    }
+
+    [Fact]
     public async Task ConsumeLoop_FailureAtMaximumDeliveryAttempts_SchedulesRetryWithoutClientDeadLetter()
     {
         var client = new FakeGrpcClient();
@@ -1213,6 +1657,53 @@ public sealed class GrpcPushConsumerTests
         await engine.StopAsync(cancellationToken);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReceiveAsync_ServerFifoSetting_UsesServerValue(bool fifo)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var queue = Queue();
+        var client = new FakeGrpcClient
+        {
+            ServerSettings = new Proto.Settings
+            {
+                Subscription = new Proto.Subscription { Fifo = fifo }
+            }
+        };
+        client.Assignments.Add(new Proto.Assignment { MessageQueue = queue });
+        client.ReceiveResponses.Add(new Proto.ReceiveMessageResponse
+        {
+            Message = ProtoMessage("server-fifo", messageGroup: "account-7")
+        });
+        client.ReceiveResponses.Add(ReceiveStatus(Proto.Code.Ok));
+        var options = PushOptions();
+        await using var engine = new GrpcReceiveConsumerEngine(
+            client,
+            CreateRouteService(queue),
+            Options.Create(new GrpcClientOptions()),
+            options.GroupName,
+            options.Subscriptions,
+            Proto.ClientType.PushConsumer,
+            options.LongPollingTimeout,
+            NullLogger<GrpcReceiveConsumerEngine>.Instance,
+            NullLogger<GrpcSessionManager>.Instance);
+
+        await engine.StartAsync(cancellationToken);
+        var assignments = await engine.GetAssignmentsAsync("orders", cancellationToken);
+        var messages = await engine.ReceiveAsync(
+            Assert.Single(assignments).MessageQueue,
+            FilterExpression.All,
+            1,
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(1),
+            true,
+            cancellationToken);
+
+        Assert.Equal(fifo, Assert.Single(messages).IsFifo);
+        await engine.StopAsync(cancellationToken);
+    }
+
     [Fact]
     public async Task CompletionRequests_LiteTopicAndInvisibility_PreservesLiteTopicAndInvisibility()
     {
@@ -1295,6 +1786,39 @@ public sealed class GrpcPushConsumerTests
         await engine.ScheduleRetryAsync(message, TimeSpan.FromSeconds(12), cancellationToken);
 
         Assert.Single(client.ChangeInvisibleRequests);
+        operation.Verify(value => value.Complete(), Times.Once);
+        operation.Verify(value => value.Dispose(), Times.Once);
+        telemetry.VerifyAll();
+    }
+
+    [Fact]
+    public async Task SuspendAsync_LiteSuspension_RecordsSuspendSettlementAndWireFlag()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        operation.Setup(value => value.Complete());
+        operation.Setup(value => value.Dispose());
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartSettle(
+                "suspend",
+                "orders",
+                "tests",
+                "message-1",
+                0,
+                It.IsAny<IReadOnlyDictionary<string, string>?>()))
+            .Returns(operation.Object);
+        var client = new FakeGrpcClient();
+        var message = Message("message-1", liteTopic: "lite-a");
+        await using var engine = CreateEngine(client, telemetry.Object);
+        engine.BindMessage(message);
+
+        await engine.SuspendAsync(message, TimeSpan.FromMilliseconds(175), cancellationToken);
+
+        var request = Assert.Single(client.ChangeInvisibleRequests);
+        Assert.True(request.Suspend);
+        Assert.Equal("lite-a", request.LiteTopic);
+        Assert.Equal(TimeSpan.FromMilliseconds(175), request.InvisibleDuration.ToTimeSpan());
         operation.Verify(value => value.Complete(), Times.Once);
         operation.Verify(value => value.Dispose(), Times.Once);
         telemetry.VerifyAll();
@@ -1441,9 +1965,10 @@ public sealed class GrpcPushConsumerTests
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
         ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
-        IGrpcRocketMQTelemetry? telemetry = null)
+        IGrpcRocketMQTelemetry? telemetry = null,
+        Proto.ClientType clientType = Proto.ClientType.PushConsumer)
     {
-        return CreateConsumer(client, handler, out _, configure, routes, engineLogger, telemetry);
+        return CreateConsumer(client, handler, out _, configure, routes, engineLogger, telemetry, clientType);
     }
 
     private static GrpcPushConsumer CreateConsumer(
@@ -1453,7 +1978,8 @@ public sealed class GrpcPushConsumerTests
         Action<GrpcPushConsumerOptions>? configure = null,
         IGrpcRouteService? routes = null,
         ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
-        IGrpcRocketMQTelemetry? telemetry = null)
+        IGrpcRocketMQTelemetry? telemetry = null,
+        Proto.ClientType clientType = Proto.ClientType.PushConsumer)
     {
         var options = PushOptions();
         configure?.Invoke(options);
@@ -1463,7 +1989,7 @@ public sealed class GrpcPushConsumerTests
             Options.Create(new GrpcClientOptions()),
             options.GroupName,
             options.Subscriptions,
-            Proto.ClientType.PushConsumer,
+            clientType,
             options.LongPollingTimeout,
             engineLogger ?? NullLogger<GrpcReceiveConsumerEngine>.Instance,
             NullLogger<GrpcSessionManager>.Instance);
@@ -1565,6 +2091,29 @@ public sealed class GrpcPushConsumerTests
         await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
     }
 
+    private static async Task RunBatchConsumeLoopsAsync(
+        GrpcPushConsumer consumer,
+        GrpcReceiveConsumerEngine engine,
+        int consumeLoopCount,
+        CancellationToken cancellationToken,
+        params GrpcMessageView[] messages)
+    {
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var consumeLoops = Enumerable.Range(0, consumeLoopCount)
+            .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken])))
+            .ToArray();
+        foreach (var message in messages)
+        {
+            engine.BindMessage(message);
+        }
+
+        await consumer.EnqueueBatchAsync(messages, cancellationToken);
+        channel.Writer.Complete();
+        await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+    }
+
     private static ValueTask InvokeEnqueueAsync(
         GrpcPushConsumer consumer,
         GrpcMessageView message,
@@ -1580,11 +2129,16 @@ public sealed class GrpcPushConsumerTests
         int deliveryAttempt = 1,
         TimeSpan? invisibleDuration = null,
         string? liteTopic = null,
-        bool corrupted = false) =>
-        GrpcMessageViewFactory.Create(
+        bool corrupted = false,
+        bool? fifo = null)
+    {
+        var message = GrpcMessageViewFactory.Create(
             ProtoMessage(id, messageGroup, deliveryAttempt, invisibleDuration, liteTopic, corrupted),
             Queue(),
             new Uri("http://127.0.0.1:8081"));
+        message.IsFifo = fifo ?? !string.IsNullOrEmpty(messageGroup);
+        return message;
+    }
 
     private static Proto.MessageQueue Queue(int id = 0, string topic = "orders")
     {
@@ -1661,6 +2215,11 @@ public sealed class GrpcPushConsumerTests
     private static Proto.ForwardMessageToDeadLetterQueueResponse DeadLetterSuccess() => new()
     {
         Status = new Proto.Status { Code = Proto.Code.Ok }
+    };
+
+    private static Proto.Settings FifoServerSettings() => new()
+    {
+        Subscription = new Proto.Subscription { Fifo = true }
     };
 
     private static Proto.ReceiveMessageResponse ReceiveStatus(Proto.Code code, string message = "") => new()

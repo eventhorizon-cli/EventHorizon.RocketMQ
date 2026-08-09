@@ -22,8 +22,8 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// For a concurrent non-FIFO batch, <see cref="AckIndex"/> selects the acknowledged prefix when the handler returns
 /// <see cref="ConsumeResult.Success"/>, while <see cref="DelayLevelWhenNextConsume"/> selects retry timing when it
 /// returns <see cref="ConsumeResult.Retry"/>. A negative value requests direct dead-lettering only when the internal
-/// receiver uses PULL; POP normalizes it to the default retry level. FIFO <c>MessageGroup</c> and orderly deliveries are
-/// singleton paths and ignore these settings.
+/// receiver uses PULL; POP normalizes it to the default retry level. FIFO <c>MessageGroup</c> ignores these settings.
+/// An orderly PULL delivery uses only <see cref="SuspendCurrentQueueDuration"/>.
 /// </remarks>
 public sealed class RemotingPushConsumeContext
 {
@@ -71,4 +71,19 @@ public sealed class RemotingPushConsumeContext
     /// Apache RocketMQ Go classic concurrent consume context.
     /// </seealso>
     public int DelayLevelWhenNextConsume { get; set; }
+
+    /// <summary>
+    /// Gets or sets the caller-selected delay before retrying the current orderly physical queue.
+    /// </summary>
+    /// <remarks>
+    /// The default value is <see langword="null"/>, which selects
+    /// <see cref="RemotingPushConsumerOptions.OrderlySuspendDuration"/>. The effective duration is limited to the
+    /// 10-millisecond through 30-second range used by the released Apache RocketMQ Java client. A new context is
+    /// created for each handler invocation, so this override applies only to the next local retry. Concurrent PULL,
+    /// POP, and <c>MessageGroup</c> delivery ignore this value.
+    /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java">
+    /// Apache RocketMQ Java orderly consume context.
+    /// </seealso>
+    public TimeSpan? SuspendCurrentQueueDuration { get; set; }
 }

@@ -346,8 +346,7 @@ public static class GrpcRocketMQBuilderExtensions
             engine,
             logger,
             GrpcPushMessageHandlerFactory.Create(provider, roleKey, handlerLifetime),
-            hasLocalGroupPeer,
-            GrpcPushConsumerKind.Regular);
+            hasLocalGroupPeer);
     }
 
     private static IGrpcLitePushConsumer CreateGrpcLitePushConsumer(
@@ -394,8 +393,7 @@ public static class GrpcRocketMQBuilderExtensions
             engine,
             pushLogger,
             GrpcPushMessageHandlerFactory.Create(provider, roleKey, handlerLifetime),
-            false,
-            GrpcPushConsumerKind.Lite);
+            false);
         return ActivatorUtilities.CreateInstance<GrpcLitePushConsumer>(provider, dispatcher, manager);
     }
 

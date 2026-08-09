@@ -50,6 +50,8 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     private GrpcSessionManager? _sessions;
     private int _started;
 
+    public Proto.ClientType ClientType => _clientType;
+
     public GrpcReceiveConsumerEngine(
         IRocketMQGrpcClient client,
         IGrpcRouteService routes,

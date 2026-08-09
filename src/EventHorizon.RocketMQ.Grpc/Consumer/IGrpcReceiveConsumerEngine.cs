@@ -19,6 +19,8 @@ namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 internal interface IGrpcReceiveConsumerEngine : IAsyncDisposable
 {
+    Proto.ClientType ClientType { get; }
+
     ValueTask StartAsync(CancellationToken cancellationToken);
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);

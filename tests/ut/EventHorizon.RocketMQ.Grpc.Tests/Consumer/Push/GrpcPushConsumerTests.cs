@@ -146,7 +146,7 @@ public sealed class GrpcPushConsumerTests
                 options.MaxDeliveryAttempts = 1;
                 options.RetryDelay = TimeSpan.FromMilliseconds(125);
             },
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
 
         await RunConsumeLoopAsync(
             consumer,
@@ -174,7 +174,7 @@ public sealed class GrpcPushConsumerTests
             (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(requestedDuration)),
             out var engine,
             options => options.RetryDelay = TimeSpan.FromMilliseconds(125),
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
 
         await RunConsumeLoopAsync(
             consumer,
@@ -207,7 +207,7 @@ public sealed class GrpcPushConsumerTests
             },
             out var engine,
             options => options.MaxConcurrency = 3,
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
         var first = Message("first", liteTopic: "lite-a", fifo: true);
         var sameLiteTopic = Message("same-lite-topic", liteTopic: "lite-a", fifo: true);
         var otherLiteTopic = Message("other-lite-topic", liteTopic: "lite-b", fifo: true);
@@ -251,7 +251,7 @@ public sealed class GrpcPushConsumerTests
             },
             out var engine,
             options => options.MaxConcurrency = 2,
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
 
         await RunBatchConsumeLoopsAsync(
             consumer,
@@ -291,7 +291,7 @@ public sealed class GrpcPushConsumerTests
             },
             out var engine,
             options => options.MaxConcurrency = 2,
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
         var first = Message("first", liteTopic: "lite-a", fifo: true);
         var laterBatch = Message("later-batch", liteTopic: "lite-a", fifo: true);
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -333,7 +333,7 @@ public sealed class GrpcPushConsumerTests
             },
             out var engine,
             options => options.MaxConcurrency = 2,
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
         var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
         var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1039,7 +1039,7 @@ public sealed class GrpcPushConsumerTests
                 options.RetryDelay = TimeSpan.FromMilliseconds(1_500);
             },
             CreateRouteService(queue),
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
 
         await consumer.StartAsync(cancellationToken);
         await firstHandled.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
@@ -1297,6 +1297,7 @@ public sealed class GrpcPushConsumerTests
     public async Task ConsumeLoop_UnexpectedProcessingFailure_Continues()
     {
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine.SetupGet(value => value.ClientType).Returns(Proto.ClientType.PushConsumer);
         engine
             .Setup(value => value.GetMaxDeliveryAttempts(It.IsAny<GrpcMessageView>(), It.IsAny<int>()))
             .Returns((GrpcMessageView message, int fallback) =>
@@ -1325,8 +1326,7 @@ public sealed class GrpcPushConsumerTests
             engine.Object,
             NullLogger<GrpcPushConsumer>.Instance,
             handler,
-            hasLocalGroupPeer: false,
-            GrpcPushConsumerKind.Regular);
+            hasLocalGroupPeer: false);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
         var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1352,6 +1352,7 @@ public sealed class GrpcPushConsumerTests
         var cancellationToken = TestContext.Current.CancellationToken;
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var engine = new Mock<IGrpcReceiveConsumerEngine>(MockBehavior.Strict);
+        engine.SetupGet(value => value.ClientType).Returns(Proto.ClientType.PushConsumer);
         engine
             .Setup(value => value.GetMaxDeliveryAttempts(
                 It.Is<GrpcMessageView>(message => message.MessageId == "first"),
@@ -1369,8 +1370,7 @@ public sealed class GrpcPushConsumerTests
             engine.Object,
             NullLogger<GrpcPushConsumer>.Instance,
             handler,
-            hasLocalGroupPeer: false,
-            GrpcPushConsumerKind.Regular);
+            hasLocalGroupPeer: false);
 
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
         var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1523,7 +1523,7 @@ public sealed class GrpcPushConsumerTests
             static (_, _) => ValueTask.FromResult(ConsumeResult.Suspend(TimeSpan.FromMilliseconds(125))),
             out var engine,
             telemetry: telemetry.Object,
-            kind: GrpcPushConsumerKind.Lite);
+            clientType: Proto.ClientType.LitePushConsumer);
 
         await RunConsumeLoopAsync(
             consumer,
@@ -1966,9 +1966,9 @@ public sealed class GrpcPushConsumerTests
         IGrpcRouteService? routes = null,
         ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
         IGrpcRocketMQTelemetry? telemetry = null,
-        GrpcPushConsumerKind kind = GrpcPushConsumerKind.Regular)
+        Proto.ClientType clientType = Proto.ClientType.PushConsumer)
     {
-        return CreateConsumer(client, handler, out _, configure, routes, engineLogger, telemetry, kind);
+        return CreateConsumer(client, handler, out _, configure, routes, engineLogger, telemetry, clientType);
     }
 
     private static GrpcPushConsumer CreateConsumer(
@@ -1979,7 +1979,7 @@ public sealed class GrpcPushConsumerTests
         IGrpcRouteService? routes = null,
         ILogger<GrpcReceiveConsumerEngine>? engineLogger = null,
         IGrpcRocketMQTelemetry? telemetry = null,
-        GrpcPushConsumerKind kind = GrpcPushConsumerKind.Regular)
+        Proto.ClientType clientType = Proto.ClientType.PushConsumer)
     {
         var options = PushOptions();
         configure?.Invoke(options);
@@ -1989,7 +1989,7 @@ public sealed class GrpcPushConsumerTests
             Options.Create(new GrpcClientOptions()),
             options.GroupName,
             options.Subscriptions,
-            Proto.ClientType.PushConsumer,
+            clientType,
             options.LongPollingTimeout,
             engineLogger ?? NullLogger<GrpcReceiveConsumerEngine>.Instance,
             NullLogger<GrpcSessionManager>.Instance);
@@ -1999,7 +1999,6 @@ public sealed class GrpcPushConsumerTests
             NullLogger<GrpcPushConsumer>.Instance,
             handler,
             hasLocalGroupPeer: false,
-            kind,
             telemetry: telemetry);
     }
 

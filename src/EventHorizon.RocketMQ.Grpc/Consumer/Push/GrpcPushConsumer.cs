@@ -31,7 +31,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private readonly IGrpcRocketMQTelemetry _telemetry;
     private readonly ILogger _logger;
     private readonly bool _hasLocalGroupPeer;
-    private readonly GrpcPushConsumerKind _kind;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _fifoGate = new();
     private readonly Dictionary<string, Task> _fifoTails = new(StringComparer.Ordinal);
@@ -57,7 +56,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         ILogger<GrpcPushConsumer> logger,
         Func<GrpcMessageView, CancellationToken, ValueTask<ConsumeResult>> messageHandler,
         bool hasLocalGroupPeer,
-        GrpcPushConsumerKind kind,
         IGrpcRocketMQTelemetry? telemetry = null)
     {
         _options = options.Value;
@@ -66,7 +64,6 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         _telemetry = telemetry ?? GrpcRocketMQTelemetry.Disabled;
         _logger = logger;
         _hasLocalGroupPeer = hasLocalGroupPeer;
-        _kind = kind;
         _messages = CreateMessageChannel();
         _messageByteCapacity = new ByteCapacityGate(_options.MaxCachedMessageBytes);
     }
@@ -836,7 +833,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
                 result = execution.Result
                     ?? throw new InvalidOperationException("The gRPC message handler returned a null consume result.");
-                if (_kind == GrpcPushConsumerKind.Regular && result.SuspendDuration is not null)
+                if (_engine.ClientType != Proto.ClientType.LitePushConsumer && result.SuspendDuration is not null)
                 {
                     result = ConsumeResult.Failure;
                 }
@@ -1147,7 +1144,9 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             return null;
         }
 
-        var fifoKey = _kind == GrpcPushConsumerKind.Lite ? message.LiteTopic : message.MessageGroup;
+        var fifoKey = _engine.ClientType == Proto.ClientType.LitePushConsumer
+            ? message.LiteTopic
+            : message.MessageGroup;
         // Released Java keeps an absent optional grouping field in FIFO mode by placing it in the process queue's null
         // group. This physical-queue fallback is the equivalent boundary in the shared .NET dispatcher.
         // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/FifoConsumeService.java

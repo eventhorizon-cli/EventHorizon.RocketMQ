@@ -498,6 +498,69 @@ Direct dead-lettering remains a concurrent classic PULL-only send-back behavior;
 publication instead, and POP retry never interprets a negative value as a direct dead-letter request. A failed concurrent
 PULL send-back leaves the offset unresolved, so the message may be redelivered.
 
+#### Why concurrent PULL and POP have different direct-DLQ semantics
+
+This difference is a protocol ownership boundary inherited from released Apache RocketMQ Java and Broker code, not a
+transport-neutral poison-message policy. The application-facing Push callback is shared, but the two internal receivers
+settle different kinds of state:
+
+| Concern | Concurrent PULL | Concurrent POP |
+| --- | --- | --- |
+| Delivery ownership | Client-side process queue and consumable offset | Broker-issued receipt and invisible checkpoint |
+| Failure operation | `CONSUMER_SEND_MSG_BACK` | `CHANGE_MESSAGE_INVISIBLETIME` with `suspend=false` |
+| Terminal fields on that operation | `delayLevel` and `maxReconsumeTimes` | No dead-letter or maximum-reconsume field |
+| Broker transition | Copy the source message directly to retry or `%DLQ%<group>` | Replace the checkpoint; after expiry, revive the message into a POP retry topic |
+
+For PULL, released Java 5.5.0
+[`ConsumeMessageConcurrentlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageConcurrentlyService.java#L271-L328)
+sends each unsuccessful clustered message back and advances the local offset only for entries that no longer need local
+settlement. The
+[`ConsumerSendMsgBackRequestHeader`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/remoting/src/main/java/org/apache/rocketmq/remoting/protocol/header/ConsumerSendMsgBackRequestHeader.java#L31-L45)
+carries both `delayLevel` and `maxReconsumeTimes`. On the Broker,
+[`AbstractSendMessageProcessor.consumerSendMsgBack`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/AbstractSendMessageProcessor.java#L165-L213)
+selects `%DLQ%<group>` when the stored reconsume count has reached the maximum or `delayLevel < 0`; otherwise it writes a
+delayed retry message. Negative delay is therefore an explicit terminal convention of the classic send-back command,
+not a third listener result.
+
+POP was added later as a receipt-based model through RIP-19's
+[Broker contribution](https://github.com/apache/rocketmq/pull/2757) and
+[Java client contribution](https://github.com/apache/rocketmq/pull/2808). These pull requests provide historical context
+only; the behavioral baseline remains the released `rocketmq-all-5.5.0` tag. Its
+[`ChangeInvisibleTimeRequestHeader`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/remoting/src/main/java/org/apache/rocketmq/remoting/protocol/header/ChangeInvisibleTimeRequestHeader.java#L29-L53)
+identifies the receipt and replacement `invisibleTime`, plus `suspend`, but carries neither a direct-DLQ outcome nor a
+maximum reconsume count. The Broker's
+[`ChangeInvisibleTimeProcessor`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/ChangeInvisibleTimeProcessor.java#L146-L186)
+owns the receipt-state transition. Its classic revive-log path appends a replacement checkpoint and acknowledges the
+original; the optional POP KV service stores the equivalent transition through its own state model. If the replacement
+expires without acknowledgement,
+[`PopReviveService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/PopReviveService.java#L107-L154)
+copies the business message to the POP retry topic and increments `reconsumeTimes` when `suspend=false`. This endpoint is
+a retry-scheduling operation; it has no Broker branch corresponding to PULL's negative-delay DLQ branch.
+
+The released Java POP client also does not convert maximum attempts into dead-letter forwarding. Its
+[`checkNeedAckOrDelay`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L245-L312)
+continues with an age-selected invisible duration until the message is older than twice the final POP delay, then ACKs
+the receipt. This terminal ACK was added to stop continued redelivery reported in
+[#8332](https://github.com/apache/rocketmq/issues/8332) by
+[#8333](https://github.com/apache/rocketmq/pull/8333); the released code does not call classic send-back or forward the
+message to DLQ on that branch. The history shows incremental convergence of the POP retry lifecycle, but it does not
+state a business requirement that PULL and POP poison messages must have different outcomes.
+
+There is also an atomicity consequence. This is an architectural inference from the released state machines, not a
+quoted Apache design requirement: independently publishing a POP message to DLQ and then acknowledging its current
+receipt creates a window in which the DLQ copy can succeed while the ACK fails. The old checkpoint may then revive the
+same business message into the retry topic, producing both a DLQ copy and a redelivery. The existing invisible-time
+operation avoids the analogous receipt-state race by making replacement and retirement of the previous receipt one
+Broker-owned transition. Reliable direct POP dead-lettering therefore needs a Broker-owned atomic
+forward-and-ack operation, or an equivalent idempotent protocol; released Java/Broker 5.5.0 exposes neither.
+
+For compatibility, this client preserves those released protocol boundaries: negative delay requests direct DLQ only
+for concurrent PULL, while POP normalizes a negative value to `0` and follows the Java POP retry/age policy. Consequently,
+an application must not treat `DelayLevelWhenNextConsume < 0` as a receive-mode-independent guarantee. A future direct
+POP DLQ feature requires a newly released official capability or an explicitly documented extension, including Broker
+capability detection, atomicity analysis, telemetry, and integration coverage for both successful forwarding and every
+indeterminate forward/ACK outcome.
+
 The orderly retry and duration contract follows released Java `rocketmq-all-5.5.0`
 [`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
 and [`ConsumeMessageOrderlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java).

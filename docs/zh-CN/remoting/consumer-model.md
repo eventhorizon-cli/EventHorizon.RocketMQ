@@ -449,6 +449,59 @@ handler 结果中不再包含 `DeadLetter`。这与 Java 的
 直接死信仍然只适用于并发 PULL 的 classic send-back；orderly PULL 改为发布内部 retry topic，POP 重试不会把负值解释为
 直接死信请求。并发 PULL send-back 失败时位点保持未解决，消息仍可能再次投递。
 
+#### 为什么并发 PULL 与 POP 的直接死信语义不同
+
+这个差异来自 Apache RocketMQ Java 与 Broker 正式版既有的协议所有权边界，并不是一套与传输无关的毒消息策略。
+应用看到的 Push callback 可以共用，但两种内部 receiver 结算的状态并不相同：
+
+| 关注点 | 并发 PULL | 并发 POP |
+| --- | --- | --- |
+| 投递所有权 | 客户端 process queue 与可消费 offset | Broker 签发的 receipt 与不可见 checkpoint |
+| 失败操作 | `CONSUMER_SEND_MSG_BACK` | `suspend=false` 的 `CHANGE_MESSAGE_INVISIBLETIME` |
+| 操作携带的终态字段 | `delayLevel` 与 `maxReconsumeTimes` | 没有死信或最大重新消费次数字段 |
+| Broker 状态转换 | 把源消息直接复制到 retry topic 或 `%DLQ%<group>` | 替换 checkpoint；到期后再把消息 revive 到 POP retry topic |
+
+对于 PULL，正式版 Java 5.5.0 的
+[`ConsumeMessageConcurrentlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageConcurrentlyService.java#L271-L328)
+会逐条 send-back 集群消费失败的消息；只有不再需要本地结算的 entry 才会随 process queue 一起推进位点。
+[`ConsumerSendMsgBackRequestHeader`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/remoting/src/main/java/org/apache/rocketmq/remoting/protocol/header/ConsumerSendMsgBackRequestHeader.java#L31-L45)
+同时携带 `delayLevel` 和 `maxReconsumeTimes`。Broker 的
+[`AbstractSendMessageProcessor.consumerSendMsgBack`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/AbstractSendMessageProcessor.java#L165-L213)
+发现已存储的重新消费次数达到上限，或者 `delayLevel < 0` 时，会选择 `%DLQ%<group>`；其他情况则写入延迟重试消息。因此，
+负 delay 是 classic send-back 命令明确支持的终态约定，不是第三种 listener result。
+
+POP 是后来通过 RIP-19 加入的 receipt 消费模型，相关历史见
+[Broker 侧变更](https://github.com/apache/rocketmq/pull/2757)和
+[Java 客户端变更](https://github.com/apache/rocketmq/pull/2808)。这两个 PR 只用于解释演进背景，实际行为仍以正式发布的
+`rocketmq-all-5.5.0` tag 为准。该版本的
+[`ChangeInvisibleTimeRequestHeader`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/remoting/src/main/java/org/apache/rocketmq/remoting/protocol/header/ChangeInvisibleTimeRequestHeader.java#L29-L53)
+只携带 receipt identity、替换后的 `invisibleTime` 与 `suspend`，没有直接死信结果或最大重新消费次数。Broker 的
+[`ChangeInvisibleTimeProcessor`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/ChangeInvisibleTimeProcessor.java#L146-L186)
+负责统一完成 receipt 状态转换：经典 revive-log 路径会写入新 checkpoint 并确认旧 checkpoint；可选的 POP KV service
+则通过自己的状态模型保存等价转换。如果替换后的状态到期前没有收到 ACK，
+[`PopReviveService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/PopReviveService.java#L107-L154)
+会把业务消息复制到 POP retry topic；当 `suspend=false` 时还会递增 `reconsumeTimes`。这个 endpoint 负责安排重试，
+不存在 PULL 负 delay 对应的 Broker 死信分支。
+
+正式版 Java POP 客户端在达到最大次数时也不会转发死信。它的
+[`checkNeedAckOrDelay`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessagePopConcurrentlyService.java#L245-L312)
+会在消息年龄不够大时继续选择不可见时长；超过 POP 最后一级延迟的两倍后，直接 ACK receipt。这个终态 ACK 是
+[#8333](https://github.com/apache/rocketmq/pull/8333)为解决
+[#8332](https://github.com/apache/rocketmq/issues/8332)报告的持续重复投递而加入的；正式版代码在该分支既不调用 classic
+send-back，也不把消息转发到 DLQ。这段历史说明 POP 重试生命周期是逐步补齐的，但 Apache 并没有据此声明一条
+“PULL 与 POP 的毒消息必须采用不同结果”的业务规则。
+
+这里还存在原子性影响。下面是根据正式版状态机得出的架构推论，不是对 Apache 设计文档的原文引用：如果客户端先把
+POP 消息独立发布到 DLQ，再确认当前 receipt，就会留下一个窗口——DLQ 发布已经成功，但 ACK 失败，原 checkpoint
+随后仍可能把同一业务消息 revive 到 retry topic，最终同时出现 DLQ 副本和重新投递。现有不可见时间操作由 Broker
+统一替换 receipt 状态并结束旧状态，避免了同类状态竞争。因此，可靠的 POP 直接死信需要 Broker 提供原子的
+“转发并 ACK”操作，或者语义等价的幂等协议；正式版 Java/Broker 5.5.0 都没有提供这种能力。
+
+为保持兼容，本客户端保留正式版的协议边界：负 delay 只有在并发 PULL 中请求直接死信；POP 会将负值归一化为 `0`，
+再按 Java POP 的重试与消息年龄策略处理。因此，应用不能把 `DelayLevelWhenNextConsume < 0` 当作与内部 receive mode
+无关的保证。未来若增加 POP 直接死信，必须以新的官方正式版能力为依据，或者明确声明这是扩展；同时需要覆盖 Broker
+能力探测、原子性分析、Telemetry，以及转发成功和每一种转发/ACK 结果不确定场景的集成测试。
+
 orderly 重试与时长契约遵循正式版 `rocketmq-all-5.5.0` 的
 [`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
 和 [`ConsumeMessageOrderlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java)。

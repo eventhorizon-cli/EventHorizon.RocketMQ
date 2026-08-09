@@ -218,6 +218,9 @@ public static class RemotingRocketMQBuilderExtensions
                 "Maximum cached PULL message bytes must be positive.")
             .Validate(static value => value.MaxMessageBytes > 0, "Maximum pull response size must be positive.")
             .Validate(static value => value.MaxDeliveryAttempts > 0, "Maximum delivery attempts must be positive.")
+            .Validate(
+                static value => value.OrderlyMaxReconsumeTimes >= -1,
+                "Maximum orderly reconsume times cannot be less than -1.")
             .Validate(static value => value.LongPollingTimeout > TimeSpan.Zero, "Long polling timeout must be positive.")
             .Validate(static value => value.RetryDelay > TimeSpan.Zero, "Retry delay must be positive.")
             .Validate(static value => value.ConsumeTimeout > TimeSpan.Zero, "Consume timeout must be positive.")

@@ -1533,6 +1533,12 @@ public sealed class RemotingLitePullConsumerTests
             CancellationToken cancellationToken) =>
             Task.FromException(new NotSupportedException("LitePull tests do not send messages back."));
 
+        public Task SendOrderlyRetryAsync(
+            RemotingMessageView message,
+            int maxReconsumeTimes,
+            CancellationToken cancellationToken) =>
+            Task.FromException(new NotSupportedException("LitePull tests do not send orderly retry messages."));
+
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref _disposeCount);

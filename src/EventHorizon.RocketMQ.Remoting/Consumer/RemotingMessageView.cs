@@ -37,7 +37,8 @@ public sealed class RemotingMessageView
         long queueOffset,
         long commitLogOffset,
         DateTimeOffset bornTimestamp,
-        DateTimeOffset storeTimestamp)
+        DateTimeOffset storeTimestamp,
+        int flag = 0)
     {
         Topic = topic;
         Body = body;
@@ -47,6 +48,7 @@ public sealed class RemotingMessageView
         Keys = keys;
         Properties = properties;
         DeliveryAttempt = deliveryAttempt;
+        ReconsumeTimes = Math.Max(0, deliveryAttempt - 1);
         MessageGroup = messageGroup;
         QueueId = queueId;
         BrokerName = brokerName;
@@ -54,6 +56,7 @@ public sealed class RemotingMessageView
         CommitLogOffset = commitLogOffset;
         BornTimestamp = bornTimestamp;
         StoreTimestamp = storeTimestamp;
+        Flag = flag;
     }
 
     /// <summary>
@@ -97,6 +100,17 @@ public sealed class RemotingMessageView
     public int DeliveryAttempt { get; }
 
     /// <summary>
+    /// Gets the zero-based number of times the message has been reconsumed.
+    /// </summary>
+    /// <remarks>
+    /// The initial value comes from the Broker message header. Orderly PULL increments this value before each local
+    /// reconsume so the next handler invocation observes the same mutable count as the released Apache RocketMQ Java
+    /// client, including after a failed publication to the group's <c>%RETRY%</c> topic. Other receive
+    /// paths leave it at the Broker-reported value.
+    /// </remarks>
+    public int ReconsumeTimes { get; internal set; }
+
+    /// <summary>
     /// Gets the optional message group used to preserve FIFO ordering.
     /// </summary>
     public string? MessageGroup { get; }
@@ -133,6 +147,8 @@ public sealed class RemotingMessageView
 
     internal ActivityContext? ReceiveActivityContext { get; set; }
 
+    internal int Flag { get; }
+
     internal RemotingMessageView WithTopic(string topic)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
@@ -156,9 +172,11 @@ public sealed class RemotingMessageView
             QueueOffset,
             CommitLogOffset,
             BornTimestamp,
-            StoreTimestamp)
+            StoreTimestamp,
+            Flag)
         {
-            ReceiveActivityContext = ReceiveActivityContext
+            ReceiveActivityContext = ReceiveActivityContext,
+            ReconsumeTimes = ReconsumeTimes
         };
     }
 }

@@ -144,7 +144,7 @@ organized by ownership rather than by a generic Consumer base class:
 | `Coordination/Rebalance` | Shared client-rebalance scheduling, registration, wakeup, and the deterministic average queue allocator. |
 | `Pull` | Stateless internal PULL request/response contracts and wire execution used by LitePull and Push PULL receivers; each pull receives its filter from the current receive target. |
 | `Offset` | Internal queue-position queries and consumer-group offset persistence. |
-| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution used by Push PULL retry and retry-topic offset initialization. |
+| `Settlement` | Classic `CONSUMER_SEND_MSG_BACK` execution for concurrent Push PULL retry and retry-topic offset initialization, plus orderly `%RETRY%group` publication. |
 | `LitePull` and `Push` | The two public role facades and their role-specific assignment, receive, dispatch, and run state. |
 
 The protocol composition root still creates one `IRemotingConsumerEngine` per registered role. The engine owns only
@@ -375,8 +375,8 @@ DI.
 | `Pull/Dispatch/PullProcessQueue` | One physical PULL queue's cached messages, pull/commit positions, contiguous completion watermark, settlement retry state, and FIFO barriers under one synchronization boundary. | Consumer-wide scheduling or wire I/O. |
 | `Pull/Receive/ConcurrentPullReceiveLoop` | One concurrent PULL assignment's long polling with its target filter, cache admission, and serialized offset-persistence loop. | Application-handler results or send-back. |
 | `Pull/Dispatch/PullConsumeRequestProcessor` | Concurrent handler-result mapping, queue-local completion, and activation of stored local settlement retries. | Receive polling, retry-topic preparation, send-back execution, or orderly Broker-lock handling. |
-| `Pull/Settlement/PullSendBackSettlement` | Retry-topic preparation, send-back execution, and retry-queue offset initialization. | Local settlement retry state or scheduling, receive polling, handler-result mapping, or queue-local completion. |
-| `Pull/Receive/OrderlyPullReceiveLoop` | Broker-lock validation, target-filtered long polling, serial handler retry, send-back, and inline offset persistence for orderly consumption. | Concurrent `PullProcessQueue` dispatch. |
+| `Pull/Settlement/PullSendBackSettlement` | Retry-topic preparation, concurrent send-back execution, orderly `%RETRY%group` publication, and retry-queue offset initialization. | Local settlement retry state or scheduling, receive polling, handler-result mapping, or queue-local completion. |
+| `Pull/Receive/OrderlyPullReceiveLoop` | Broker-lock validation, target-filtered long polling, serial handler retry, `%RETRY%group` publication, and inline offset persistence for orderly consumption. | Concurrent `PullProcessQueue` dispatch. |
 | `Pull/Offset/PullOffsetManager` | PULL initial and committed offsets, broadcasting storage, reset boundaries, and retry-topic initialization boundaries. | POP progress. |
 | `Pull/Receive/PullAssignmentReceiver` | One PULL assignment's identity, cancellation, observed Broker-lock lease, and completion boundary for its receive loop plus active consume requests. | POP wire operations or handler-result policy. |
 | `Pop/PopAssignmentReceiver` | One POP assignment's target-filtered long polling, receive batching, cancellation, and receive-failure isolation. | Handler invocation, receipt lifetime, or settlement. |
@@ -468,10 +468,16 @@ consumer result model:
   clamped to Java's 10-millisecond through 30-second scheduling range. A fresh context is created for every attempt,
   so an override applies only to the next local retry. Concurrent PULL, POP, and `MessageGroup` paths cannot consume
   the value.
-- A clustered PULL `Retry` and an orderly broadcasting `Retry` that reach `MaxDeliveryAttempts` make the client attempt
-  classic send-back into the dead-letter queue. An orderly send-back failure retains the current message, waits for that
-  attempt's suspension duration, and invokes the handler again without advancing the offset. Concurrent broadcasting
-  still has no Broker retry or dead-letter ownership and drops an unsuccessful tail. A POP `Retry` at the same limit
+- A clustered concurrent PULL `Retry` that reaches `MaxDeliveryAttempts` makes the client attempt classic send-back
+  into the dead-letter queue. Orderly PULL uses the separate zero-based `OrderlyMaxReconsumeTimes`: `-1` is the default
+  effectively unbounded Java behavior, `0` publishes after the first failure, and a positive value permits that many
+  local reconsumes before publication. This applies to both clustering and orderly broadcasting. At exhaustion the
+  client constructs a `%RETRY%<group>` message through internal producer semantics with reconsume, maximum, and delay
+  metadata, then performs up to three immediate wire send attempts for each logical terminal settlement. A successful
+  publication lets the Broker redirect the retry-topic message to DLQ when its reconsume count exceeds the maximum.
+  If publication fails, the current message remains local, increments its reconsume count, waits for that attempt's
+  suspension duration, and invokes the handler again without advancing the offset. Concurrent broadcasting still has no Broker
+  retry or dead-letter ownership and drops an unsuccessful tail. A POP `Retry` at `MaxDeliveryAttempts`
   follows the Java client's `checkNeedAckOrDelay` path instead: it never performs implicit dead-letter send-back. While
   the message age is at most twice the final POP
   delay, the client makes one
@@ -488,27 +494,31 @@ and the classic Go client's
 PULL passes the level to classic send-back. For POP, the adapter normalizes a negative value to level `0`, then maps the
 resulting level through Java's POP-specific retry schedule; `0` selects that schedule by the zero-based reconsume count
 (`DeliveryAttempt - 1`). This schedule starts at 10 seconds and is distinct from the normal delayed-message level table.
-Direct dead-lettering remains a classic PULL-only send-back behavior; the client attempts the send-back and leaves the
-offset unresolved if completion fails, so the message may be redelivered. POP retry never interprets a negative value as a
-direct dead-letter request.
+Direct dead-lettering remains a concurrent classic PULL-only send-back behavior; orderly PULL uses its internal retry-topic
+publication instead, and POP retry never interprets a negative value as a direct dead-letter request. A failed concurrent
+PULL send-back leaves the offset unresolved, so the message may be redelivered.
 
-The orderly duration contract follows released Java `rocketmq-all-5.5.0`
+The orderly retry and duration contract follows released Java `rocketmq-all-5.5.0`
 [`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
-and its 1-second consumer default. Both clustering and broadcasting orderly consumers perform local suspension and
-attempt DLQ send-back after this client's configured delivery limit. If terminal send-back fails, the current message
-remains local and uses the current attempt's suspension duration before the handler runs again. If a handler throws after setting
+and [`ConsumeMessageOrderlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java).
+Both clustering and broadcasting orderly consumers perform local suspension and publish to `%RETRY%<group>` after a finite
+`OrderlyMaxReconsumeTimes` is exhausted. The publication carries reconsume, maximum, and delay metadata and uses up to
+three immediate wire send attempts for each logical terminal settlement; the Broker redirects a successfully published
+message to DLQ when its reconsume count exceeds the maximum. If publication fails, the current message remains local and uses the
+current attempt's suspension duration before the handler runs again. If a handler throws after setting
 `SuspendCurrentQueueDuration`, the current attempt retains that override, matching released Java 5.5.0 behavior; an
 unset value uses the configured orderly default. Cancellation ends the local wait without settlement. Queue-lock loss is observed after the current
 timer completes and before another handler attempt; matching Java's scheduled retry, it does not wake an
 already-running timer. The wait itself is client scheduling and therefore creates no ACK, NACK, reject, or commit
-settlement operation. A failed dead-letter send-back records its own failed settlement operation; the following local
+settlement operation. A failed retry-topic publication records its own failed settlement operation; the following local
 wait does not.
 
-Java orderly consumption defaults to effectively unbounded retries when `maxReconsumeTimes` is `-1` and increments its
-mutable message retry count before another handler call. This client retains its explicit one-based
-`MaxDeliveryAttempts` default of 16 and leaves `RemotingMessageView.DeliveryAttempt` as the immutable Broker-reported
-value while tracking local attempts internally. These are intentional .NET API differences; suspension timing,
-physical-queue isolation, terminal send-back, and send-back failure recovery follow the released Java design.
+`RemotingMessageView.ReconsumeTimes` exposes the same zero-based count as Java's mutable
+`MessageExt.reconsumeTimes`. It starts from the Broker header and increments before every orderly local reconsume,
+including a retry after failed retry-topic publication, so the next handler invocation observes the updated value.
+`RemotingMessageView.DeliveryAttempt` remains the immutable one-based Broker delivery (`ReconsumeTimes + 1` at decode
+time) and is not rewritten by local orderly scheduling. Concurrent PULL, POP, and `MessageGroup` continue to use
+`MaxDeliveryAttempts`; the orderly `-1` sentinel never changes their retry or terminal policy.
 
 POP does not renew a receipt while its handler is active. The client checks the fixed invisible deadline before handler
 processing and again before settlement. If the deadline has passed, the late handler result is ignored and the Broker

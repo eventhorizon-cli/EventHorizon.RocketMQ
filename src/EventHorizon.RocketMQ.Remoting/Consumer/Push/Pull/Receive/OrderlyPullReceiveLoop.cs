@@ -172,7 +172,9 @@ internal sealed class OrderlyPullReceiveLoop
         RemotingMessageView message,
         CancellationToken cancellationToken)
     {
-        var attempt = message.DeliveryAttempt;
+        var maxReconsumeTimes = _options.OrderlyMaxReconsumeTimes < 0
+            ? int.MaxValue
+            : _options.OrderlyMaxReconsumeTimes;
         while (true)
         {
             if (!HasValidBrokerQueueLock(receiver))
@@ -221,14 +223,12 @@ internal sealed class OrderlyPullReceiveLoop
             {
                 case ConsumeResult.Success:
                     return OrderlyDeliveryOutcome.Success;
-                case ConsumeResult.Retry when attempt >= _options.MaxDeliveryAttempts:
+                case ConsumeResult.Retry when message.ReconsumeTimes >= maxReconsumeTimes:
                     try
                     {
-                        await _sendBackSettlement.SendAsync(
-                            receiver.Queue,
+                        await _sendBackSettlement.SendOrderlyRetryAsync(
                             message,
-                            deadLetter: true,
-                            delayLevel: -1,
+                            maxReconsumeTimes,
                             cancellationToken).ConfigureAwait(false);
                         return OrderlyDeliveryOutcome.Success;
                     }
@@ -240,8 +240,9 @@ internal sealed class OrderlyPullReceiveLoop
                     {
                         _logger.LogWarning(
                             exception,
-                            "Unable to send orderly message {MessageId} to the dead-letter queue; retaining the current message for another local attempt",
+                            "Unable to publish exhausted orderly message {MessageId} to the retry topic; retaining the current message for another local attempt",
                             message.MessageId);
+                        IncrementReconsumeTimes(message);
                         var terminalSuspendDuration = ResolveSuspendDuration(
                             batchResult.SuspendCurrentQueueDuration,
                             _options.OrderlySuspendDuration);
@@ -250,7 +251,7 @@ internal sealed class OrderlyPullReceiveLoop
                         break;
                     }
                 case ConsumeResult.Retry:
-                    attempt++;
+                    IncrementReconsumeTimes(message);
                     var suspendDuration = ResolveSuspendDuration(
                         batchResult.SuspendCurrentQueueDuration,
                         _options.OrderlySuspendDuration);
@@ -259,6 +260,14 @@ internal sealed class OrderlyPullReceiveLoop
                 default:
                     throw new InvalidOperationException($"Unsupported ordered consume result '{batchResult.Result}'.");
             }
+        }
+    }
+
+    private static void IncrementReconsumeTimes(RemotingMessageView message)
+    {
+        if (message.ReconsumeTimes < int.MaxValue)
+        {
+            message.ReconsumeTimes++;
         }
     }
 

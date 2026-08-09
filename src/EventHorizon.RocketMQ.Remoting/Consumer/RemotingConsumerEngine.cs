@@ -68,6 +68,7 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
             resolvedClientOptions,
             routes,
             remotingClient,
+            timeProvider,
             resolvedTelemetry);
     }
 
@@ -177,6 +178,18 @@ internal sealed class RemotingConsumerEngine : IRemotingConsumerEngine
             queue,
             message,
             delayLevel,
+            maxReconsumeTimes,
+            cancellationToken);
+    }
+
+    public Task SendOrderlyRetryAsync(
+        RemotingMessageView message,
+        int maxReconsumeTimes,
+        CancellationToken cancellationToken)
+    {
+        EnsureStarted();
+        return _settlementClient.SendOrderlyRetryAsync(
+            message,
             maxReconsumeTimes,
             cancellationToken);
     }

@@ -108,10 +108,13 @@ same Broker physical queue can be grouped and those batches can run in parallel 
 `Success` normally confirms the complete batch. A concurrent non-FIFO handler can set `AckIndex` to the zero-based
 index of the final accepted message before returning `Success`; the client confirms that contiguous prefix and retries
 only its tail. `Retry` applies to every message regardless of `AckIndex`. The context also exposes
-`DelayLevelWhenNextConsume` for the failed batch or unacknowledged tail: for PULL reception, `0` delegates retry timing
+`DelayLevelWhenNextConsume` for the failed batch or unacknowledged tail: for concurrent PULL reception, `0` delegates retry timing
 to the Broker, a positive value selects a RocketMQ delay level, and a negative value requests that the client attempt
 direct dead-lettering through PULL send-back. If that completion fails, the offset remains unresolved and the message may be
-redelivered. When a Push assignment uses POP, the .NET adapter normalizes a negative value to level `0` and follows the normal
+redelivered. Orderly PULL does not use this direct-DLQ option; after `OrderlyMaxReconsumeTimes` is exhausted it publishes a
+`%RETRY%group` message through internal producer semantics with reconsume, maximum, and delay metadata, making up to three immediate
+wire send attempts per logical terminal settlement. The Broker redirects a successfully published message to DLQ when its
+reconsume count exceeds the maximum. When a Push assignment uses POP, the .NET adapter normalizes a negative value to level `0` and follows the normal
 Java-compatible invisibility retry schedule, including for level `0`; POP never interprets a negative value as direct
 dead-lettering. This two-result contract matches the classic Java and Go concurrent consumers; dead-lettering is a
 retry-policy terminal choice rather than a separate handler result. Concurrent broadcasting does not have a Broker
@@ -169,8 +172,10 @@ readiness handshake. Integration tests must not use the default end position to 
 
 For orderly Push, a denied initial lock or a failed lock renewal leaves reconciliation incomplete so the participant
 retries it. The consumer never dispatches a queue until the Broker has granted its lock.
-Both clustering and broadcasting orderly delivery retry the current physical queue locally and attempt terminal DLQ
-send-back. A failed send-back keeps the current message and offset unresolved, then uses that attempt's suspension
+Both clustering and broadcasting orderly delivery retry the current physical queue locally and publish an exhausted message
+to `%RETRY%group` through internal producer semantics. The publication carries reconsume, maximum, and delay metadata and
+makes up to three immediate wire send attempts; the Broker redirects a successful publication to DLQ when its reconsume count
+exceeds the maximum. If publication fails, the current message and offset remain unresolved, then use that attempt's suspension
 duration before invoking the handler again.
 
 Members of one Push group must use identical topic/filter subscriptions, clustering or broadcasting mode, orderly

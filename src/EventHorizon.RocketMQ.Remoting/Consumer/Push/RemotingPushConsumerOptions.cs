@@ -107,12 +107,32 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// Gets or sets the maximum delivery attempt at which protocol-specific terminal retry handling begins.
     /// </summary>
     /// <remarks>
-    /// Clustered PULL and orderly broadcasting attempt dead-letter send-back at this limit. Concurrent broadcasting
-    /// cannot use Broker retry or dead-letter send-back and drops an unsuccessful tail. Classic POP follows the Apache
-    /// Java client's age-based terminal handling instead: it continues changing invisibility until the message is older
-    /// than twice the final POP retry delay, then acknowledges it without implicit dead-letter forwarding.
+    /// Clustered concurrent PULL attempts dead-letter send-back at this limit. Concurrent broadcasting cannot use
+    /// Broker retry or dead-letter send-back and drops an unsuccessful tail. Classic POP follows the Apache Java
+    /// client's age-based terminal handling instead: it continues changing invisibility until the message is older than
+    /// twice the final POP retry delay, then acknowledges it without implicit dead-letter forwarding. Orderly PULL uses
+    /// <see cref="OrderlyMaxReconsumeTimes"/> instead.
     /// </remarks>
     public int MaxDeliveryAttempts { get; set; } = 16;
+
+    /// <summary>
+    /// Gets or sets the maximum number of local orderly reconsumes before retry-topic publication.
+    /// </summary>
+    /// <remarks>
+    /// The value is zero-based and applies only when <see cref="ConsumeOrderly"/> is enabled. The default value
+    /// <c>-1</c> follows the released Apache RocketMQ Java client and means effectively unlimited local reconsumes.
+    /// A value of <c>0</c> publishes after the first unsuccessful handler invocation. At exhaustion, orderly PULL does
+    /// not call <c>CONSUMER_SEND_MSG_BACK</c> or directly forward to DLQ: it publishes a <c>%RETRY%group</c> message
+    /// through internal producer semantics with reconsume, maximum, and delay metadata. The client makes up to three
+    /// immediate wire send attempts for each logical terminal settlement, and the Broker redirects a successfully
+    /// published message to DLQ when its reconsume count exceeds the supplied maximum. Concurrent PULL, POP, and
+    /// <c>MessageGroup</c> delivery ignore this option. A negative delay-level direct-DLQ request remains concurrent
+    /// PULL-only.
+    /// </remarks>
+    /// <seealso href="https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java">
+    /// Apache RocketMQ Java orderly consumption service.
+    /// </seealso>
+    public int OrderlyMaxReconsumeTimes { get; set; } = -1;
 
     /// <summary>
     /// Gets or sets how long the broker may hold a pull request while waiting for new messages.

@@ -490,6 +490,7 @@ public abstract class RemotingPushConsumerTestSupport
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? PopHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? AckHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? ChangeInvisibleHandler { get; init; }
+        public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? SendMessageHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? SendBackHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? UpdateOffsetHandler { get; init; }
         public Func<RemotingCommand, CancellationToken, Task<RemotingCommand>>? UnregisterHandler { get; init; }
@@ -668,6 +669,10 @@ public abstract class RemotingPushConsumerTestSupport
                     return ChangeInvisibleHandler is null
                         ? throw new InvalidOperationException("No POP invisibility response was configured.")
                         : await ChangeInvisibleHandler(request, cancellationToken);
+                case RequestCode.SendMessage:
+                    return SendMessageHandler is null
+                        ? Success()
+                        : await SendMessageHandler(request, cancellationToken);
                 case RequestCode.ConsumerSendMsgBack:
                     return SendBackHandler is null
                         ? Success()

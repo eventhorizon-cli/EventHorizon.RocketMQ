@@ -140,13 +140,14 @@ The handler returns one `ConsumeResult` for its batch:
 
 For a clustered concurrent non-FIFO batch, `context.DelayLevelWhenNextConsume` defaults to `0`, allowing the Broker to
 select the retry interval. Set it to a positive RocketMQ delay level to request that level, or to a negative value to
-request direct dead-letter delivery. PULL retries use classic send-back; POP retries map the selected level through the
+request direct dead-letter delivery on concurrent PULL. PULL retries use classic send-back; POP retries map the selected level through the
 classic POP retry schedule and change the receipt's invisibility. POP dead-letter handling forwards before
 acknowledging the receipt.
 `MessageGroup` FIFO, `ConsumeOrderly`, and broadcasting paths ignore this context setting. In clustering mode,
-`MaxDeliveryAttempts` starts terminal retry handling. PULL sends the retried message to the dead-letter queue. POP
-follows the official Java age policy: it keeps changing invisibility using age-selected POP delays, then ACKs after the
-message age is strictly greater than twice the final POP delay without implicitly forwarding to the dead-letter queue.
+`MaxDeliveryAttempts` remains the limit for clustered concurrent PULL, `MessageGroup` FIFO, and POP. Clustered PULL and
+`MessageGroup` send the retried message to the dead-letter queue at that limit. POP follows the official Java age policy:
+it keeps changing invisibility using age-selected POP delays, then ACKs after the message age is strictly greater than twice
+the final POP delay without implicitly forwarding to the dead-letter queue.
 
 Every PULL `PullProcessQueue` maintains an independent contiguous completion watermark. A later batch, or a batch from another
 queue or Broker, cannot skip an earlier unresolved queue offset. Pulling may run ahead of handler completion. In
@@ -180,9 +181,15 @@ be idempotent.
 
 `Broadcasting` assigns every readable queue to every Consumer instance and stores offsets locally. Concurrent delivery
 has no group-owned Broker retry or dead-letter flow: `Retry` and an unacknowledged batch tail are dropped while the
-local offset advances. Orderly broadcasting instead retries the current message locally and attempts DLQ send-back at
-`MaxDeliveryAttempts`; send-back failure retains the message and offset and uses the current suspension duration before
-calling the handler again. Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
+local offset advances. Orderly delivery, including orderly broadcasting, retries the current message locally and attempts
+`%RETRY%group` publication after `OrderlyMaxReconsumeTimes` is exhausted. This setting is zero-based and defaults to `-1` (effectively unlimited); `1`
+allows one local retry after the initial failure. `RemotingMessageView.ReconsumeTimes` starts at the Broker's zero-based
+value and increments before each local reconsume, while `DeliveryAttempt` remains the immutable Broker-reported value. The
+publication uses internal producer semantics with reconsume, maximum, and delay metadata and makes up to three immediate wire
+send attempts per logical terminal settlement; the Broker redirects the retry-topic message to DLQ when its reconsume count
+exceeds the maximum. If publication fails, the message and offset remain local and use the current suspension duration
+before calling the handler again.
+Use a stable, instance-specific `LocalOffsetStorePath` when client identity is not stable.
 
 For a normal PULL queue, `InitialPosition` supplies a starting offset only when the active offset store has no
 value: the Broker group offset in clustering mode, or the instance's local offset file in broadcasting mode. It does

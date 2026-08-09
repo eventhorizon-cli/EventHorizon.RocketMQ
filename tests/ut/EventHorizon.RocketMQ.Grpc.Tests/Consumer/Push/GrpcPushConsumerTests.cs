@@ -314,7 +314,7 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task LitePushSuspend_FifoSettlementFailure_BlocksSameLiteTopicSuccessor()
+    public async Task LitePushSuspend_FifoSettlementFailure_RetriesAndBlocksSuccessorUntilCancellation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -335,10 +335,8 @@ public sealed class GrpcPushConsumerTests
             options => options.MaxConcurrency = 2,
             clientType: Proto.ClientType.LitePushConsumer);
         var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
-        var blockedSignalField = typeof(GrpcPushConsumer).GetField("_fifoBlockedSignal", BindingFlags.Instance | BindingFlags.NonPublic);
         var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
-        var blockedSignal = Assert.IsType<TaskCompletionSource>(blockedSignalField?.GetValue(consumer));
         var consumeLoops = Enumerable.Range(0, 2)
             .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [processingCancellation.Token])))
             .ToArray();
@@ -349,10 +347,14 @@ public sealed class GrpcPushConsumerTests
 
         await consumer.EnqueueBatchAsync([first, successor], cancellationToken);
         channel.Writer.Complete();
-        await blockedSignal.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+        while (client.ChangeInvisibleRequests.Count < 4 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(10, cancellationToken);
+        }
 
         Assert.Equal(new[] { "first" }, handled);
-        Assert.Equal(6, client.ChangeInvisibleRequests.Count);
+        Assert.True(client.ChangeInvisibleRequests.Count >= 4);
         Assert.Empty(client.AckRequests);
         Assert.Empty(client.DeadLetterRequests);
 
@@ -916,7 +918,7 @@ public sealed class GrpcPushConsumerTests
             CreateRouteService(queue));
 
         await consumer.StartAsync(cancellationToken);
-        await finalCompletionAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await finalCompletionAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         var stop = consumer.StopAsync(cancellationToken).AsTask();
         try
         {
@@ -934,6 +936,60 @@ public sealed class GrpcPushConsumerTests
         Assert.Equal(new[] { "first" }, handled);
         Assert.Equal(3, ackCalls);
         Assert.Equal(0, consumer.CachedMessageBytes);
+    }
+
+    [Fact]
+    public async Task FifoCompletionFailure_InvalidReceiptHandle_ReleasesSuccessor()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handled = new ConcurrentQueue<string>();
+        var client = new FakeGrpcClient
+        {
+            AckHandler = static request => Task.FromResult(new Proto.AckMessageResponse
+            {
+                Status = new Proto.Status { Code = Proto.Code.Ok },
+                Entries =
+                {
+                    new Proto.AckMessageResultEntry
+                    {
+                        MessageId = request.Entries[0].MessageId,
+                        ReceiptHandle = request.Entries[0].ReceiptHandle,
+                        Status = new Proto.Status
+                        {
+                            Code = request.Entries[0].MessageId == "first"
+                                ? Proto.Code.InvalidReceiptHandle
+                                : Proto.Code.Ok
+                        }
+                    }
+                }
+            })
+        };
+        await using var consumer = CreateConsumer(
+            client,
+            (message, _) =>
+            {
+                handled.Enqueue(message.MessageId);
+                return ValueTask.FromResult(ConsumeResult.Success);
+            },
+            out var engine,
+            options => options.MaxConcurrency = 2);
+        var channelField = typeof(GrpcPushConsumer).GetField("_messages", BindingFlags.Instance | BindingFlags.NonPublic);
+        var processMethod = typeof(GrpcPushConsumer).GetMethod("RunConsumeLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var channel = Assert.IsAssignableFrom<Channel<GrpcMessageView>>(channelField?.GetValue(consumer));
+        var consumeLoops = Enumerable.Range(0, 2)
+            .Select(_ => Assert.IsAssignableFrom<Task>(processMethod?.Invoke(consumer, [cancellationToken])))
+            .ToArray();
+        var first = Message("first", "account-7", fifo: true);
+        var successor = Message("successor", "account-7", fifo: true);
+        engine.BindMessage(first);
+        engine.BindMessage(successor);
+
+        await consumer.EnqueueBatchAsync([first, successor], cancellationToken);
+        channel.Writer.Complete();
+        await Task.WhenAll(consumeLoops).WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+
+        Assert.Equal(["first", "successor"], handled);
+        Assert.Equal(2, client.AckRequests.Count);
     }
 
     [Fact]
@@ -1825,26 +1881,163 @@ public sealed class GrpcPushConsumerTests
     }
 
     [Fact]
-    public async Task CompletionRetries_BoundedAndCancellationAware_AreBoundedAndCancellable()
+    public async Task CompletionRetries_ActionFailuresBeyondFormerLimit_RetriesUntilSuccess()
+    {
+        var calls = 0;
+        var client = new FakeGrpcClient
+        {
+            AckHandler = _ => Interlocked.Increment(ref calls) < 4
+                ? Task.FromException<Proto.AckMessageResponse>(new InvalidOperationException("unavailable"))
+                : Task.FromResult(AckSuccess())
+        };
+        await using var engine = CreateEngine(client);
+        var message = Message("eventual-success");
+        engine.BindMessage(message);
+
+        await engine.AckAsync(message, TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, client.AckRequests.Count);
+    }
+
+    [Fact]
+    public async Task CompletionRetries_RetryableFailure_WaitsOneSecondBeforeNextAttempt()
+    {
+        var attempts = new ConcurrentQueue<long>();
+        var client = new FakeGrpcClient
+        {
+            AckHandler = _ =>
+            {
+                attempts.Enqueue(Stopwatch.GetTimestamp());
+                return attempts.Count == 1
+                    ? Task.FromException<Proto.AckMessageResponse>(new IOException("unavailable"))
+                    : Task.FromResult(AckSuccess());
+            }
+        };
+        await using var engine = CreateEngine(client);
+        var message = Message("fixed-delay");
+        engine.BindMessage(message);
+
+        await engine.AckAsync(message, TestContext.Current.CancellationToken);
+
+        var timestamps = attempts.ToArray();
+        Assert.Equal(2, timestamps.Length);
+        Assert.True(
+            Stopwatch.GetElapsedTime(timestamps[0], timestamps[1]) >= TimeSpan.FromMilliseconds(900),
+            "The completion retry did not use the released Java client's one-second interval.");
+    }
+
+    [Fact]
+    public async Task CompletionRetries_CallerCancels_StopsRetrySequence()
     {
         var client = new FakeGrpcClient
         {
             AckHandler = static _ => Task.FromException<Proto.AckMessageResponse>(new IOException("unavailable"))
         };
         await using var engine = CreateEngine(client);
-        var bounded = Message("bounded");
-        engine.BindMessage(bounded);
-
-        await Assert.ThrowsAsync<IOException>(() =>
-            engine.AckAsync(bounded, TestContext.Current.CancellationToken));
-        Assert.Equal(3, client.AckRequests.Count);
+        var message = Message("cancelled");
+        engine.BindMessage(message);
 
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        var cancelled = Message("cancelled");
-        engine.BindMessage(cancelled);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            engine.AckAsync(cancelled, cancellation.Token));
-        Assert.Equal(4, client.AckRequests.Count);
+            engine.AckAsync(message, cancellation.Token));
+
+        Assert.Single(client.AckRequests);
+    }
+
+    [Fact]
+    public async Task CompletionRetries_ConsumerStops_CancelsRetrySequence()
+    {
+        var firstAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new FakeGrpcClient
+        {
+            AckHandler = _ =>
+            {
+                firstAttempt.TrySetResult();
+                return Task.FromException<Proto.AckMessageResponse>(new IOException("unavailable"));
+            }
+        };
+        await using var engine = CreateEngine(client);
+        await engine.StartAsync(TestContext.Current.CancellationToken);
+        var message = Message("stopped");
+        engine.BindMessage(message);
+
+        var completion = engine.AckAsync(message, CancellationToken.None);
+        await firstAttempt.Task.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        await engine.StopAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            completion.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task CompletionRetries_AfterConsumerStops_DoesNotStartWireAttempt()
+    {
+        var client = new FakeGrpcClient();
+        await using var engine = CreateEngine(client);
+        await engine.StartAsync(TestContext.Current.CancellationToken);
+        var message = Message("after-stop");
+        engine.BindMessage(message);
+        await engine.StopAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            engine.AckAsync(message, CancellationToken.None));
+
+        Assert.Empty(client.AckRequests);
+    }
+
+    [Fact]
+    public async Task CompletionTelemetry_RetryableWireFailures_RecordsEveryAttempt()
+    {
+        var calls = 0;
+        var client = new FakeGrpcClient
+        {
+            AckHandler = _ => Interlocked.Increment(ref calls) < 3
+                ? Task.FromException<Proto.AckMessageResponse>(new IOException("unavailable"))
+                : Task.FromResult(AckSuccess())
+        };
+        var failedOperations = Enumerable.Range(0, 2)
+            .Select(_ =>
+            {
+                var operation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+                operation.Setup(value => value.Complete(It.IsAny<IOException>()));
+                operation.Setup(value => value.Dispose());
+                return operation;
+            })
+            .ToArray();
+        var successfulOperation = new Mock<IGrpcRocketMQTelemetryOperation>(MockBehavior.Strict);
+        successfulOperation.Setup(value => value.Complete());
+        successfulOperation.Setup(value => value.Dispose());
+        var operations = new Queue<IGrpcRocketMQTelemetryOperation>(
+            failedOperations.Select(static operation => operation.Object).Append(successfulOperation.Object));
+        var telemetry = new Mock<IGrpcRocketMQTelemetry>(MockBehavior.Strict);
+        telemetry
+            .Setup(value => value.StartSettle(
+                "ack",
+                "orders",
+                "tests",
+                "telemetry-retry",
+                0,
+                It.IsAny<IReadOnlyDictionary<string, string>?>()))
+            .Returns(() => operations.Dequeue());
+        await using var engine = CreateEngine(client, telemetry.Object);
+        var message = Message("telemetry-retry");
+        engine.BindMessage(message);
+
+        await engine.AckAsync(message, TestContext.Current.CancellationToken);
+
+        telemetry.Verify(value => value.StartSettle(
+            "ack",
+            "orders",
+            "tests",
+            "telemetry-retry",
+            0,
+            It.IsAny<IReadOnlyDictionary<string, string>?>()), Times.Exactly(3));
+        foreach (var operation in failedOperations)
+        {
+            operation.VerifyAll();
+        }
+
+        successfulOperation.VerifyAll();
     }
 
     [Fact]

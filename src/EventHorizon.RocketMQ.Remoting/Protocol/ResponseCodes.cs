@@ -31,7 +31,10 @@ internal static class ResponseCodes
     public const int ResPullRetryImmediately = 20;
     public const int ResPullOffsetMoved = 21;
     public const int ResQueryNotFound = 22;
+    public const int ResNoBuyerId = 204;
+    public const int ResNotInCurrentUnit = 205;
     public const int ResNoMessage = 208;
     public const int ResPollingFull = 209;
     public const int ResPollingTimeout = 210;
+    public const int ResGoAway = 1500;
 }

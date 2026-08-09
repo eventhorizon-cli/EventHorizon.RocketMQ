@@ -193,6 +193,13 @@ messages and does not enable automatic renewal; acknowledge only after durable p
 long-running work. An unsettled message becomes visible again after its current invisible duration. RocketMQ 5.5.0
 Proxy requires a five-second minimum receive long-poll interval.
 
+Every gRPC completion RPC (acknowledgement, retry/NACK, invisibility change, suspension, or dead-letter forwarding)
+retries every failed wire operation at a fixed one-second interval until it succeeds, the caller cancels, or the owning
+Consumer stops. Each attempt creates its own settlement Activity and metric. `INVALID_RECEIPT_HANDLE` is terminal for
+acknowledgement and invisibility changes; dead-letter forwarding retries that status as well, in line with the official
+Java client. FIFO successors wait while completion retry is in progress, then are released after a terminal completion
+failure even though the failed message remains unsettled.
+
 ## PushConsumer
 
 Use `IGrpcPushConsumer` for automatic receive, handler dispatch, and settlement. Register a typed
@@ -227,9 +234,9 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 ```
 
 Return `ConsumeResult.Success` to acknowledge or `Failure` to follow the effective retry policy. Regular non-FIFO
-Push lets the service advance retry and dead-letter state. FIFO Push retries locally, then the client attempts to
-forward the message to DLQ after exhaustion; if that completion fails, the message remains unsettled and may be
-redelivered. Regular Push treats `ConsumeResult.Suspend(duration)` as `Failure` and ignores its duration. Return
+Push lets the service advance retry and dead-letter state. FIFO Push retries locally, then the client forwards the
+message to DLQ after exhaustion; completion failures retry at one-second intervals, and a terminal failure leaves the
+message unsettled and releases the FIFO successor. Regular Push treats `ConsumeResult.Suspend(duration)` as `Failure` and ignores its duration. Return
 `Success` only after durable business processing; retries, failed completion, and duplicate delivery mean handlers
 must remain idempotent.
 `SubscribeAsync` and `UnsubscribeAsync` update ordinary Push subscriptions at runtime.
@@ -254,8 +261,9 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 
 Do not call `Subscribe` for LitePush. Use `LiteTopics` at startup or `SubscribeLiteAsync` and
 `UnsubscribeLiteAsync` after startup. Non-FIFO LitePush sends `Failure` and `Suspend` through service-owned retry/DLQ
-progression and ignores the Suspend duration. FIFO LitePush retries `Failure` locally and attempts DLQ forwarding
-after the effective attempt limit; if that completion fails, the message remains unsettled and may be redelivered.
+progression and ignores the Suspend duration. FIFO LitePush retries `Failure` locally and forwards to DLQ after the
+effective attempt limit; completion failures retry at one-second intervals, and a terminal failure leaves the message
+unsettled while releasing the FIFO successor.
 FIFO `ConsumeResult.Suspend(duration)` changes invisibility with the caller-selected duration and `suspend=true`;
 the service owns the delivery attempt reported by the next receive. The same suspension also covers unprocessed
 messages with the same LiteTopic from the current receive batch. Durations shorter than 50 milliseconds are rejected. See the

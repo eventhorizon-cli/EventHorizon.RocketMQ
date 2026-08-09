@@ -85,7 +85,7 @@ are preserved.
 | Producer send | All `IGrpcProducer` send paths, including transactional sends. | Standard, reply, batch, and one-way send paths. |
 | Consumer receive | Simple, Push, and LitePush receive engine. | LitePull receives and Push PULL/POP receivers. |
 | Automatic handler processing | Push and LitePush handlers. | Push handlers. |
-| Consumer settlement | Acknowledge, negative acknowledgement, and dead-letter forwarding. | LitePull and Push PULL offset commits, retry/dead-letter send-back, and internal Push POP acknowledgement and invisibility changes. |
+| Consumer settlement | Acknowledge, negative acknowledgement, and dead-letter forwarding. | LitePull and Push PULL offset commits, concurrent retry/dead-letter send-back, orderly `%RETRY%group` publication, and internal Push POP acknowledgement and invisibility changes. |
 
 For gRPC, Proxy-managed renewal requested by `ReceiveMessageRequest.AutoRenew` is not a separate client wire operation
 and must not create a client settlement span. A client-issued `ChangeInvisibleDuration` must be classified by intent:
@@ -96,9 +96,16 @@ shared receive engine keeps these intent-specific internal operations separate e
 Proxy-managed handler renewal creates no duplicate client timer, span, or metric. Result tags use fixed outcome names;
 the caller-selected duration is not a metric dimension.
 
+Each actual gRPC completion RPC attempt owns one settlement Activity and one metric completion. A failed attempt
+completes with an error before the fixed one-second retry wait; the later wire attempt creates a new operation. Waiting
+between attempts creates no telemetry because no RPC occurs. The logical retry sequence ends on success, caller or
+Consumer-run cancellation, or a terminal receipt error. ACK and invisibility-change `INVALID_RECEIPT_HANDLE` is terminal,
+whereas dead-letter forwarding retries it. This keeps an extended Proxy outage observable without one multi-minute span
+hiding the number and outcome of wire attempts.
+
 Classic Remoting instrumentation follows the wire-operation owner. `PullWireClient` owns receive completion for
 non-empty, empty, canceled, and failed PULL operations. `RemotingConsumerOffsetClient` owns commit settlement, while
-`RemotingSettlementClient` owns PULL retry and dead-letter send-back. `PopWireClient` continues to own POP receive,
+`RemotingSettlementClient` owns concurrent PULL retry/dead-letter send-back and orderly `%RETRY%group` publication. `PopWireClient` continues to own POP receive,
 acknowledgement, and invisibility-change telemetry. The role-level consumer engine only composes these clients; moving
 a responsibility between internal types must not duplicate or drop its Activity or metric completion.
 
@@ -113,8 +120,11 @@ valid.
 
 Classic orderly suspension is a local scheduler decision. Each handler invocation still owns one process Activity,
 but the delay between attempts creates no settlement Activity or metric because no wire operation occurs. At the
-terminal limit, clustering and broadcasting each record a `reject` settlement attempt. If it fails, the next local
-suspension creates no additional settlement signal; the later send-back attempt records a new `reject` operation.
+terminal limit, clustering and broadcasting each record a `reject` operation for publication to `%RETRY%group` through
+the internal producer path. That logical settlement performs up to three immediate wire send attempts; a successful
+retry-topic publication lets the Broker redirect the message to DLQ when its reconsume count exceeds the supplied
+maximum. If publication fails, the next local suspension creates no additional settlement signal and the message is
+retried locally.
 
 Activities use OpenTelemetry messaging semantic-convention attributes such as `messaging.system`,
 `messaging.destination.name`, `messaging.consumer.group.name`, message ID, partition ID, body size, and batch size.

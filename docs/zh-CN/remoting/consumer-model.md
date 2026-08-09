@@ -132,7 +132,7 @@ Broker endpoint 与建议 Broker ID 由内部路由解析器保存。topic 快�
 | `Coordination/Rebalance` | 共享的客户端 rebalance 调度、注册、唤醒以及确定性的平均队列分配策略。 |
 | `Pull` | 供 LitePull 与 Push PULL receiver 共用、且不保存订阅状态的内部 PULL request/response 契约和 wire 操作；每次 Pull 都从当前 receive target 获取 filter。 |
 | `Offset` | 内部 queue position 查询与 consumer-group offset 持久化。 |
-| `Settlement` | 供 Push PULL 重试和 retry topic 位点初始化使用的 classic `CONSUMER_SEND_MSG_BACK`。 |
+| `Settlement` | 供并发 Push PULL 重试和 retry topic 位点初始化使用的 classic `CONSUMER_SEND_MSG_BACK`，以及 orderly `%RETRY%group` 发布。 |
 | `LitePull` 与 `Push` | 两个公开角色的门面，以及各自的 assignment、receive、dispatch 和运行态。 |
 
 Remoting 组合根仍会为每个已注册角色创建一个 `IRemotingConsumerEngine`。Engine 只管理角色生命周期，并将
@@ -341,8 +341,8 @@ receipt 的 retry marker 还决定 ACK 与不可见时间请求使用的真实 w
 | `Pull/Dispatch/PullProcessQueue` | 一个物理 PULL queue 的缓存消息、拉取/提交位点、连续完成水位、settlement retry 状态和 FIFO barrier，并由同一个同步边界保护。 | Consumer 范围调度或 wire I/O。 |
 | `Pull/Receive/ConcurrentPullReceiveLoop` | 单个并发 PULL assignment 使用自身 target filter 的长轮询、缓存准入和串行 offset 持久化循环。 | 应用 handler 结果或 send-back。 |
 | `Pull/Dispatch/PullConsumeRequestProcessor` | 并发 handler 结果映射、队列内完成状态，以及激活已保存的本地 settlement retry。 | 接收轮询、retry topic 准备、send-back 执行或顺序消费的 Broker lock 处理。 |
-| `Pull/Settlement/PullSendBackSettlement` | retry topic 准备、send-back 执行与 retry queue offset 初始化。 | 本地 settlement retry 状态或调度、接收轮询、handler 结果映射或队列内完成状态。 |
-| `Pull/Receive/OrderlyPullReceiveLoop` | 顺序消费的 Broker lock 校验、使用 target filter 的长轮询、串行 handler 重试、send-back 和内联 offset 持久化。 | 并发 `PullProcessQueue` 调度。 |
+| `Pull/Settlement/PullSendBackSettlement` | retry topic 准备、并发 send-back 执行、orderly `%RETRY%group` 发布与 retry queue offset 初始化。 | 本地 settlement retry 状态或调度、接收轮询、handler 结果映射或队列内完成状态。 |
+| `Pull/Receive/OrderlyPullReceiveLoop` | 顺序消费的 Broker lock 校验、使用 target filter 的长轮询、串行 handler 重试、发布 `%RETRY%group` 消息和内联 offset 持久化。 | 并发 `PullProcessQueue` 调度。 |
 | `Pull/Offset/PullOffsetManager` | PULL 初始与已提交 offset、广播存储、reset boundary 和 retry-topic 初始化 boundary。 | POP 进度。 |
 | `Pull/Receive/PullAssignmentReceiver` | 单个 PULL assignment 的 identity、取消、观察到的 Broker 队列锁 lease，以及覆盖接收循环和活动消费请求的完成边界。 | POP wire 操作或 handler 结果策略。 |
 | `Pop/PopAssignmentReceiver` | 单个 POP assignment 使用自身 target filter 的长轮询、接收分批、取消和接收故障隔离。 | handler 调用、receipt 生命周期或结算。 |
@@ -428,9 +428,12 @@ Push handler 契约继续供两类 receiver 共用，并遵循 classic Java、Go
   已分配 queue 继续消费；未设置时使用 `OrderlySuspendDuration`，最终时长按 Java 的 10 毫秒至 30 秒范围限制。
   每次尝试都会创建新的 context，因此 override 只影响下一次本地重试。并发 PULL、POP 和 `MessageGroup` 路径在
   结构上都不会读取该值。
-- 集群 PULL 和 orderly 广播的 `Retry` 达到 `MaxDeliveryAttempts` 后都会尝试按 classic send-back 进入死信。orderly
-  send-back 失败时，当前消息会继续留在本地，按本次尝试选择的暂停时长等待后重新调用 handler，且不会推进位点。并发广播
-  仍不拥有 Broker retry 或 DLQ，会丢弃未成功的尾部。POP 的 `Retry` 达到同一上限时，则遵循 Java 客户端的
+- 集群并发 PULL 的 `Retry` 达到 `MaxDeliveryAttempts` 后，会尝试按 classic send-back 进入死信。orderly PULL 使用
+  单独的零基 `OrderlyMaxReconsumeTimes`：默认值 `-1` 对应 Java 近似无限重试，`0` 表示首次失败后发布，正数表示
+  允许对应次数的本地重新消费后再发布；该规则同时适用于集群和 orderly 广播。达到上限后，客户端通过内部 producer
+  语义构造 `%RETRY%<group>` 消息，附带重新消费次数、最大次数和延迟元数据，并为每次逻辑终态结算最多立即执行三次 wire
+  send。发布成功后，Broker 会在重新消费次数超过上限时把 retry topic 消息转入 DLQ。发布最终失败时，当前消息会留在本地并递增重新消费次数，按本次暂停时长等待后再次调用 handler，且不会推进位点。并发广播仍不拥有
+  Broker retry 或 DLQ，会丢弃未成功的尾部。POP 的 `Retry` 达到 `MaxDeliveryAttempts` 时，则遵循 Java 客户端的
   `checkNeedAckOrDelay`，不会隐式执行死信 send-back。消息年龄不超过 POP 最后一级延迟的两倍时，
   客户端按年龄选择下一个 POP 延迟档位，并只发送一次 `CHANGE_MESSAGE_INVISIBLETIME`；只有消息年龄严格超过该阈值才
   ACK receipt。官方最后一级延迟为 7,200 秒，因此阈值为四小时。这个最大投递次数分支会忽略 handler 指定的 delay level。
@@ -443,22 +446,25 @@ handler 结果中不再包含 `DeadLetter`。这与 Java 的
 [`ConsumeConcurrentlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyContext.java)
 一致。PULL 把该值传给 classic send-back；POP 会先将负值归一化为 `0`，再按 Java 的 POP 专用重试表处理。归一化后的
 值根据从零开始的重试次数（`DeliveryAttempt - 1`）选择表项。该表从 10 秒开始，并不是普通延迟消息的 level 表。
-直接死信仍然只适用于 PULL 的 classic send-back；客户端会尝试执行 send-back，结算失败时位点保持未解决，消息仍可能再次
-投递。POP 重试不会把负值解释为直接死信请求。
+直接死信仍然只适用于并发 PULL 的 classic send-back；orderly PULL 改为发布内部 retry topic，POP 重试不会把负值解释为
+直接死信请求。并发 PULL send-back 失败时位点保持未解决，消息仍可能再次投递。
 
-orderly 时长契约遵循正式版 `rocketmq-all-5.5.0` 的
+orderly 重试与时长契约遵循正式版 `rocketmq-all-5.5.0` 的
 [`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
-及其一秒默认值。集群和广播 orderly Consumer 都会先执行本地暂停，并在达到本客户端配置的投递上限后尝试 DLQ
-send-back。终态 send-back 失败时，当前消息继续留在本地，并按本次尝试的暂停时长等待后重新调用 handler。handler 在设置 `SuspendCurrentQueueDuration` 后抛出异常时，
+和 [`ConsumeMessageOrderlyService`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java)。
+集群和广播 orderly Consumer 都会先执行本地暂停，并在有限的 `OrderlyMaxReconsumeTimes` 耗尽后通过内部 producer 语义
+发布 `%RETRY%<group>`。消息携带重新消费次数、最大次数和延迟元数据，每次逻辑终态结算最多立即执行三次 wire send；发布成功后，
+Broker 会在重新消费次数超过上限时把 retry topic 消息转入 DLQ。发布最终失败时，当前消息继续留在本地，并按本次尝试的暂停时长等待后重新调用 handler。handler 在设置 `SuspendCurrentQueueDuration` 后抛出异常时，
 当前尝试仍保留该 override，这与正式版 Java 5.5.0 一致；未设置时才使用配置的 orderly 默认值。取消会终止本地等待且不执行结算。
 queue lock 丢失不会唤醒正在运行的 timer；客户端会在 timer 结束后、再次调用 handler 前发现
 失锁，这与 Java 的定时重试一致。本地等待只是客户端调度，不会创建 ACK、NACK、reject 或 commit settlement
-operation。失败的死信 send-back 会记录自己的失败 settlement operation，之后的本地等待不会重复记录。
+operation。失败的 retry topic 发布会记录自己的失败 settlement operation，之后的本地等待不会重复记录。
 
-Java orderly 在 `maxReconsumeTimes=-1` 时默认近似无限重试，并在再次调用 handler 前递增可变的消息重试次数。本客户端
-保留显式的一基 `MaxDeliveryAttempts`，默认值为 16；本地尝试次数单独维护，`RemotingMessageView.DeliveryAttempt` 始终是
-Broker 返回的不可变值。这些是有意保留的 .NET API 差异；暂停时长、物理 queue 隔离、终态 send-back 及其失败恢复
-遵循正式版 Java 的设计。
+`RemotingMessageView.ReconsumeTimes` 对外提供与 Java 可变 `MessageExt.reconsumeTimes` 相同的零基计数。它以 Broker
+header 为初值，并在每次 orderly 本地重新消费前递增；retry topic 发布失败后也会递增，因此下一次 handler 调用能看到
+新值。`RemotingMessageView.DeliveryAttempt` 继续表示 Broker 返回的一基投递次数（解码时等于
+`ReconsumeTimes + 1`），不会被本地 orderly 调度改写。并发 PULL、POP 和 `MessageGroup` 仍使用
+`MaxDeliveryAttempts`，orderly 的 `-1` sentinel 不会改变这些路径的重试或终态策略。
 
 POP handler 执行期间不会自动续租 receipt。客户端会在 handler 处理前和结算前检查固定不可见 deadline；如果已
 过期，则忽略迟到的 handler 结果，不创建结算 operation，并允许 Broker 重新投递。`Retry` 结果只发起一次带

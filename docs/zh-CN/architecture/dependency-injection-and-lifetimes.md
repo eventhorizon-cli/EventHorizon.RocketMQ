@@ -201,8 +201,8 @@ gRPC Push 和 LitePush 会为每条消息调用 handler。Remoting Push 则通�
 `IRemotingPushMessageHandler` API，在每次批量回调中传入 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`；其 `ConsumeMessageBatchSize` 默认值为 `1`，因此除非显式配置，否则仍是
 单消息投递。对于并发、非 FIFO 批次，handler 可以返回 `Success` 并设置 `AckIndex`，以确认连续前缀并重试
-尾部；`Retry` 仍是整批结果。只有内部 PULL 路径会把负数 `DelayLevelWhenNextConsume` 解释为直接死信；POP 会将其
-归一化为默认重试级别。
+尾部；`Retry` 仍是整批结果。只有并发内部 PULL 路径会把负数 `DelayLevelWhenNextConsume` 解释为直接死信；orderly PULL
+会发布到 retry topic，POP 会将其归一化为默认重试级别。
 
 对于非 FIFO 的 gRPC Push 和 LitePush 消息，`ConsumeTimeout` 到期后会取消 handler token 并请求重新投递。handler
 执行期间的 receipt 续期由 `AutoRenew` 请求的 Proxy 负责，不属于 handler scope，也不由客户端定时器承担。

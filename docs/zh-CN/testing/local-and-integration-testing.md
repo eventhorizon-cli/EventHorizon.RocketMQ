@@ -75,10 +75,13 @@ dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Remoting.
   LitePush 的 `Failure` 和 `Suspend` 都走服务端 retry/NACK，FIFO LitePush 才使用调用方的精确时长发送
   `suspend=true`。FIFO receive batch 会暂停尚未处理的同 `LiteTopic` 兄弟消息，其他 LiteTopic 保持独立；
   `MessageGroup` 或 `LiteTopic` 缺失时仍通过物理 queue fallback 保持 FIFO 行为；
-- gRPC 本地重试取消会及时停止等待；结算失败会保持消息未解决、维持 FIFO 阻塞，并在停止期间正确取消；
-- Remoting orderly PULL 会把调用方和配置的暂停时长限制在 10 毫秒至 30 秒，重置每次调用的 context；handler 抛出
-  异常时仍保留当前尝试的 override，仅在未设置时使用配置默认值；它还会隔离单个物理 queue、停止时取消等待，
-  在集群和广播模式下都执行终态 send-back，并在 send-back 失败时保留当前消息及本次暂停时长。
+- gRPC 本地重试取消会及时停止等待；每次 completion wire attempt 都按固定 1 秒间隔重试到成功、调用方取消或 Consumer
+  停止，并独立记录 telemetry；ACK 和修改不可见时间遇到无效 receipt handle 时保持终态，DLQ 转发则重试该状态；FIFO
+  后继消息只在 completion 重试期间等待，终态结算失败后会释放后继消息；
+- Remoting orderly PULL 会把调用方和配置的暂停时长限制在 10 毫秒至 30 秒，按 `OrderlyMaxReconsumeTimes`（`-1` 表示
+  无限）跟踪零基 `ReconsumeTimes`，重置每次调用的 context；handler 抛出异常时仍保留当前尝试的 override，仅在未设置
+  时使用配置默认值；它还会隔离单个物理 queue、停止时取消等待，在集群和广播模式下通过内部 producer 语义向
+  `%RETRY%group` 发布终态消息，并为每次逻辑结算最多立即执行三次 wire send；发布最终失败时保留当前消息及本次暂停时长。
 
 对于客户端能够确定性验证的行为，IT 覆盖不能替代 UT。即使 IT 已覆盖完整工作流，底层状态转换、分配、调度、
 offset、重试和失败不变量仍必须保留聚焦的 UT；IT 只在此基础上补充真实 Broker、NameServer、Proxy、transport、
@@ -145,13 +148,15 @@ Consumer API。普通 LitePull 与默认 Push 工作流不依赖 Broker 侧 POP 
 gRPC DLQ 集成测试包含四条工作流：普通 FIFO Push、普通非 FIFO Push、非 FIFO LitePush 和 FIFO LitePush。每条都在行为
 归属方配置一次重试：FIFO 使用 `MaxDeliveryAttempts=2`，非 FIFO group 使用 Broker `retryMaxTimes=1`；测试重试间隔均为
 100 毫秒。测试随后验证 DLQ 消息和职责划分：普通 Push 与 LitePush 的非 FIFO 推进都由服务端负责，FIFO Push 与 FIFO
-LitePush 则由客户端尝试转发 DLQ。转发或结算失败会保持未解决，不会被当作 ACK。FIFO Lite suspend 工作流另行请求精确
-250 毫秒，验证不会提前重投且 receipt 会被替换；由于 `DeliveryAttempt` 由服务端负责，测试刻意不对其数值作保证。
+LitePush 则由客户端尝试转发 DLQ。completion retry 使用固定 1 秒间隔；终态结算失败会保持未解决，不会被当作 ACK，并
+释放 FIFO 后继消息。FIFO Lite suspend 工作流另行请求精确 250 毫秒，验证不会提前重投且 receipt 会被替换；由于
+`DeliveryAttempt` 由服务端负责，测试刻意不对其数值作保证。
 
 Remoting PULL DLQ 集成测试覆盖负 delay 直接 send-back，以及并发、`MessageGroup` FIFO、集群 orderly 和广播 orderly
-的重试耗尽场景。重试耗尽场景使用一次重试（`MaxDeliveryAttempts=2`）和 100 毫秒重试延迟；orderly 另外覆盖短时的本地
-queue 暂停。每条工作流都会观察一次 reject 和 DLQ 消息，再验证集群 Broker 位点或广播本地持久化位点，并保留结算失败时
-位点未解决的契约。
+的重试耗尽场景。并发和 `MessageGroup` FIFO 场景使用一次重试（`MaxDeliveryAttempts=2`）和 100 毫秒重试延迟；orderly
+场景使用 `OrderlyMaxReconsumeTimes=1`（零基计数，首次失败后本地重试一次），并设置 50 毫秒的本地 queue 暂停。每条
+orderly 工作流验证三次立即 wire send 的 `%RETRY%group` 发布和 Broker 后续的 DLQ 转发，再验证集群 Broker 位点或广播
+本地持久化位点。负 delay 直接死信仍只适用于并发 PULL。
 
 single-Broker 的运行时间也属于需要持续测量的测试设计约束。在 commit `9ef119f` 上，本地使用
 `Topology!=MultiBroker` 筛选条件运行 Remoting 测试，29 个测试全部通过，测试阶段耗时 167.7 秒，其中共享

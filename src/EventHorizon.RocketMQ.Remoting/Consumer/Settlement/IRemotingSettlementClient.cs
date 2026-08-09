@@ -23,4 +23,9 @@ internal interface IRemotingSettlementClient
         int delayLevel,
         int maxReconsumeTimes,
         CancellationToken cancellationToken);
+
+    Task SendOrderlyRetryAsync(
+        RemotingMessageView message,
+        int maxReconsumeTimes,
+        CancellationToken cancellationToken);
 }

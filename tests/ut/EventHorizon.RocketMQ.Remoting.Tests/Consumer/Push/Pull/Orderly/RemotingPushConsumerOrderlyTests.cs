@@ -14,6 +14,7 @@
 // limitations under the License.
 
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
@@ -32,6 +33,60 @@ namespace EventHorizon.RocketMQ.Remoting.Tests.Consumer.Push.Pull.Orderly;
 
 public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestSupport
 {
+    [Fact]
+    public async Task OrderlyConsumer_DefaultUnlimitedRetryBudget_IncrementsReconsumeTimesPastConcurrentLimit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var thirdAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reconsumeTimes = new List<int>();
+        var delivered = 0;
+        var remoting = new FakeRemotingClient("127.0.0.1@orderly-unlimited")
+        {
+            PullHandler = async (request, token) =>
+            {
+                if (Assert.IsType<string>(request.ExtFields["topic"]) == "orders" &&
+                    Interlocked.Exchange(ref delivered, 1) == 0)
+                {
+                    return PullSuccess(CreateMessageRecord("orders", "unlimited", null, 0, 1_000), 1);
+                }
+
+                return await WaitForCanceledPullAsync(token);
+            }
+        };
+        var options = WithMessageHandler(new RemotingPushConsumerOptions
+        {
+            GroupName = "legacy-group",
+            ConsumeOrderly = true,
+            InitialPosition = ConsumeFromPosition.Beginning,
+            MaxConcurrency = 1,
+            MaxDeliveryAttempts = 2,
+            OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
+            LongPollingTimeout = TimeSpan.FromSeconds(1)
+        }, (messages, _, _) =>
+        {
+            reconsumeTimes.Add(Assert.Single(messages).ReconsumeTimes);
+            if (reconsumeTimes.Count == 3)
+            {
+                thirdAttempt.TrySetResult();
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Retry);
+        });
+        options.Subscribe("orders");
+        await using var consumer = CreateRemotingPushConsumer(
+            options,
+            CreateRouteServiceMock().Object,
+            remoting,
+            "orderly-unlimited");
+
+        await consumer.StartAsync(cancellationToken);
+        await thirdAttempt.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        await consumer.StopAsync(cancellationToken);
+
+        Assert.Equal([0, 1, 2], reconsumeTimes.Take(3));
+        Assert.DoesNotContain(remoting.Requests, static request => request.Code == RequestCode.ConsumerSendMsgBack);
+    }
+
     [Theory]
     [InlineData(-1, 10)]
     [InlineData(0, 10)]
@@ -106,7 +161,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 3,
+            OrderlyMaxReconsumeTimes = 2,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
@@ -180,7 +235,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 2,
+            OrderlyMaxReconsumeTimes = 1,
             OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
         }, (_, _, _) =>
@@ -216,7 +271,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
     }
 
     [Fact]
-    public async Task OrderlyBroadcastConsumer_RetryAtDeliveryLimit_SendsBackAndAdvances()
+    public async Task OrderlyBroadcastConsumer_RetryAtReconsumeLimit_SendsRetryTopicMessageAndAdvances()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var offsetPath = Path.Combine(
@@ -246,7 +301,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 2,
+            OrderlyMaxReconsumeTimes = 1,
             OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
         }, (_, _, _) =>
@@ -287,10 +342,16 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
 
             Assert.Equal(2, calls);
             Assert.Equal(1, persistedOffset);
-            var sendBack = Assert.Single(
+            var retryMessage = Assert.Single(
                 remoting.Requests,
-                static request => request.Code == RequestCode.ConsumerSendMsgBack);
-            Assert.Equal(-1, Convert.ToInt32(sendBack.ExtFields["delayLevel"]));
+                static request => request.Code == RequestCode.SendMessage);
+            AssertOrderlyRetryMessage(
+                retryMessage,
+                "legacy-group",
+                "broadcast-terminal",
+                expectedReconsumeTimes: 2,
+                expectedMaxReconsumeTimes: 1,
+                expectedDelayLevel: 4);
         }
         finally
         {
@@ -299,11 +360,12 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
     }
 
     [Fact]
-    public async Task OrderlyConsumer_DeadLetterSendBackFails_RetriesCurrentMessageWithCallerDuration()
+    public async Task OrderlyConsumer_RetryMessageSendFails_RetriesCurrentMessageWithCallerDuration()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = new List<long>();
+        var reconsumeTimes = new List<int>();
         var calls = 0;
         var sendBackCalls = 0;
         var delivered = 0;
@@ -319,7 +381,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
 
                 return await WaitForCanceledPullAsync(token);
             },
-            SendBackHandler = (_, _) => Interlocked.Increment(ref sendBackCalls) == 1
+            SendMessageHandler = (_, _) => Interlocked.Increment(ref sendBackCalls) <= 3
                 ? Task.FromException<RemotingCommand>(new IOException("send-back unavailable"))
                 : Task.FromResult(new RemotingCommand { Code = ResponseCodes.ResSuccess })
         };
@@ -329,13 +391,14 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 1,
+            OrderlyMaxReconsumeTimes = 0,
             RetryDelay = TimeSpan.FromMilliseconds(10),
             OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
-        }, (_, context, _) =>
+        }, (messages, context, _) =>
         {
             attempts.Add(Stopwatch.GetTimestamp());
+            reconsumeTimes.Add(Assert.Single(messages).ReconsumeTimes);
             context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(150);
             if (Interlocked.Increment(ref calls) == 2)
             {
@@ -361,7 +424,8 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
         await consumer.StopAsync(cancellationToken);
 
         Assert.Equal(2, calls);
-        Assert.Equal(2, sendBackCalls);
+        Assert.Equal(4, sendBackCalls);
+        Assert.Equal([0, 1], reconsumeTimes);
         Assert.True(
             Stopwatch.GetElapsedTime(attempts[0], attempts[1]) >= TimeSpan.FromMilliseconds(120),
             "The failed send-back did not retain the caller-selected orderly suspension duration.");
@@ -402,7 +466,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 2,
-            MaxDeliveryAttempts = 3,
+            OrderlyMaxReconsumeTimes = 2,
             OrderlySuspendDuration = TimeSpan.FromSeconds(30),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
         }, (messages, context, _) =>
@@ -462,7 +526,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 3,
+            OrderlyMaxReconsumeTimes = 2,
             OrderlySuspendDuration = TimeSpan.FromMilliseconds(10),
             LongPollingTimeout = TimeSpan.FromSeconds(1)
         }, (_, context, _) =>
@@ -859,7 +923,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
     }
 
     [Fact]
-    public async Task OrderlyConsumer_RetryAtDeliveryLimit_CommitsPastDeadLetteredMessage()
+    public async Task OrderlyConsumer_RetryAtReconsumeLimit_CommitsPastDeadLetteredMessage()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var delivered = 0;
@@ -883,7 +947,7 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             ConsumeOrderly = true,
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
-            MaxDeliveryAttempts = 1,
+            OrderlyMaxReconsumeTimes = 0,
             PullMaxCachedMessages = 1,
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, static (_, _, _) => ValueTask.FromResult(ConsumeResult.Retry));
@@ -895,17 +959,24 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             "orderly-dead-letter");
 
         await consumer.StartAsync(cancellationToken);
-        await remoting.WaitForRequestCountAsync(RequestCode.ConsumerSendMsgBack, 1, cancellationToken);
+        await remoting.WaitForRequestCountAsync(RequestCode.SendMessage, 1, cancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
         while (!remoting.UpdatedOffsets.Any(static update =>
                    update.Topic == "orders" && update.Offset == 1))
         {
             await Task.Delay(10, cancellationToken);
         }
 
-        var sendBack = Assert.Single(
+        var retryMessage = Assert.Single(
             remoting.Requests,
-            static request => request.Code == RequestCode.ConsumerSendMsgBack);
-        Assert.Equal(-1, Convert.ToInt32(sendBack.ExtFields["delayLevel"]));
+            static request => request.Code == RequestCode.SendMessage);
+        AssertOrderlyRetryMessage(
+            retryMessage,
+            "legacy-group",
+            "dead-letter",
+            expectedReconsumeTimes: 1,
+            expectedMaxReconsumeTimes: 0,
+            expectedDelayLevel: 3);
     }
 
     [Fact]
@@ -1244,7 +1315,6 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             InitialPosition = ConsumeFromPosition.Beginning,
             MaxConcurrency = 1,
             PullMaxCachedMessages = 1,
-            MaxDeliveryAttempts = 1,
             RetryDelay = TimeSpan.FromMilliseconds(1),
             LongPollingTimeout = TimeSpan.FromSeconds(1),
         }, (messages, context, _) =>
@@ -1333,5 +1403,29 @@ public sealed class RemotingPushConsumerOrderlyTests : RemotingPushConsumerTestS
             static request => request.Code == RequestCode.UnlockBatchMq &&
                               RequestContainsQueueTopic(request, "orders"),
             cancellationToken);
+    }
+
+    private static void AssertOrderlyRetryMessage(
+        RemotingCommand request,
+        string consumerGroup,
+        string messageId,
+        int expectedReconsumeTimes,
+        int expectedMaxReconsumeTimes,
+        int expectedDelayLevel)
+    {
+        Assert.Equal(RequestCode.SendMessage, request.Code);
+        Assert.Equal($"%RETRY%{consumerGroup}", Assert.IsType<string>(request.ExtFields["topic"]));
+        Assert.Equal("CLIENT_INNER_PRODUCER", Assert.IsType<string>(request.ExtFields["producerGroup"]));
+        Assert.Equal(expectedReconsumeTimes, Convert.ToInt32(request.ExtFields["reconsumeTimes"]));
+        Assert.Equal(expectedMaxReconsumeTimes, Convert.ToInt32(request.ExtFields["maxReconsumeTimes"]));
+        Assert.Equal(messageId, Encoding.UTF8.GetString(Assert.IsType<byte[]>(request.Body)));
+        var properties = MessagePropertyCodec.Deserialize(
+            Assert.IsType<string>(request.ExtFields["properties"]));
+        Assert.Equal("orders", properties["RETRY_TOPIC"]);
+        Assert.Equal(messageId, properties["ORIGIN_MESSAGE_ID"]);
+        Assert.Equal(expectedReconsumeTimes.ToString(), properties["RECONSUME_TIME"]);
+        Assert.Equal(expectedMaxReconsumeTimes.ToString(), properties["MAX_RECONSUME_TIMES"]);
+        Assert.Equal(expectedDelayLevel.ToString(), properties["DELAY"]);
+        Assert.DoesNotContain("TRAN_MSG", properties.Keys);
     }
 }

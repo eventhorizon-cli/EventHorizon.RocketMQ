@@ -59,12 +59,16 @@ Focused consumer-result unit coverage includes:
   caller duration with `suspend=true`, suspends unprocessed same-`LiteTopic` siblings in one receive batch, keeps other
   LiteTopics independent, and preserves FIFO behavior through the physical-queue fallback when `MessageGroup` or
   `LiteTopic` is absent;
-- gRPC local retry cancellation stops retry delays promptly, while completion failures leave the message unresolved,
-  preserve FIFO blocking, and cancel cleanly during shutdown;
-- Remoting orderly PULL clamps caller and configured suspension to 10 milliseconds through 30 seconds, resets the
-  per-invocation context, retains the current attempt's override when a handler throws, isolates one suspended physical
-  queue from its siblings, cancels waits on stop, attempts terminal send-back for clustering and broadcasting, and
-  retains the current message and suspension duration when send-back fails.
+- gRPC local retry cancellation stops retry delays promptly; each completion wire attempt retries at a fixed one-second
+  interval until success, caller cancellation, or Consumer stop and emits its own telemetry. Invalid receipt handles remain
+  terminal for ACK and invisibility changes, while DLQ forwarding retries them; FIFO successors wait only while completion
+  retry is in progress and are released after a terminal completion failure;
+- Remoting orderly PULL clamps caller and configured suspension to 10 milliseconds through 30 seconds, tracks the
+  zero-based `ReconsumeTimes` count against `OrderlyMaxReconsumeTimes` (`-1` means unlimited), resets the per-invocation
+  context, retains the current attempt's override when a handler throws, isolates one suspended physical queue from its
+  siblings, cancels waits on stop, publishes exhausted orderly messages to `%RETRY%group` through internal producer
+  semantics with up to three immediate wire attempts for each logical terminal settlement, and retains the current
+  message and suspension duration when publication fails.
 
 Test methods follow the
 [`MemberOrBehavior_Scenario_ExpectedOutcome` convention recommended by Microsoft](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices#naming-your-tests).
@@ -158,16 +162,19 @@ The gRPC DLQ integration suite has four workflows: regular FIFO Push, regular no
 FIFO LitePush. Each configures one retry at its owning boundary: FIFO uses `MaxDeliveryAttempts=2`, while non-FIFO
 groups use Broker `retryMaxTimes=1`; test retry intervals are 100 milliseconds. The suite verifies the DLQ message and
 the ownership split: regular and Lite non-FIFO progression is service-owned, while FIFO Push and FIFO LitePush use
-client attempts to forward to DLQ. A forwarding/completion failure is treated as unresolved rather than as an ACK.
+client attempts to forward to DLQ. Completion retries use the fixed one-second interval; a terminal completion failure is
+treated as unresolved rather than as an ACK, and releases the FIFO successor.
 The FIFO Lite suspend workflow separately requests exactly 250 milliseconds, verifies that redelivery is not early
 and that the receipt is replaced, and deliberately makes no numeric `DeliveryAttempt` assertion because that value is
 service-owned.
 
 The Remoting PULL DLQ integration suite covers direct negative-delay send-back plus concurrent, `MessageGroup` FIFO,
-clustered orderly, and broadcasting orderly retry exhaustion. Retry-exhaustion cases use one retry
-(`MaxDeliveryAttempts=2`) with a 100-millisecond retry delay; orderly delivery additionally exercises its short local
-queue suspension. Each workflow observes one reject and the DLQ message, then verifies the Broker-committed clustering
-offset or the persisted broadcasting offset while preserving the unresolved-on-failure contract.
+clustered orderly, and broadcasting orderly retry exhaustion. Concurrent and `MessageGroup` retry-exhaustion cases use
+one retry (`MaxDeliveryAttempts=2`) with a 100-millisecond retry delay. Orderly cases use
+`OrderlyMaxReconsumeTimes=1` (zero-based, one local retry after the initial failure) and set 50 milliseconds of local
+queue suspension. Each orderly workflow verifies the three-attempt `%RETRY%group` publication and the Broker's subsequent
+DLQ redirect, then verifies the Broker-committed clustering offset or the persisted broadcasting offset. Direct negative-delay
+DLQ remains concurrent PULL-only.
 
 Single-Broker runtime is treated as a measured test-design constraint. On commit `9ef119f`, the local Remoting filter
 `Topology!=MultiBroker` passed 29 tests in 167.7 seconds; approximately 44.6 seconds were shared fixture startup. Test

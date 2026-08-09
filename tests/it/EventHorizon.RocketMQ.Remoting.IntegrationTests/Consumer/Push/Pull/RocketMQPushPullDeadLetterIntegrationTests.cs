@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Collections.Concurrent;
 using System.Text;
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using EventHorizon.RocketMQ.Remoting.Consumer;
@@ -101,6 +102,10 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
         var expectedDeliveryCount = scenario == DeadLetterScenario.Explicit ? 1 : 2;
         var terminalAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var deliveryCount = 0;
+        var isOrderly = scenario is
+            DeadLetterScenario.OrderlyRetryExhausted or
+            DeadLetterScenario.OrderlyBroadcastRetryExhausted;
+        var orderlyReconsumeTimes = new ConcurrentQueue<int>();
         var isOrderlyBroadcast = scenario == DeadLetterScenario.OrderlyBroadcastRetryExhausted;
         var localOffsetPath = isOrderlyBroadcast
             ? Path.Combine(Path.GetTempPath(), $"rocketmq-remoting-dlq-{Guid.NewGuid():N}.json")
@@ -120,14 +125,20 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
             options.PullBatchSize = 1;
             options.ConsumeMessageBatchSize = 1;
             options.MaxConcurrency = 1;
-            options.MaxDeliveryAttempts = expectedDeliveryCount;
+            if (isOrderly)
+            {
+                options.OrderlyMaxReconsumeTimes = expectedDeliveryCount - 1;
+            }
+            else
+            {
+                options.MaxDeliveryAttempts = expectedDeliveryCount;
+            }
+
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.RetryDelay = TimeSpan.FromMilliseconds(100);
             options.ConsumerMode = isOrderlyBroadcast ? ConsumerMode.Broadcasting : ConsumerMode.Clustering;
             options.LocalOffsetStorePath = localOffsetPath;
-            options.ConsumeOrderly = scenario is
-                DeadLetterScenario.OrderlyRetryExhausted or
-                DeadLetterScenario.OrderlyBroadcastRetryExhausted;
+            options.ConsumeOrderly = isOrderly;
             options.Subscribe(scope.Topic, new FilterExpression(tag));
         }, (messages, context, _) =>
             {
@@ -142,10 +153,9 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
                     terminalAttempt.TrySetResult();
                 }
 
-                if (scenario is
-                    DeadLetterScenario.OrderlyRetryExhausted or
-                    DeadLetterScenario.OrderlyBroadcastRetryExhausted)
+                if (isOrderly)
                 {
+                    orderlyReconsumeTimes.Enqueue(message.ReconsumeTimes);
                     context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(50);
                 }
 
@@ -245,6 +255,10 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
 
             Assert.Equal(1, settlements.Count("reject", scope.Topic, consumerGroup, sent.MessageId));
             Assert.Equal(expectedDeliveryCount, Volatile.Read(ref deliveryCount));
+            if (isOrderly)
+            {
+                Assert.Equal([0, 1], orderlyReconsumeTimes);
+            }
         }
         finally
         {

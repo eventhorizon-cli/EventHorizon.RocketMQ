@@ -22,7 +22,7 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push;
 /// For a concurrent non-FIFO batch, <see cref="AckIndex"/> selects the acknowledged prefix when the handler returns
 /// <see cref="ConsumeResult.Success"/>, while <see cref="DelayLevelWhenNextConsume"/> selects retry timing when it
 /// returns <see cref="ConsumeResult.Retry"/>. A negative value requests direct dead-lettering only when the internal
-/// receiver uses PULL; POP normalizes it to the default retry level. FIFO <c>MessageGroup</c> ignores these settings.
+/// receiver uses concurrent PULL; POP normalizes it to the default retry level. FIFO <c>MessageGroup</c> ignores these settings.
 /// An orderly PULL delivery uses only <see cref="SuspendCurrentQueueDuration"/>.
 /// </remarks>
 public sealed class RemotingPushConsumeContext
@@ -57,8 +57,9 @@ public sealed class RemotingPushConsumeContext
     /// </summary>
     /// <remarks>
     /// The default value is <c>0</c>, which selects the receiver's default retry interval. A positive value selects a
-    /// receiver-specific RocketMQ retry interval. A negative value requests direct dead-letter delivery for PULL; POP
-    /// normalizes it to <c>0</c> and follows its normal invisibility retry schedule. For POP retries at
+    /// receiver-specific RocketMQ retry interval. A negative value requests direct dead-letter delivery for concurrent PULL;
+    /// orderly PULL uses retry-topic publication instead. POP normalizes it to <c>0</c> and follows its normal invisibility
+    /// retry schedule. For POP retries at
     /// <see cref="RemotingPushConsumerOptions.MaxDeliveryAttempts"/>, the official age-based terminal policy takes
     /// precedence over this value. If
     /// <see cref="RemotingPushConsumerOptions.ConsumeTimeout"/> elapses first, the consumer ignores this value and

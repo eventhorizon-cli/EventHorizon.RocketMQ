@@ -100,6 +100,15 @@ internal sealed class PullSendBackSettlement
         _wakeupRebalance();
     }
 
+    public Task SendOrderlyRetryAsync(
+        RemotingMessageView message,
+        int maxReconsumeTimes,
+        CancellationToken cancellationToken) =>
+        _settlementClient.SendOrderlyRetryAsync(
+            message,
+            maxReconsumeTimes,
+            cancellationToken);
+
     private async Task<RetryQueueOffsetInitialization?> PrepareRetryOffsetAsync(
         RemotingConsumerQueue sourceQueue,
         CancellationToken cancellationToken)

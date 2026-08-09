@@ -69,6 +69,8 @@ public sealed class LegacyMessageDecoderTests
         Assert.Equal(new[] { "order-1", "order-2" }, message.Keys);
         Assert.Equal("customer-7", message.MessageGroup);
         Assert.Equal(3, message.DeliveryAttempt);
+        Assert.Equal(2, message.ReconsumeTimes);
+        Assert.Equal(7, message.Flag);
         Assert.Equal(42, message.QueueOffset);
         Assert.Equal(1234, message.CommitLogOffset);
         Assert.Equal("broker-a", message.BrokerName);

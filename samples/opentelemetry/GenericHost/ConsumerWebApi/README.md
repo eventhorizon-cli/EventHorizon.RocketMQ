@@ -113,13 +113,17 @@ that ignored cancellation. Handlers must honor cancellation and remain idempoten
 `RemotingPushConsumeContext`. Returning `Success` confirms the complete batch by default. For concurrent non-FIFO
 batches, set `AckIndex` to the zero-based last accepted index before returning `Success` to confirm a contiguous
 prefix and retry only the tail; `-1` confirms none. `Retry` ignores `AckIndex` and applies to the whole batch.
-`DelayLevelWhenNextConsume` controls retry timing; a negative value requests direct dead-lettering.
+`DelayLevelWhenNextConsume` controls retry timing for the failed batch; a negative value requests direct dead-lettering
+only for concurrent PULL. Orderly PULL publishes an exhausted message to `%RETRY%group` through internal producer
+semantics, with up to three immediate wire send attempts before the Broker redirects it to DLQ when its reconsume count exceeds
+the supplied maximum.
 
 Remoting FIFO and orderly paths deliver singleton lists and do not support partial batch confirmation. Broadcasting
 has no Broker retry or dead-letter flow. A concurrent clustered non-FIFO batch that exceeds `ConsumeTimeout` is
 requested for redelivery; code that ignores cancellation can overlap that redelivery. Failed Remoting
 retry/dead-letter settlement is retried locally without invoking the handler again, and the per-queue contiguous
-offset watermark does not advance across the unresolved gap.
+offset watermark does not advance across the unresolved gap. If orderly retry-topic publication fails,
+the orderly message remains local and is retried after its suspension interval.
 
 See the [gRPC Consumer model](../../../../docs/en-US/grpc/consumer-model.md) and
 [Remoting transport and roles](../../../../docs/en-US/remoting/transport-and-client-roles.md) for the complete delivery,

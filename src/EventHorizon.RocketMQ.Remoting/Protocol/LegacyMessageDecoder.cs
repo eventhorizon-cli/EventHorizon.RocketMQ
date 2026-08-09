@@ -76,7 +76,7 @@ internal static class LegacyMessageDecoder
 
         _ = reader.ReadInt32(); // body CRC
         var queueId = reader.ReadInt32();
-        _ = reader.ReadInt32(); // application flag
+        var applicationFlag = reader.ReadInt32();
         var queueOffset = reader.ReadInt64();
         var physicalOffset = reader.ReadInt64();
         var sysFlag = reader.ReadInt32();
@@ -129,7 +129,8 @@ internal static class LegacyMessageDecoder
             queueOffset,
             physicalOffset,
             bornTimestamp,
-            storeTimestamp);
+            storeTimestamp,
+            applicationFlag);
     }
 
     private static string? Get(IReadOnlyDictionary<string, string> properties, string name) =>

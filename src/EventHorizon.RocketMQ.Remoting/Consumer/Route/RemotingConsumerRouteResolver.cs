@@ -64,6 +64,18 @@ internal sealed class RemotingConsumerRouteResolver
         }
     }
 
+    internal Task<TopicRouteData> GetRawRouteAsync(
+        string topic,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        return _routes.GetAsync(
+            LegacyNamespace.Wrap(_clientOptions.Namespace, topic),
+            forceRefresh,
+            cancellationToken);
+    }
+
     public async Task<RemotingBrokerEndpoint> ResolveBrokerAsync(
         RemotingConsumerQueue queue,
         bool useSuggestedBroker,

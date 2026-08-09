@@ -22,7 +22,10 @@ namespace EventHorizon.RocketMQ.Grpc.Consumer;
 /// Regular Push normalizes <see cref="Suspend(TimeSpan)"/> to <see cref="Failure"/>. Non-FIFO LitePush sends Suspend
 /// through its retry-policy NACK path; FIFO LitePush preserves the caller duration and protocol suspend flag.
 /// Non-FIFO Push and LitePush use service-owned retry progression, while their FIFO modes retry locally before
-/// client-owned dead-letter forwarding.
+/// client-owned dead-letter forwarding. Completion RPC failures retry at a fixed one-second interval until success or
+/// lifecycle cancellation. <c>INVALID_RECEIPT_HANDLE</c> is terminal for acknowledgement and invisibility changes,
+/// while dead-letter forwarding retries it; a terminal FIFO completion failure releases the successor after the retry
+/// phase, even though the failed message remains unsettled.
 /// </remarks>
 /// <seealso href="https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResultSuspend.java">
 /// Apache RocketMQ Java duration-carrying suspend result.

@@ -66,17 +66,17 @@ delivery still uses client-initiated long polling.
 
 LitePush uses the same `IGrpcPushMessageHandler` contract and dependency-injection lifetime rules as standard Push.
 `ConsumeResult.Success` acknowledges the message. Non-FIFO `Failure` and `Suspend` use service-owned retry/DLQ
-progression, and Suspend ignores its requested duration. FIFO `Failure` retries the handler locally and attempts to
-forward the message to DLQ after the effective attempt limit; if that completion fails, the message remains unsettled
-and may be redelivered. FIFO `ConsumeResult.Suspend(duration)` changes invisibility with `suspend=true`; the service
+progression, and Suspend ignores its requested duration. FIFO `Failure` retries the handler locally and forwards the
+message to DLQ after the effective attempt limit; completion failures retry at a fixed one-second interval, and a
+terminal failure leaves the message unsettled while releasing the FIFO successor. FIFO `ConsumeResult.Suspend(duration)` changes invisibility with `suspend=true`; the service
 owns the delivery attempt reported by the next receive. The minimum duration is 50 milliseconds. It also covers every
 unprocessed same-LiteTopic message from the current receive batch without invoking those sibling handlers. Handler
 exceptions are treated as failures, and failed completion calls can produce duplicate delivery, so processing must be
 idempotent.
 
-Corrupted messages bypass the application handler. The client retries non-FIFO corrupted messages and attempts to
-forward corrupted FIFO messages to DLQ before releasing the next delivery for that LiteTopic. If that completion fails,
-the message remains unsettled and may be redelivered.
+Corrupted messages bypass the application handler. The client retries non-FIFO corrupted messages and forwards corrupted
+FIFO messages to DLQ before releasing the next delivery for that LiteTopic. The successor waits while completion retry is
+in progress; a terminal completion failure releases it, while the failed message remains unsettled and may be redelivered.
 
 LitePush requests set `AutoRenew=true`, so a compatible Proxy renews the receipt while the handler runs; the .NET
 client does not run a second renewal timer. For non-FIFO work, `ConsumeTimeout` cancels the handler token and requests

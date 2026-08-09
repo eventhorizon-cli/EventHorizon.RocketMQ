@@ -34,7 +34,9 @@ public sealed class RemotingPushConsumeContextTests
         var context = new RemotingPushConsumeContext();
 
         Assert.Null(context.SuspendCurrentQueueDuration);
-        Assert.Equal(TimeSpan.FromSeconds(1), new RemotingPushConsumerOptions().OrderlySuspendDuration);
+        var options = new RemotingPushConsumerOptions();
+        Assert.Equal(TimeSpan.FromSeconds(1), options.OrderlySuspendDuration);
+        Assert.Equal(-1, options.OrderlyMaxReconsumeTimes);
     }
 
     [Fact]

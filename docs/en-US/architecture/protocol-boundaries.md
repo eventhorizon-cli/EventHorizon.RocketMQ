@@ -61,14 +61,16 @@ The small foundational models are declared separately in each protocol namespace
 gRPC Push and LitePush follow the released Apache Java gRPC listener contract and expose `Success`, `Failure`, and a
 duration-bearing `Suspend`. Regular Push normalizes Suspend to Failure. Non-FIFO LitePush sends Failure and Suspend
 through service-owned retry/DLQ progression and ignores the Suspend duration. FIFO LitePush uses the protocol's
-caller-duration suspend operation; FIFO failures retry locally and attempt internal dead-letter forwarding. If that
-forwarding completion fails, the message remains unsettled and may be redelivered.
+caller-duration suspend operation; FIFO failures retry locally and use client-owned dead-letter forwarding. Completion
+RPCs retry at a fixed one-second interval; ACK and invisibility-change `INVALID_RECEIPT_HANDLE` is terminal, while DLQ
+forwarding retries it. FIFO successors wait during completion retry and are released after a terminal completion failure.
 Classic Remoting follows the concurrent callback model shared by the
 [Java client](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 and the
 [Go client](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205):
 it exposes `Success` and `Retry`. A negative `RemotingPushConsumeContext.DelayLevelWhenNextConsume` requests direct
-dead-lettering only on the internal PULL path; POP normalizes it to the default retry level. Compatibility tests lock
+dead-lettering only on the concurrent internal PULL path; orderly PULL publishes to its retry topic and POP normalizes
+the value to the default retry level. Compatibility tests lock
 each protocol's independently owned result shape. The gRPC result is an immutable value object because one outcome
 carries a duration; the Remoting result remains its independently owned two-member enum.
 

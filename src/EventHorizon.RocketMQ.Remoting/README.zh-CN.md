@@ -253,6 +253,7 @@ rocketMQ.AddRemotingPushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, op
     options.MaxConcurrency = 8;
     options.ConsumeMessageBatchSize = 16;
     options.MaxDeliveryAttempts = 16;
+    options.OrderlyMaxReconsumeTimes = -1;
     options.Subscribe("orders", new FilterExpression("created"));
 });
 
@@ -292,19 +293,24 @@ PULL。Broker 分配查询失败时，Consumer 会等待下一轮协调，不会
 
 `ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success` 或 `Retry`。对于并发的非 FIFO
 批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
-`DelayLevelWhenNextConsume` 控制下一次重试的延迟。PULL 接收时，可在返回 `Retry` 前将其设为负值，请求直接执行死信
-send-back；如果 send-back 结算失败，位点会保持未解决，消息仍可能再次投递。POP 接收时，.NET 适配器会先将负值归一化
+`DelayLevelWhenNextConsume` 控制下一次重试的延迟。对于并发 PULL 接收，可在返回 `Retry` 前将其设为负值，请求直接执行死信
+send-back；如果 send-back 结算失败，位点会保持未解决，消息仍可能再次投递。orderly PULL 不使用该直接死信选项。POP 接收时，.NET 适配器会先将负值归一化
 为 `0`，再按 Java 兼容的不可见时间重试表处理。默认值为 `0`；PULL 由 Broker 决定重试时间，POP 则按 Java 重试表处理。
-达到 `MaxDeliveryAttempts` 后，集群 PULL 和 orderly 广播都会尝试 classic send-back 进入死信；结算失败时位点保持未解决，
-消息仍可能再次投递。并发广播不使用 retry 或 DLQ send-back。POP 重试则遵循官方 Java 的消息年龄策略，继续按年龄修改不可见时间，
-只有消息年龄超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。
+`MaxDeliveryAttempts` 仍是集群并发 PULL、`MessageGroup` FIFO 和 POP 使用的上限。集群 PULL 和 `MessageGroup` 达到该
+上限后会尝试 classic send-back 进入死信；POP 则遵循官方 Java 的消息年龄策略，继续按年龄修改不可见时间，只有消息年龄
+超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。并发广播不使用 retry 或 DLQ send-back。
 
 对于 orderly PULL 投递（`ConsumeOrderly = true`），handler 可在返回 `Retry` 前设置
 `RemotingPushConsumeContext.SuspendCurrentQueueDuration`，仅暂停当前物理 queue 的下一次本地尝试。未设置时使用
 `OrderlySuspendDuration`，默认值为 1 秒；有效时长限制在 10 毫秒至 30 秒之间，并且每次 handler 调用都会获得新的
-context。并发 PULL、POP 和 `MessageGroup` FIFO 投递会忽略此 override。集群和广播 orderly 达到
-`MaxDeliveryAttempts` 后都会尝试将消息转发到死信队列。send-back 失败时，当前消息会按本次尝试选择的暂停时长继续留在
-本地，重新调用 handler，且不会推进位点。
+context。并发 PULL、POP 和 `MessageGroup` FIFO 投递会忽略此 override。orderly PULL 使用独立的零基
+`OrderlyMaxReconsumeTimes`：默认值 `-1` 表示近似无限次本地重新消费，`0` 表示首次失败后发布，正数表示
+在发布前允许对应次数的本地重新消费（因此 `1` 表示首次失败后再重试一次）。该规则同时适用于集群和 orderly 广播；orderly 不使用
+`MaxDeliveryAttempts`。达到上限后，客户端不会调用 `CONSUMER_SEND_MSG_BACK` 或直接进入死信，而是通过内部 producer 语义构造并发送
+`%RETRY%<group>` 消息，附带 `RECONSUME_TIME`、`MAX_RECONSUME_TIMES` 和延迟元数据；每次逻辑终态结算最多立即执行三次 wire send。
+发布成功后，Broker 会在重新消费次数超过上限时把 retry topic 消息转入 DLQ。每次本地重新消费前都会递增
+`RemotingMessageView.ReconsumeTimes`。该值从 Broker header 的零基计数开始；`DeliveryAttempt` 仍是 Broker 返回的一基投递次数，不会被本地调度改写。
+发布最终失败时，当前消息会按本次尝试选择的暂停时长继续留在本地，重新调用 handler，且不会推进位点。
 
 `ServiceLifetime.Scoped` 或 `Transient` 会为每次处理尝试创建新的异步作用域。Singleton 处理器必须支持并发访问。
 由于投递语义是至少一次，处理器必须响应取消并保证幂等。

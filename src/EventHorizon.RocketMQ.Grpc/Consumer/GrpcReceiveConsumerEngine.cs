@@ -21,7 +21,6 @@ using EventHorizon.RocketMQ.Grpc.Protocol;
 using EventHorizon.RocketMQ.Grpc.Protocol.Route;
 using EventHorizon.RocketMQ.Grpc.Protocol.Telemetry;
 using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Proto = Apache.Rocketmq.V2;
@@ -30,9 +29,7 @@ namespace EventHorizon.RocketMQ.Grpc.Consumer;
 
 internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
 {
-    private const int CompletionMaxAttempts = 3;
-    private static readonly TimeSpan CompletionInitialRetryDelay = TimeSpan.FromMilliseconds(200);
-    private static readonly TimeSpan CompletionMaximumRetryDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan CompletionRetryDelay = TimeSpan.FromSeconds(1);
     private readonly IRocketMQGrpcClient _client;
     private readonly IGrpcRouteService _routes;
     private readonly GrpcClientOptions _clientOptions;
@@ -46,7 +43,10 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
     private readonly ConcurrentDictionary<string, FilterExpression> _subscriptions;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _messageOwner = new();
+    private readonly object _completionOwner = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private CancellationToken _completionCancellationToken;
+    private CancellationTokenSource? _completionCts;
     private GrpcSessionManager? _sessions;
     private int _started;
 
@@ -90,16 +90,32 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
                 return;
             }
 
-            var sessions = new GrpcSessionManager(
-                _client,
-                Options.Create(_clientOptions),
-                _clientType,
-                _groupName,
-                _sessionLogger,
-                _telemetryHandler);
-            sessions.Start();
-            Volatile.Write(ref _sessions, sessions);
-            Volatile.Write(ref _started, 1);
+            var completionCts = new CancellationTokenSource();
+            try
+            {
+                var sessions = new GrpcSessionManager(
+                    _client,
+                    Options.Create(_clientOptions),
+                    _clientType,
+                    _groupName,
+                    _sessionLogger,
+                    _telemetryHandler);
+                sessions.Start();
+                lock (_completionOwner)
+                {
+                    _completionCts = completionCts;
+                    _completionCancellationToken = completionCts.Token;
+                }
+
+                Volatile.Write(ref _sessions, sessions);
+                Volatile.Write(ref _started, 1);
+            }
+            catch
+            {
+                completionCts.Cancel();
+                completionCts.Dispose();
+                throw;
+            }
         }
         finally
         {
@@ -118,10 +134,25 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
             }
 
             Volatile.Write(ref _started, 0);
-            var sessions = Interlocked.Exchange(ref _sessions, null);
-            if (sessions is not null)
+            CancellationTokenSource? completionCts;
+            lock (_completionOwner)
             {
-                await sessions.DisposeAsync().ConfigureAwait(false);
+                completionCts = _completionCts;
+                _completionCts = null;
+            }
+
+            completionCts?.Cancel();
+            var sessions = Interlocked.Exchange(ref _sessions, null);
+            try
+            {
+                if (sessions is not null)
+                {
+                    await sessions.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                completionCts?.Dispose();
             }
         }
         finally
@@ -448,7 +479,7 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
                 request,
                 token).ConfigureAwait(false);
             GrpcStatus.EnsureSuccess(response.Status);
-        }, cancellationToken);
+        }, cancellationToken, retryInvalidReceiptHandle: true);
     }
 
     public int GetMaxDeliveryAttempts(GrpcMessageView message, int fallback)
@@ -549,48 +580,60 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         string telemetryOperation,
         GrpcMessageView message,
         Func<CancellationToken, Task> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retryInvalidReceiptHandle = false)
     {
-        using var telemetry = _telemetry.StartSettle(
-            telemetryOperation,
-            message.Topic,
-            _groupName,
-            message.MessageId,
-            message.QueueId,
-            message.Properties);
-        try
+        var lifetimeToken = GetCompletionCancellationToken();
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            lifetimeToken);
+        var completionToken = linkedCancellation.Token;
+        for (var attempt = 1L; ; attempt++)
         {
-            for (var attempt = 1; ; attempt++)
+            completionToken.ThrowIfCancellationRequested();
+            using var telemetry = _telemetry.StartSettle(
+                telemetryOperation,
+                message.Topic,
+                _groupName,
+                message.MessageId,
+                message.QueueId,
+                message.Properties);
+            try
             {
-                try
-                {
-                    await action(cancellationToken).ConfigureAwait(false);
-                    telemetry.Complete();
-                    return;
-                }
-                catch (Exception exception) when (
-                    attempt < CompletionMaxAttempts &&
-                    IsTransientCompletionFailure(exception, cancellationToken))
-                {
-                    var delay = TimeSpan.FromMilliseconds(Math.Min(
-                        CompletionInitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1),
-                        CompletionMaximumRetryDelay.TotalMilliseconds));
-                    _logger.LogWarning(
-                        exception,
-                        "Transient failure while attempting to {Operation} message {MessageId}; retrying attempt {NextAttempt} of {MaxAttempts} in {Delay}",
-                        operation,
-                        message.MessageId,
-                        attempt + 1,
-                        CompletionMaxAttempts,
-                        delay);
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                }
+                await action(completionToken).ConfigureAwait(false);
+                telemetry.Complete();
+                return;
             }
+            catch (Exception exception)
+            {
+                telemetry.Complete(exception);
+                completionToken.ThrowIfCancellationRequested();
+                if (!IsRetryableCompletionFailure(
+                        exception,
+                        completionToken,
+                        retryInvalidReceiptHandle))
+                {
+                    throw;
+                }
+
+                _logger.LogWarning(
+                    exception,
+                    "Failure while attempting to {Operation} message {MessageId}; retrying attempt {NextAttempt} in {Delay}",
+                    operation,
+                    message.MessageId,
+                    attempt + 1,
+                    CompletionRetryDelay);
+            }
+
+            await Task.Delay(CompletionRetryDelay, completionToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+    }
+
+    private CancellationToken GetCompletionCancellationToken()
+    {
+        lock (_completionOwner)
         {
-            telemetry.Complete(exception);
-            throw;
+            return _completionCancellationToken;
         }
     }
 
@@ -655,28 +698,14 @@ internal sealed class GrpcReceiveConsumerEngine : IGrpcReceiveConsumerEngine
         }
     }
 
-    private static bool IsTransientCompletionFailure(Exception exception, CancellationToken cancellationToken) =>
-        exception switch
-        {
-            OperationCanceledException => !cancellationToken.IsCancellationRequested,
-            RpcException rpc => rpc.StatusCode is
-                StatusCode.Unavailable or
-                StatusCode.DeadlineExceeded or
-                StatusCode.ResourceExhausted or
-                StatusCode.Aborted or
-                StatusCode.Internal,
-            GrpcServiceException service => service.ResponseCode is
-                (int)Proto.Code.RequestTimeout or
-                (int)Proto.Code.TooManyRequests or
-                (int)Proto.Code.InternalError or
-                (int)Proto.Code.InternalServerError or
-                (int)Proto.Code.HaNotAvailable or
-                (int)Proto.Code.ProxyTimeout or
-                (int)Proto.Code.MasterPersistenceTimeout or
-                (int)Proto.Code.SlavePersistenceTimeout,
-            IOException or HttpRequestException or TimeoutException => true,
-            _ => false
-        };
+    private static bool IsRetryableCompletionFailure(
+        Exception exception,
+        CancellationToken cancellationToken,
+        bool retryInvalidReceiptHandle) =>
+        !cancellationToken.IsCancellationRequested &&
+        (exception is not GrpcServiceException service ||
+         retryInvalidReceiptHandle ||
+         service.ResponseCode != (int)Proto.Code.InvalidReceiptHandle);
 
     private bool IsPushConsumer() => _clientType is Proto.ClientType.PushConsumer or Proto.ClientType.LitePushConsumer;
 

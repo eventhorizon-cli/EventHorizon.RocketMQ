@@ -181,6 +181,11 @@ public sealed class OrderReceiver(IGrpcSimpleConsumer consumer)
 只有在消息完成持久化处理后才确认。对于长时间运行的处理，需要显式延长不可见时间。消息未结算时，会在当前
 不可见时间结束后重新可见。RocketMQ 5.5.0 Proxy 要求接收长轮询间隔至少为五秒。
 
+所有 gRPC completion RPC（确认、重试/NACK、修改不可见时间、暂停和死信转发）都会在每次 wire failure 后按固定 1 秒
+间隔继续发起实际 RPC，直到成功、调用方取消或所属 Consumer 停止。每次 attempt 都会创建独立的 settlement Activity 和
+metric。`INVALID_RECEIPT_HANDLE` 对确认和修改不可见时间是终态错误；死信转发也会重试该状态，与正式版 Java 客户端一致。
+FIFO 后继消息会在 completion 重试期间等待；终态结算失败后，即使失败消息仍未结算，也会释放 FIFO 后继消息。
+
 ## PushConsumer
 
 需要自动接收、分发和结算时，请使用 `IGrpcPushConsumer`。注册 typed
@@ -214,7 +219,8 @@ public sealed class OrderHandler : IGrpcPushMessageHandler
 ```
 
 返回 `ConsumeResult.Success` 表示确认消息，返回 `Failure` 则按生效的重试策略处理。普通非 FIFO Push 由服务端推进
-重试与死信；FIFO Push 在本地重试，耗尽后由客户端尝试转发 DLQ。若该结算失败，消息会保持未结算状态，仍可能再次投递。
+重试与死信；FIFO Push 在本地重试，耗尽后由客户端转发 DLQ。结算失败会按 1 秒间隔重试；终态失败时消息保持未结算，
+但会释放 FIFO 后继消息，仍可能再次投递。
 普通 Push 会把 `ConsumeResult.Suspend(duration)` 当作 `Failure`，并忽略指定时长。只有业务处理已经持久化后才能返回
 `Success`；重试、结算失败和重复投递都可能发生，因此 handler 必须保持幂等。`SubscribeAsync` 和
 `UnsubscribeAsync` 可在运行时更新普通 Push 订阅。
@@ -239,8 +245,8 @@ rocketMQ.AddGrpcLitePushConsumer<OrderHandler>(ServiceLifetime.Scoped, options =
 
 LitePush 不要调用 `Subscribe`。启动时使用 `LiteTopics`，启动后使用 `SubscribeLiteAsync` 和
 `UnsubscribeLiteAsync`。非 FIFO LitePush 的 `Failure` 与 `Suspend` 都由服务端推进重试和死信，并忽略 Suspend 指定的
-时长。FIFO LitePush 会在本地重试 `Failure`，达到有效次数上限后尝试转发 DLQ；如果该结算失败，消息会保持未结算状态，
-仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 使用调用方指定的时长和 `suspend=true` 修改不可见时间；
+时长。FIFO LitePush 会在本地重试 `Failure`，达到有效次数上限后转发 DLQ；结算失败会按 1 秒间隔重试，终态失败时消息
+保持未结算但会释放 FIFO 后继消息，仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 使用调用方指定的时长和 `suspend=true` 修改不可见时间；
 下一次 receive 返回的投递次数由服务端负责，同时还会暂停当前 receive batch 中尚未处理的同 LiteTopic 消息。时长不能
 短于 50 毫秒。完整结果矩阵参见
 [Consumer 模型](../../docs/zh-CN/grpc/consumer-model.md)。

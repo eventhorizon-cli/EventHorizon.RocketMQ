@@ -22,7 +22,8 @@ in this non-Host process.
 a list of ordinary topics or filters. The sample's scoped `IGrpcPushMessageHandler` logs a message and returns
 `ConsumeResult.Success`, which makes the SDK acknowledge it. Non-FIFO `Failure` and `Suspend` use service-owned
 retry/DLQ progression, and Suspend ignores its requested duration. FIFO `Failure` retries locally before the client
-attempts DLQ forwarding; a failed forwarding completion leaves the message unsettled for possible redelivery. FIFO
+forwards to DLQ; completion failures retry at a fixed one-second interval, and a terminal failure leaves the message
+unsettled while releasing the FIFO successor. FIFO
 `ConsumeResult.Suspend(duration)` delays Lite redelivery while the service owns the next delivery attempt and also
 covers unprocessed same-LiteTopic messages from the current receive batch. Handler exceptions are retried, so
 processing must be idempotent.

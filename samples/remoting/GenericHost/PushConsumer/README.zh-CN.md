@@ -126,11 +126,12 @@ handler 为一个 batch 返回一个 `ConsumeResult`：
 - `Retry` 会忽略 `AckIndex`，并应用到整个 batch。
 
 对于集群并发、非 FIFO batch，`context.DelayLevelWhenNextConsume` 默认为 `0`，由 Broker 选择重试间隔；设为正的
-RocketMQ 延迟级别时请求该级别，设为负值时请求直接进入死信队列。PULL 重试使用经典 send-back；POP 重试按
+RocketMQ 延迟级别时请求该级别，设为负值时仅请求并发 PULL 直接进入死信队列。PULL 重试使用经典 send-back；POP 重试按
 classic POP 重试表将级别换算为不可见时间，并修改 receipt 不可见期。POP 死信处理则先转发、再确认 receipt。
 `MessageGroup` FIFO、`ConsumeOrderly` 和广播路径会忽略此 context 设置。在集群模式下，
-`MaxDeliveryAttempts` 会启动终态重试处理：PULL 把重试消息送入死信；POP 则遵循官方 Java 的消息年龄策略，继续按年龄
-选择 POP 延迟并修改不可见时间，只有消息年龄严格超过最后一级 POP 延迟的两倍时才 ACK，不会隐式转入死信。
+`MaxDeliveryAttempts` 仍是集群并发 PULL、`MessageGroup` FIFO 和 POP 使用的上限。集群 PULL 和 `MessageGroup` 达到该
+上限后会把重试消息送入死信；POP 则遵循官方 Java 的消息年龄策略，继续按年龄选择 POP 延迟并修改不可见时间，只有
+消息年龄严格超过最后一级 POP 延迟的两倍时才 ACK，不会隐式转入死信。
 
 每个 PULL `PullProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
 完成，也不能跳过前面尚未解决的队列位点。拉取可以先于 handler 完成继续前进。在集群模式下，Broker 已提交位点不能
@@ -155,8 +156,11 @@ Broker 重新投递。assignment 被移除或切换模式时，旧 generation �
 阻塞当前队列，使后面的消息不能超越它。队列锁保持顺序，但不会改变至少一次投递，因此顺序 handler 也必须幂等。
 
 `Broadcasting` 会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点。并发投递没有 group 所属的 Broker
-重试或死信流程：`Retry` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。orderly 广播则在本地重试当前消息，
-达到 `MaxDeliveryAttempts` 后尝试 DLQ send-back；send-back 失败时保留当前消息与位点，并按本次暂停时长等待后重新调用
+重试或死信流程：`Retry` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。orderly 投递（包括 orderly 广播）则在本地重试当前消息，
+耗尽 `OrderlyMaxReconsumeTimes` 后发布 `%RETRY%group` 消息。该设置采用零基计数，默认值 `-1`（近似无限），`1` 表示首次
+失败后再本地重试一次。`RemotingMessageView.ReconsumeTimes` 从 Broker 返回的零基值开始，并在每次本地重新消费前递增；
+`DeliveryAttempt` 仍是 Broker 返回的不可变值。发布使用内部 producer 语义，附带重新消费次数、最大次数和延迟元数据；每次逻辑终态结算最多立即执行三次
+wire send，Broker 会在重新消费次数超过上限时把 retry topic 消息转入 DLQ。发布最终失败时保留当前消息与位点，并按本次暂停时长等待后重新调用
 handler。当客户端标识不稳定时，应配置稳定且每实例独立的 `LocalOffsetStorePath`。
 
 对于普通 PULL 队列，`InitialPosition` 只在当前模式使用的位点存储没有值时提供起点：集群模式读取 Broker group

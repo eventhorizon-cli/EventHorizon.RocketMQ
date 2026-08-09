@@ -194,8 +194,8 @@ invoke their `IGrpcPushMessageHandler` for each message. Remoting Push invokes i
 `ConsumeMessageBatchSize` defaults to `1`, so existing settings retain singleton delivery unless configured
 otherwise. For a concurrent non-FIFO batch, a handler can return `Success` with `AckIndex` set to confirm a
 contiguous prefix and retry its tail; `Retry` remains a whole-batch outcome. A negative
-`DelayLevelWhenNextConsume` requests direct dead-lettering only on the internal PULL path; POP normalizes it to the
-default retry level.
+`DelayLevelWhenNextConsume` requests direct dead-lettering only on the concurrent internal PULL path; orderly PULL
+publishes to its retry topic and POP normalizes it to the default retry level.
 
 For non-FIFO gRPC Push and LitePush messages, `ConsumeTimeout` cancels the handler token and requests retry when the
 configured limit elapses. Receipt renewal while the handler is active belongs to the Proxy requested by `AutoRenew`,

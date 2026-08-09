@@ -78,7 +78,7 @@ listener 时才会注入上下文，并且不会覆盖消息中已有的传播�
 | Producer 发送 | 所有 `IGrpcProducer` 发送路径，包括事务消息发送。 | 普通、reply、batch 与 one-way 发送路径。 |
 | Consumer 接收 | Simple、Push 与 LitePush 的 receive engine。 | LitePull receive 与 Push 的 PULL/POP receiver。 |
 | 自动 handler 处理 | Push 与 LitePush handler。 | Push handler。 |
-| Consumer 完结操作 | 确认、负确认和转发死信。 | LitePull 与 Push PULL 位点提交、重试/死信 send-back，以及 Push 内部 POP 确认和不可见时间变更。 |
+| Consumer 完结操作 | 确认、负确认和转发死信。 | LitePull 与 Push PULL 位点提交、并发重试/死信 send-back、orderly `%RETRY%group` 发布，以及 Push 内部 POP 确认和不可见时间变更。 |
 
 对于 gRPC，`ReceiveMessageRequest.AutoRenew` 请求的 Proxy 托管续约不是独立的客户端 wire operation，不能创建客户端
 settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须根据意图区分：SimpleConsumer 显式延长租期使用
@@ -87,9 +87,15 @@ settlement span。客户端主动发送 `ChangeInvisibleDuration` 时，必须�
 handler 续期不会在客户端重复创建定时器、span 或 metric。结果 tag 使用固定名称，调用方指定的时长不能进入
 metric 维度。
 
+每次实际执行的 gRPC completion RPC 都独立拥有一个 settlement Activity 和一次 metric completion。失败 attempt 会先以
+error 完成，再等待固定 1 秒后重试；后续 wire attempt 会创建新的 operation。两次尝试之间没有 RPC，因此等待期间不
+生成 telemetry。整个逻辑重试序列会在成功、调用方或 Consumer run 取消、以及终态 receipt 错误时结束。ACK 和不可见时间
+变更的 `INVALID_RECEIPT_HANDLE` 属于终态错误，死信转发则会重试该状态。这样 Proxy 长时间故障时仍能看到真实 wire
+尝试次数和结果，而不是由一个持续数分钟的 span 掩盖。
+
 classic Remoting 的埋点归属应跟随实际 wire operation。`PullWireClient` 负责记录并完成非空、空结果、取消与失败 PULL 的
 receive 埋点；`RemotingConsumerOffsetClient` 负责 commit settlement；`RemotingSettlementClient` 负责 PULL 重试与
-死信 send-back。POP receive、ACK 和不可见时间变更仍由 `PopWireClient` 负责。角色级 consumer engine 只负责组合这些
+死信 send-back 与 orderly `%RETRY%group` 发布。POP receive、ACK 和不可见时间变更仍由 `PopWireClient` 负责。角色级 consumer engine 只负责组合这些
 client；内部职责迁移不能让同一个 Activity 或 metric 被重复完成，也不能遗漏完成。
 
 POP 结算 telemetry 按每次实际的 wire operation 独立记录：确认使用 `ack`，一次性重试/延期
@@ -98,10 +104,11 @@ POP 结算 telemetry 按每次实际的 wire operation 独立记录：确认使�
 POP 重试继续使用这条普通的不可见时间变更路径。handler 结果在固定不可见 deadline 之后到达时，不创建任何结算
 operation。不确定的 `nack` 失败不会使用旧 receipt 重试；确认只在原始 deadline 内重试。
 
-classic orderly suspend 只是本地调度决策。每次 handler 调用仍分别拥有一个 process Activity，但两次尝试之间的
-等待不会创建 settlement Activity 或 metric，因为期间没有 wire operation。达到终态上限时，集群和广播模式都会记录
-一次 `reject` settlement；若该操作失败，随后的本地暂停不会额外记录 settlement，之后再次 send-back 时才创建新的
-`reject` operation。
+classic orderly suspend 只是本地调度决策。每次 handler 调用仍分别拥有一个 process Activity，但两次尝试之间的等待
+不会创建 settlement Activity 或 metric，因为期间没有 wire operation。达到终态上限时，集群和广播模式都会为通过内部
+producer 路径发布到 `%RETRY%group` 记录一次 `reject` operation。一次逻辑结算最多会立即尝试三次 wire send；发布成功后，
+Broker 会在重新消费次数超过上限时把 retry topic 消息转入 DLQ。发布最终失败时，后续本地暂停不会额外记录 settlement，
+消息会继续本地重试。
 
 Activity 使用 OpenTelemetry 消息语义约定属性，例如 `messaging.system`、`messaging.destination.name`、
 `messaging.consumer.group.name`、消息 ID、分区 ID、body 大小和 batch 大小。失败时会把 Activity 状态设为 error，

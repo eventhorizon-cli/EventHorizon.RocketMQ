@@ -45,6 +45,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private CancellationTokenSource? _receivingCts;
     private CancellationTokenSource? _processingCts;
     private CancellationTokenSource? _localRetryCts;
+    private CancellationTokenSource? _completionCts;
     private Task[] _receivers = Array.Empty<Task>();
     private Task[] _consumeLoopTasks = Array.Empty<Task>();
     private int _started;
@@ -96,6 +97,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             _receivingCts = new CancellationTokenSource();
             _processingCts = new CancellationTokenSource();
             _localRetryCts = new CancellationTokenSource();
+            _completionCts = new CancellationTokenSource();
             try
             {
                 await _engine.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -110,12 +112,16 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 _messages.Writer.TryComplete();
                 _receivingCts.Cancel();
                 _processingCts.Cancel();
+                _localRetryCts.Cancel();
+                _completionCts.Cancel();
                 _receivingCts.Dispose();
                 _processingCts.Dispose();
                 _localRetryCts.Dispose();
+                _completionCts.Dispose();
                 _receivingCts = null;
                 _processingCts = null;
                 _localRetryCts = null;
+                _completionCts = null;
                 await _engine.StopAsync().ConfigureAwait(false);
                 throw;
             }
@@ -217,9 +223,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         var receivingCts = _receivingCts!;
         var processingCts = _processingCts!;
         var localRetryCts = _localRetryCts!;
+        var completionCts = _completionCts!;
         var consumeLoopsDetached = false;
         receivingCts.Cancel();
         localRetryCts.Cancel();
+        completionCts.Cancel();
         try
         {
             try
@@ -249,7 +257,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 processingCts.Cancel();
-                ObserveConsumeLoops(consumeLoops, processingCts, localRetryCts);
+                ObserveConsumeLoops(consumeLoops, processingCts, localRetryCts, completionCts);
                 consumeLoopsDetached = true;
                 throw;
             }
@@ -292,11 +300,13 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     {
                         processingCts.Dispose();
                         localRetryCts.Dispose();
+                        completionCts.Dispose();
                     }
 
                     _receivingCts = null;
                     _processingCts = null;
                     _localRetryCts = null;
+                    _completionCts = null;
                     _receivers = Array.Empty<Task>();
                     _consumeLoopTasks = Array.Empty<Task>();
                     DrainMessageChannel();
@@ -674,12 +684,14 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         CancellationToken cancellationToken)
     {
         var maxDeliveryAttempts = _engine.GetMaxDeliveryAttempts(message, _options.MaxDeliveryAttempts);
+        var completionCancellationToken = Volatile.Read(ref _completionCts)?.Token ?? CancellationToken.None;
         if (message.IsCorrupted)
         {
             return await DiscardCorruptedMessageAsync(
                 message,
                 fifo,
                 maxDeliveryAttempts,
+                completionCancellationToken,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -713,9 +725,13 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
 
         try
         {
+            using var completionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                completionCancellationToken);
+            var completionToken = completionCancellation.Token;
             if (completion.Result == ConsumeResult.Success)
             {
-                await _engine.AckAsync(message, cancellationToken).ConfigureAwait(false);
+                await _engine.AckAsync(message, completionToken).ConfigureAwait(false);
             }
             else if (fifo && completion.Result.SuspendDuration is { } suspendDuration)
             {
@@ -724,23 +740,27 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                     batch,
                     fifo,
                     suspendDuration,
-                    cancellationToken).ConfigureAwait(false);
+                    completionToken).ConfigureAwait(false);
             }
             else if (completion.ForwardToDeadLetterQueue)
             {
-                await _engine.ForwardToDeadLetterQueueAsync(message, maxDeliveryAttempts, cancellationToken).ConfigureAwait(false);
+                await _engine.ForwardToDeadLetterQueueAsync(message, maxDeliveryAttempts, completionToken).ConfigureAwait(false);
             }
             else
             {
                 // Processing has finished with failure. This NACK schedules service-owned redelivery; it is not a
                 // handler-active lease extension, which the Proxy owns through AutoRenew.
                 var retryDelay = _engine.GetRetryDelay(message, _options.RetryDelay);
-                await _engine.ScheduleRetryAsync(message, retryDelay, cancellationToken).ConfigureAwait(false);
+                await _engine.ScheduleRetryAsync(message, retryDelay, completionToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (completionCancellationToken.IsCancellationRequested)
+        {
+            return false;
         }
         catch (Exception exception)
         {
@@ -749,7 +769,11 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 "Failed to complete {ConsumeResult} processing for message {MessageId}; the message may be redelivered",
                 completion.Result,
                 message.MessageId);
-            return false;
+            // Released Java advances the FIFO iterator after the completion future finishes exceptionally. Retryable
+            // failures never reach this branch because the engine keeps retrying; a terminal receipt failure therefore
+            // releases only the local order chain and does not synthesize acknowledgement.
+            // https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/FifoConsumeService.java#L79-L87
+            return true;
         }
 
         return true;
@@ -759,6 +783,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         GrpcMessageView message,
         bool fifo,
         int maxDeliveryAttempts,
+        CancellationToken completionCancellationToken,
         CancellationToken cancellationToken)
     {
         _logger.LogError(
@@ -768,12 +793,16 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
             message.CorruptionReason);
         try
         {
+            using var completionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                completionCancellationToken);
+            var completionToken = completionCancellation.Token;
             if (fifo)
             {
                 await _engine.ForwardToDeadLetterQueueAsync(
                     message,
                     maxDeliveryAttempts,
-                    cancellationToken).ConfigureAwait(false);
+                    completionToken).ConfigureAwait(false);
             }
             else
             {
@@ -782,7 +811,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
                 await _engine.ScheduleRetryAsync(
                     message,
                     _engine.GetRetryDelay(message, _options.RetryDelay),
-                    cancellationToken).ConfigureAwait(false);
+                    completionToken).ConfigureAwait(false);
             }
 
             return true;
@@ -790,6 +819,10 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (completionCancellationToken.IsCancellationRequested)
+        {
+            return false;
         }
         catch (Exception exception)
         {
@@ -1082,13 +1115,15 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
     private void ObserveConsumeLoops(
         Task consumeLoops,
         CancellationTokenSource processingCts,
-        CancellationTokenSource localRetryCts) =>
-        _ = ObserveConsumeLoopsAsync(consumeLoops, processingCts, localRetryCts);
+        CancellationTokenSource localRetryCts,
+        CancellationTokenSource completionCts) =>
+        _ = ObserveConsumeLoopsAsync(consumeLoops, processingCts, localRetryCts, completionCts);
 
     private async Task ObserveConsumeLoopsAsync(
         Task consumeLoops,
         CancellationTokenSource processingCts,
-        CancellationTokenSource localRetryCts)
+        CancellationTokenSource localRetryCts,
+        CancellationTokenSource completionCts)
     {
         try
         {
@@ -1107,6 +1142,7 @@ internal sealed class GrpcPushConsumer : IGrpcPushConsumer
         {
             processingCts.Dispose();
             localRetryCts.Dispose();
+            completionCts.Dispose();
         }
     }
 

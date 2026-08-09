@@ -950,6 +950,27 @@ public sealed class DependencyInjectionTests
         Assert.IsType<RemotingPushConsumer>(consumer);
     }
 
+    [Fact]
+    public async Task AddRemotingPushConsumer_OrderlyMaxReconsumeTimesBelowSentinel_RejectsRegistration()
+    {
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options => options.NamesrvAddr = "127.0.0.1:9876")
+            .AddRemotingPushConsumer<TestRemotingPushMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = "orders";
+                options.ConsumeOrderly = true;
+                options.OrderlyMaxReconsumeTimes = -2;
+                options.Subscribe("orders");
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            provider.GetRequiredService<IRemotingPushConsumer>);
+
+        Assert.Contains("orderly reconsume times", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(33)]

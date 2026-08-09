@@ -18,8 +18,8 @@ LiteTopic 集合，持续运行 handler 直到 Ctrl+C，显式停止角色，并
 
 `BindTopic` 指定 LITE parent topic。`LiteTopics` 是完整的初始逻辑订阅集合，不是普通 topic 或 filter 的列表。示例的 scoped
 `IGrpcPushMessageHandler` 记录消息并返回 `ConsumeResult.Success`，SDK 随后会确认消息。非 FIFO `Failure` 与 `Suspend`
-由服务端推进重试和死信，并忽略 Suspend 指定的时长。FIFO `Failure` 在本地重试，耗尽后由客户端尝试转发 DLQ；转发
-结算失败时消息保持未结算，仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 会延迟 Lite 消息重新投递，下一次
+由服务端推进重试和死信，并忽略 Suspend 指定的时长。FIFO `Failure` 在本地重试，耗尽后由客户端转发 DLQ；结算失败按
+固定 1 秒间隔重试，终态失败时消息保持未结算但会释放 FIFO 后继消息，仍可能再次投递。FIFO `ConsumeResult.Suspend(duration)` 会延迟 Lite 消息重新投递，下一次
 投递次数由服务端负责，同时覆盖当前 receive batch 中尚未处理的同 LiteTopic 消息。handler 异常会触发重试，因此处理
 必须是幂等的。
 

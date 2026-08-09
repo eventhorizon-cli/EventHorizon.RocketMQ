@@ -131,13 +131,22 @@ message fields:
 | Client mode | `Failure` | `Suspend(duration)` |
 | --- | --- | --- |
 | Regular non-FIFO Push | Change invisibility using the effective retry policy; the service owns retry and dead-letter progression. | Convert to `Failure`; ignore the requested duration. |
-| Regular FIFO Push | Retry the handler locally, then the client attempts DLQ forwarding after exhaustion. A failed forwarding completion leaves the message unsettled for possible redelivery. | Convert to `Failure`; ignore the requested duration. |
+| Regular FIFO Push | Retry the handler locally, then the client forwards to DLQ after exhaustion. Completion retries continue at one-second intervals; a terminal completion failure leaves the message unsettled for possible redelivery. | Convert to `Failure`; ignore the requested duration. |
 | Non-FIFO LitePush | Change invisibility using the effective retry policy; the service owns retry and dead-letter progression. | Follow the same retry-policy NACK path as `Failure`; ignore the requested duration. |
-| FIFO LitePush | Retry the handler locally, then the client attempts DLQ forwarding after exhaustion. A failed forwarding completion leaves the message unsettled for possible redelivery. The FIFO key is `LiteTopic`. | Suspend the current message and every unprocessed same-`LiteTopic` message from the same receive batch without invoking those sibling handlers; other LiteTopics continue. |
+| FIFO LitePush | Retry the handler locally, then the client forwards to DLQ after exhaustion. Completion retries continue at one-second intervals; a terminal completion failure leaves the message unsettled for possible redelivery. The FIFO key is `LiteTopic`. | Suspend the current message and every unprocessed same-`LiteTopic` message from the same receive batch without invoking those sibling handlers; other LiteTopics continue. |
 
 The server's FIFO setting remains authoritative when the optional `MessageGroup` or `LiteTopic` field is absent. Such
 messages use a physical-queue fallback key, matching Java's null FIFO group, rather than falling back to non-FIFO
 settlement. For FIFO LitePush, unkeyed siblings in the same receive batch therefore share the suspend decision.
+
+Client-issued acknowledgement, retry-policy NACK, FIFO LitePush suspension, and FIFO dead-letter forwarding remain
+pending across completion failures while their retry is in progress. The receive engine retries every failed completion
+RPC at a fixed one-second interval until it succeeds or the caller/Consumer lifecycle cancels it. `INVALID_RECEIPT_HANDLE`
+is terminal for acknowledgement and invisibility changes because retrying the same stale receipt cannot settle the
+message; dead-letter forwarding retries that status as well. Each FIFO successor waits while its predecessor's completion
+is retrying. When a completion ends with a terminal failure, the current message remains unsettled but its order key is
+released so the successor can run, matching the released Java client; retry-in-progress is the only FIFO blocking phase.
+Stopping the Consumer cancels pending completion retries and does not synthesize successful settlement.
 
 This matches the released Java `java-5.2.1` split between
 [`StandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/StandardConsumeService.java),

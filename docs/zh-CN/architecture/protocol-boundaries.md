@@ -54,11 +54,13 @@ Package 版本和发布依赖。
 gRPC Push 与 LitePush 遵循 Apache Java 正式版的 gRPC listener 契约，公开 `Success`、`Failure` 和携带时长的
 `Suspend`。普通 Push 会把 Suspend 转换为 Failure；非 FIFO LitePush 的 Failure 和 Suspend 都由服务端推进重试与死信，
 并忽略 Suspend 指定的时长。FIFO LitePush 才使用协议中由调用方指定时长的 suspend 操作；FIFO Failure 在客户端本地
-重试，并尝试通过内部 RPC 转发死信。转发结算失败时消息保持未结算状态，仍可能再次投递。classic Remoting 遵循
+重试，并由客户端负责转发死信。completion RPC 按固定 1 秒间隔重试；ACK 和不可见时间变更的
+`INVALID_RECEIPT_HANDLE` 属于终态错误，DLQ 转发则会重试该状态。FIFO completion 重试期间后继消息等待，终态结算
+失败后释放后继消息。classic Remoting 遵循
 [Java 客户端](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 与[Go 客户端](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205)
-共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`。只有内部 PULL 路径会把负数
-`RemotingPushConsumeContext.DelayLevelWhenNextConsume` 解释为直接死信；POP 会将其归一化为默认重试级别。
+共同采用的并发消费回调模型，只公开 `Success` 和 `Retry`。只有并发内部 PULL 路径会把负数
+`RemotingPushConsumeContext.DelayLevelWhenNextConsume` 解释为直接死信；orderly PULL 会发布到 retry topic，POP 会将其归一化为默认重试级别。
 兼容性测试分别锁定两边独立拥有的结果形态。gRPC 结果因为需要携带时长而使用不可变值对象；Remoting 结果仍是
 独立拥有的两成员枚举。
 

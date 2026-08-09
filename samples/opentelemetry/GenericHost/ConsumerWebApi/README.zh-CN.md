@@ -103,11 +103,14 @@ Consumer Group、成功状态和错误属性。直方图 view、采样、基数�
 `IRemotingPushMessageHandler.HandleAsync` 接收 `IReadOnlyList<RemotingMessageView>` 和
 `RemotingPushConsumeContext`。默认返回 `Success` 会确认完整批次。并发非 FIFO 批次可先把 `AckIndex` 设为最后一条
 已接受消息的从零开始索引，再返回 `Success`，从而确认连续前缀并只重试尾部；`-1` 表示一条也不确认。`Retry` 会忽略
-`AckIndex` 并作用于整个批次。`DelayLevelWhenNextConsume` 控制重试时间；负值请求直接进入死信队列。
+`AckIndex` 并作用于整个批次。`DelayLevelWhenNextConsume` 控制失败 batch 的重试时间；只有并发 PULL 会把负值解释为直接进入死信。
+orderly PULL 会通过内部 producer 语义把耗尽上限的消息发布到 `%RETRY%group`，每次逻辑终态结算最多立即执行三次 wire send，Broker
+会在重新消费次数超过上限时把成功发布的消息转入 DLQ。
 
 Remoting FIFO 与 orderly 路径只投递单消息列表，不支持批量部分确认。广播模式没有 Broker 重试或死信流程。并发
 集群非 FIFO 批次超过 `ConsumeTimeout` 后会请求重新投递；忽略取消的代码可能与重新投递重叠。Remoting
-重试/死信结算失败时会在本地重试，不会再次调用 handler；对应物理队列的连续位点水位不会跨过该未决缺口。
+重试/死信结算失败时会在本地重试，不会再次调用 handler；对应物理队列的连续位点水位不会跨过该未决缺口。orderly retry topic
+发布最终失败时，消息会在本地保留，并按暂停时长再次调用 handler。
 
 完整投递、并发和位点规则请参阅 [gRPC Consumer 模型](../../../../docs/zh-CN/grpc/consumer-model.md)与
 [Remoting 传输和角色](../../../../docs/zh-CN/remoting/transport-and-client-roles.md)。span 属性、link 与 metric tag 由

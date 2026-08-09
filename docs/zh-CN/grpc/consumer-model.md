@@ -92,13 +92,20 @@ handler 可以返回 `ConsumeResult.Success`、`ConsumeResult.Failure` 或
 | Consumer 模式 | `Failure` | `Suspend(duration)` |
 | --- | --- | --- |
 | 普通非 FIFO Push | 按生效的重试策略修改不可见时间，由服务端推进重试与死信。 | 转换为 `Failure`，忽略指定时长。 |
-| 普通 FIFO Push | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。 | 转换为 `Failure`，忽略指定时长。 |
+| 普通 FIFO Push | 在客户端本地重试 handler，耗尽后由客户端转发 DLQ。结算失败时按固定 1 秒间隔重试；终态结算失败时消息保持未结算，仍可能再次投递。 | 转换为 `Failure`，忽略指定时长。 |
 | 非 FIFO LitePush | 按生效的重试策略修改不可见时间，由服务端推进重试与死信。 | 与 `Failure` 一样走重试策略 NACK，忽略指定时长。 |
-| FIFO LitePush | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递；FIFO key 为 `LiteTopic`。 | 暂停当前消息，并跳过同一 receive batch 中尚未处理的同 `LiteTopic` 消息；其他 LiteTopic 继续处理。 |
+| FIFO LitePush | 在客户端本地重试 handler，耗尽后由客户端转发 DLQ。结算失败时按固定 1 秒间隔重试；终态结算失败时消息保持未结算，仍可能再次投递；FIFO key 为 `LiteTopic`。 | 暂停当前消息，并跳过同一 receive batch 中尚未处理的同 `LiteTopic` 消息；其他 LiteTopic 继续处理。 |
 
 可选的 `MessageGroup` 或 `LiteTopic` 缺失时，服务端下发的 FIFO 设置仍是最终依据。这类消息会使用物理 queue fallback
 key，对应 Java 的空 FIFO group，不会降级到非 FIFO 结算。对于 FIFO LitePush，同一 receive batch 中没有 key 的兄弟消息
 因此会共享 suspend 决策。
+
+客户端主动发起的 ACK、按重试策略执行的 NACK、FIFO LitePush suspend 和 FIFO 死信转发，在重试进行期间会继续保持
+pending。接收引擎对每次失败的 completion RPC 都按固定 1 秒间隔重试，直到成功或调用方/Consumer 生命周期取消。
+ACK 和不可见时间变更遇到 `INVALID_RECEIPT_HANDLE` 时立即终止，因为继续使用同一个过期 receipt 无法完成结算；死信
+转发也会重试该状态。FIFO 前驱的 completion 正在重试时，后续消息会等待；如果 completion 以终态失败结束，当前消息
+仍保持未结算，但会释放顺序 key，让后续消息继续执行，这与正式版 Java 客户端一致。只有重试进行期间会阻塞 FIFO。
+停止 Consumer 会取消等待中的 completion 重试，并且不会伪造成功结算。
 
 这与正式版 `java-5.2.1` 中
 [`StandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/StandardConsumeService.java)、

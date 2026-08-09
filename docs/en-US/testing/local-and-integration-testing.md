@@ -52,6 +52,19 @@ consumption. Replaceable collaborators normally use Moq;
 purpose-built fakes remain appropriate for stateful framing, streaming, or concurrency behavior
 that would be less clear with a mock.
 
+Focused consumer-result unit coverage includes:
+
+- gRPC regular Push normalizes `Suspend` to `Failure` (service retry/NACK for non-FIFO and local retry for FIFO);
+  LitePush sends the exact caller duration with `suspend=true`, suspends unprocessed same-`LiteTopic` siblings in a
+  FIFO receive batch, keeps other LiteTopics independent, and preserves FIFO behavior through the physical-queue
+  fallback when `MessageGroup` or `LiteTopic` is absent;
+- gRPC local retry cancellation stops retry delays promptly, while completion failures leave the message unresolved,
+  preserve FIFO blocking, and cancel cleanly during shutdown;
+- Remoting orderly PULL clamps caller and configured suspension to 10 milliseconds through 30 seconds, resets the
+  per-invocation context, retains the current attempt's override when a handler throws, isolates one suspended physical
+  queue from its siblings, cancels waits on stop, attempts terminal send-back for clustering and broadcasting, and
+  retains the current message and suspension duration when send-back fails.
+
 Test methods follow the
 [`MemberOrBehavior_Scenario_ExpectedOutcome` convention recommended by Microsoft](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices#naming-your-tests).
 Each segment uses PascalCase and underscores separate the subject, scenario, and observable result. Integration tests
@@ -139,6 +152,19 @@ negative-delay normalization without direct dead-lettering. Cleanup restores PUL
 `SET_MESSAGE_REQUEST_MODE` remains test administration and is never exposed as a production Consumer API. Ordinary
 LitePull and default Push workflows do not depend on Broker-side POP configuration; PULL dead-letter tests cover both
 the explicit negative-delay request and retry-policy exhaustion.
+
+The gRPC DLQ integration suite has four workflows: regular FIFO Push, regular non-FIFO Push, non-FIFO LitePush, and
+FIFO LitePush. Each configures one retry (`MaxDeliveryAttempts=2`) and a `RetryDelay` of 100 milliseconds, then
+verifies the DLQ message and the ownership split: regular non-FIFO progression is service-owned, while FIFO and LitePush
+use client attempts to forward to DLQ. A forwarding/completion failure is treated as unresolved rather than as an ACK.
+The Lite suspend workflow separately requests exactly 100 milliseconds, verifies that redelivery is not early and that
+the receipt is replaced, and deliberately makes no numeric `DeliveryAttempt` assertion because that value is service-owned.
+
+The Remoting PULL DLQ integration suite covers direct negative-delay send-back plus concurrent, `MessageGroup` FIFO,
+clustered orderly, and broadcasting orderly retry exhaustion. Retry-exhaustion cases use one retry
+(`MaxDeliveryAttempts=2`) with a 100-millisecond retry delay; orderly delivery additionally exercises its short local
+queue suspension. Each workflow observes one reject and the DLQ message, then verifies the Broker-committed clustering
+offset or the persisted broadcasting offset while preserving the unresolved-on-failure contract.
 
 Single-Broker runtime is treated as a measured test-design constraint. On commit `9ef119f`, the local Remoting filter
 `Topology!=MultiBroker` passed 29 tests in 167.7 seconds; approximately 44.6 seconds were shared fixture startup. Test

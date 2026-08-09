@@ -458,15 +458,23 @@ consumer result model:
 - `Success` settles the acknowledged prefix selected by `AckIndex`.
 - For concurrent non-FIFO delivery, `Retry` with a non-negative `DelayLevelWhenNextConsume` sends the PULL tail back or
   makes one `CHANGE_MESSAGE_INVISIBLETIME` request with `suspend=false` for the POP tail.
-- For concurrent non-FIFO delivery, `Retry` with a negative delay level sends a PULL message through classic dead-letter
-  send-back. For a POP delivery, the .NET adapter normalizes a negative value to level `0`; POP then follows its normal
-  Java-compatible `CHANGE_MESSAGE_INVISIBLETIME` retry schedule and never interprets a negative value as direct
-  dead-lettering.
-- `MessageGroup` FIFO and orderly singleton delivery ignore the consume context. Their `Retry` outcome remains locally
-  serialized until it succeeds or reaches `MaxDeliveryAttempts`.
-- A PULL `Retry` that reaches `MaxDeliveryAttempts` follows classic send-back into the dead-letter queue. A POP `Retry`
-  at the same limit follows the Java client's `checkNeedAckOrDelay` path instead: it never performs implicit dead-letter
-  send-back. While the message age is at most twice the final POP delay, the client makes one
+- For concurrent non-FIFO delivery, `Retry` with a negative delay level makes the client attempt classic PULL dead-letter send-back. If
+  that send-back completion fails, the queue offset remains unresolved and the message may be redelivered. For a POP
+  delivery, the .NET adapter normalizes a negative value to level `0`; POP then follows its normal Java-compatible
+  `CHANGE_MESSAGE_INVISIBLETIME` retry schedule and never interprets a negative value as direct dead-lettering.
+- `MessageGroup` FIFO ignores the consume context and keeps using `RetryDelay` for local retries.
+- An orderly PULL handler may set `SuspendCurrentQueueDuration` before returning `Retry`. Only that physical queue
+  pauses; other assigned queues continue. An unset value uses `OrderlySuspendDuration`, and the effective value is
+  clamped to Java's 10-millisecond through 30-second scheduling range. A fresh context is created for every attempt,
+  so an override applies only to the next local retry. Concurrent PULL, POP, and `MessageGroup` paths cannot consume
+  the value.
+- A clustered PULL `Retry` and an orderly broadcasting `Retry` that reach `MaxDeliveryAttempts` make the client attempt
+  classic send-back into the dead-letter queue. An orderly send-back failure retains the current message, waits for that
+  attempt's suspension duration, and invokes the handler again without advancing the offset. Concurrent broadcasting
+  still has no Broker retry or dead-letter ownership and drops an unsuccessful tail. A POP `Retry` at the same limit
+  follows the Java client's `checkNeedAckOrDelay` path instead: it never performs implicit dead-letter send-back. While
+  the message age is at most twice the final POP
+  delay, the client makes one
   `CHANGE_MESSAGE_INVISIBLETIME` request using the next age-based POP delay bucket. Once the age is strictly greater
   than that threshold, the client ACKs the receipt. With the official 7,200-second final delay, the threshold is four
   hours. The handler-selected delay level is ignored in this maximum-attempt branch.
@@ -480,8 +488,27 @@ and the classic Go client's
 PULL passes the level to classic send-back. For POP, the adapter normalizes a negative value to level `0`, then maps the
 resulting level through Java's POP-specific retry schedule; `0` selects that schedule by the zero-based reconsume count
 (`DeliveryAttempt - 1`). This schedule starts at 10 seconds and is distinct from the normal delayed-message level table.
-Direct dead-lettering remains a classic PULL-only send-back behavior; POP retry never interprets a negative value as a
+Direct dead-lettering remains a classic PULL-only send-back behavior; the client attempts the send-back and leaves the
+offset unresolved if completion fails, so the message may be redelivered. POP retry never interprets a negative value as a
 direct dead-letter request.
+
+The orderly duration contract follows released Java `rocketmq-all-5.5.0`
+[`ConsumeOrderlyContext`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeOrderlyContext.java)
+and its 1-second consumer default. Both clustering and broadcasting orderly consumers perform local suspension and
+attempt DLQ send-back after this client's configured delivery limit. If terminal send-back fails, the current message
+remains local and uses the current attempt's suspension duration before the handler runs again. If a handler throws after setting
+`SuspendCurrentQueueDuration`, the current attempt retains that override, matching released Java 5.5.0 behavior; an
+unset value uses the configured orderly default. Cancellation ends the local wait without settlement. Queue-lock loss is observed after the current
+timer completes and before another handler attempt; matching Java's scheduled retry, it does not wake an
+already-running timer. The wait itself is client scheduling and therefore creates no ACK, NACK, reject, or commit
+settlement operation. A failed dead-letter send-back records its own failed settlement operation; the following local
+wait does not.
+
+Java orderly consumption defaults to effectively unbounded retries when `maxReconsumeTimes` is `-1` and increments its
+mutable message retry count before another handler call. This client retains its explicit one-based
+`MaxDeliveryAttempts` default of 16 and leaves `RemotingMessageView.DeliveryAttempt` as the immutable Broker-reported
+value while tracking local attempts internally. These are intentional .NET API differences; suspension timing,
+physical-queue isolation, terminal send-back, and send-back failure recovery follow the released Java design.
 
 POP does not renew a receipt while its handler is active. The client checks the fixed invisible deadline before handler
 processing and again before settlement. If the deadline has passed, the late handler result is ignored and the Broker

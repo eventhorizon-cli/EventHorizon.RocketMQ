@@ -58,16 +58,18 @@ The small foundational models are declared separately in each protocol namespace
 | Filter type | `EventHorizon.RocketMQ.Grpc.Consumer.FilterExpressionType` | `EventHorizon.RocketMQ.Remoting.Consumer.FilterExpressionType` |
 | Client exception base | `EventHorizon.RocketMQ.Grpc.Exceptions.RocketMQClientException` | `EventHorizon.RocketMQ.Remoting.Exceptions.RocketMQClientException` |
 
-gRPC Push and LitePush follow the Apache Java gRPC listener contract and expose `Success` and `Failure`; the service
-owns non-FIFO retry and dead-letter progression, while FIFO dead-letter forwarding is internal client behavior.
+gRPC Push and LitePush follow the released Apache Java gRPC listener contract and expose `Success`, `Failure`, and a
+duration-bearing `Suspend`. Regular Push normalizes Suspend to Failure. LitePush honors it with the protocol's
+caller-duration suspend operation; Lite failures retry locally and attempt internal dead-letter forwarding in both
+standard and FIFO modes. If that forwarding completion fails, the message remains unsettled and may be redelivered.
 Classic Remoting follows the concurrent callback model shared by the
 [Java client](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/consumer/listener/ConsumeConcurrentlyStatus.java)
 and the
 [Go client](https://github.com/apache/rocketmq-client-go/blob/v2.1.2/consumer/consumer.go#L197-L205):
 it exposes `Success` and `Retry`. A negative `RemotingPushConsumeContext.DelayLevelWhenNextConsume` requests direct
 dead-lettering only on the internal PULL path; POP normalizes it to the default retry level. Compatibility tests lock
-each protocol's independently owned enum even though both currently contain two members with protocol-specific
-failure names.
+each protocol's independently owned result shape. The gRPC result is an immutable value object because one outcome
+carries a duration; the Remoting result remains its independently owned two-member enum.
 
 Classic Remoting `ConsumerOptions.InitialPosition` uses the protocol-owned `ConsumeFromPosition` type. LitePull and
 Push apply it only when an assigned queue has no committed group position; a timestamp start also uses

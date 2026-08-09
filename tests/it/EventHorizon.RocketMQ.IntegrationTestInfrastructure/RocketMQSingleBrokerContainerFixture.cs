@@ -34,6 +34,7 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";
     private const int NameServerPort = 9876;
+    private const int RetryIntervalMilliseconds = 100;
 
     /// <summary>
     /// Gets the shared topic used only by the legacy serial Remoting integration-test suite.
@@ -277,14 +278,21 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
             CreateTopicAsync(TransactionTopic, "TRANSACTION", CancellationToken.None),
             CreateTopicAsync(FifoTopic, "FIFO", CancellationToken.None),
             CreateTopicAsync(DelayTopic, "DELAY", CancellationToken.None),
-            CreateTopicAsync(LiteParentTopic, "LITE", CancellationToken.None)).ConfigureAwait(false);
+            // Keep the Lite parent topic single-queue so one logical Lite message has one deterministic assignment
+            // in focused integration tests.
+            CreateTopicAsync(LiteParentTopic, "LITE", CancellationToken.None, queueCount: 1)).ConfigureAwait(false);
         foreach (var group in new[]
                  {
                      "legacy-push-consumer-it",
                      "legacy-push-cluster-it"
                  })
         {
-            await CreateConsumerGroupAsync(group, null, null, CancellationToken.None).ConfigureAwait(false);
+            await CreateConsumerGroupAsync(
+                group,
+                null,
+                null,
+                consumeMessageOrderly: false,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -307,6 +315,7 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
         string group,
         string? liteParentTopic,
         int? retryMaxTimes,
+        bool consumeMessageOrderly,
         CancellationToken cancellationToken)
     {
         await _administrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -325,13 +334,19 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
                 createGroupCommand.Add($"+lite.bind.topic={liteParentTopic}");
             }
 
+            if (consumeMessageOrderly)
+            {
+                createGroupCommand.Add("-o");
+                createGroupCommand.Add("true");
+            }
+
             if (retryMaxTimes is not null)
             {
                 createGroupCommand.Add("--retryMaxTimes");
                 createGroupCommand.Add(retryMaxTimes.Value.ToString(CultureInfo.InvariantCulture));
                 createGroupCommand.Add("--groupRetryPolicy");
                 createGroupCommand.Add(
-                    "{\"type\":\"CUSTOMIZED\",\"customizedRetryPolicy\":{\"next\":[1000]}}");
+                    $"{{\"type\":\"CUSTOMIZED\",\"customizedRetryPolicy\":{{\"next\":[{RetryIntervalMilliseconds}]}}}}");
             }
 
             var createGroup = await _broker.ExecAsync(createGroupCommand, cancellationToken).ConfigureAwait(false);
@@ -373,18 +388,34 @@ public sealed class RocketMQSingleBrokerContainerFixture : IAsyncLifetime
         return queues.All(committed.Contains);
     }
 
-    private async Task CreateTopicAsync(string topic, string messageType, CancellationToken cancellationToken)
+    private async Task CreateTopicAsync(
+        string topic,
+        string messageType,
+        CancellationToken cancellationToken,
+        int? queueCount = null)
     {
         await _administrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var createTopic = await _broker.ExecAsync([
+            var createTopicCommand = new List<string>
+            {
                 "sh", "mqadmin", "updateTopic",
                 "-n", $"nameserver:{NameServerPort}",
                 "-c", "DefaultCluster",
-                "-t", topic,
-                "-a", $"+message.type={messageType}"
-            ], cancellationToken).ConfigureAwait(false);
+                "-t", topic
+            };
+            if (queueCount is not null)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(queueCount.Value);
+                createTopicCommand.Add("-r");
+                createTopicCommand.Add(queueCount.Value.ToString(CultureInfo.InvariantCulture));
+                createTopicCommand.Add("-w");
+                createTopicCommand.Add(queueCount.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            createTopicCommand.Add("-a");
+            createTopicCommand.Add($"+message.type={messageType}");
+            var createTopic = await _broker.ExecAsync(createTopicCommand, cancellationToken).ConfigureAwait(false);
             if (createTopic.ExitCode != 0)
             {
                 throw new InvalidOperationException(

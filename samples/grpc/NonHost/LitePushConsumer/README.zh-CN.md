@@ -17,8 +17,9 @@ LiteTopic 集合，持续运行 handler 直到 Ctrl+C，显式停止角色，并
 ## 投递与 Lite 订阅
 
 `BindTopic` 指定 LITE parent topic。`LiteTopics` 是完整的初始逻辑订阅集合，不是普通 topic 或 filter 的列表。示例的 scoped
-`IGrpcPushMessageHandler` 记录消息并返回 `ConsumeResult.Success`，SDK 随后会确认消息。`Failure` 交由当前生效的重试
-策略安排再次投递。handler 异常会触发重试，因此处理必须是幂等的。
+`IGrpcPushMessageHandler` 记录消息并返回 `ConsumeResult.Success`，SDK 随后会确认消息。`Failure` 在本地重试，耗尽后由
+客户端尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。`ConsumeResult.Suspend(duration)` 会延迟 Lite 消息重新投递，下一次投递次数由服务端负责；FIFO Suspend 还会覆盖
+当前 receive batch 中尚未处理的同 LiteTopic 消息。handler 异常会触发重试，因此处理必须是幂等的。
 
 不要为 LitePush 调用普通的 `ConsumerOptions.Subscribe`。应通过一个 bind topic 下的 `LiteTopics`、`SubscribeLiteAsync` 和
 `UnsubscribeLiteAsync` 管理订阅。Lite 投递仍通过 RocketMQ 5 Proxy 的客户端发起长轮询完成。

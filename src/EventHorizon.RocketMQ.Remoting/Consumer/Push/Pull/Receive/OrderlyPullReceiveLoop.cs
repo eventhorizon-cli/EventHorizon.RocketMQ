@@ -24,6 +24,8 @@ namespace EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Receive;
 internal sealed class OrderlyPullReceiveLoop
 {
     private static readonly TimeSpan MaximumBrokerLockLiveTime = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MinimumSuspendDuration = TimeSpan.FromMilliseconds(10);
+    private static readonly TimeSpan MaximumSuspendDuration = TimeSpan.FromSeconds(30);
 
     private readonly RemotingPushConsumerOptions _options;
     private readonly IRemotingPullWireClient _pullClient;
@@ -125,26 +127,6 @@ internal sealed class OrderlyPullReceiveLoop
                         break;
                     }
 
-                    if (_options.ConsumerMode == ConsumerMode.Broadcasting)
-                    {
-                        if (outcome != OrderlyDeliveryOutcome.Success)
-                        {
-                            _logger.LogWarning(
-                                "Broadcast orderly consumer drops message {MessageId} after handler outcome {ConsumeResult}; broadcast retry and dead-letter queues are unavailable",
-                                message.MessageId,
-                                outcome);
-                        }
-                    }
-                    else if (outcome == OrderlyDeliveryOutcome.DeadLetter)
-                    {
-                        await _sendBackSettlement.SendAsync(
-                            queue,
-                            message,
-                            deadLetter: true,
-                            delayLevel: -1,
-                            cancellationToken).ConfigureAwait(false);
-                    }
-
                     if (!HasValidBrokerQueueLock(receiver))
                     {
                         completed = false;
@@ -180,7 +162,7 @@ internal sealed class OrderlyPullReceiveLoop
                     queue.Topic,
                     queue.BrokerName,
                     queue.QueueId);
-                await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(_options.RetryDelay, _timeProvider, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -198,19 +180,18 @@ internal sealed class OrderlyPullReceiveLoop
                 return OrderlyDeliveryOutcome.LeaseLost;
             }
 
-            ConsumeResult result;
+            var consumeContext = new RemotingPushConsumeContext();
+            PushHandlerBatchResult batchResult;
             try
             {
-                var batchResult = await _messageHandlerInvoker.InvokeAsync(
+                batchResult = await _messageHandlerInvoker.InvokeOrderlyAsync(
                     new[] { message },
-                    enableTimeoutRecovery: false,
+                    consumeContext,
                     cancellationToken).ConfigureAwait(false);
                 if (_messageHandlerInvoker.ShouldAbandonResults)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                 }
-
-                result = batchResult.Result;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -222,7 +203,13 @@ internal sealed class OrderlyPullReceiveLoop
                     exception,
                     "Legacy orderly message handler failed for message {MessageId}",
                     message.MessageId);
-                result = ConsumeResult.Retry;
+                // Released Java converts the exception to SUSPEND while retaining the same orderly context, including
+                // an override assigned before the handler threw.
+                // https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/ConsumeMessageOrderlyService.java
+                batchResult = PushHandlerBatchResult.Retry(
+                    messageCount: 1,
+                    delayLevelWhenNextConsume: 0,
+                    consumeContext.SuspendCurrentQueueDuration);
             }
 
             if (!HasValidBrokerQueueLock(receiver))
@@ -230,22 +217,60 @@ internal sealed class OrderlyPullReceiveLoop
                 return OrderlyDeliveryOutcome.LeaseLost;
             }
 
-            switch (result)
+            switch (batchResult.Result)
             {
                 case ConsumeResult.Success:
                     return OrderlyDeliveryOutcome.Success;
-                case ConsumeResult.Retry when _options.ConsumerMode == ConsumerMode.Broadcasting:
-                    return OrderlyDeliveryOutcome.Retry;
                 case ConsumeResult.Retry when attempt >= _options.MaxDeliveryAttempts:
-                    return OrderlyDeliveryOutcome.DeadLetter;
+                    try
+                    {
+                        await _sendBackSettlement.SendAsync(
+                            receiver.Queue,
+                            message,
+                            deadLetter: true,
+                            delayLevel: -1,
+                            cancellationToken).ConfigureAwait(false);
+                        return OrderlyDeliveryOutcome.Success;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogWarning(
+                            exception,
+                            "Unable to send orderly message {MessageId} to the dead-letter queue; retaining the current message for another local attempt",
+                            message.MessageId);
+                        var terminalSuspendDuration = ResolveSuspendDuration(
+                            batchResult.SuspendCurrentQueueDuration,
+                            _options.OrderlySuspendDuration);
+                        await Task.Delay(terminalSuspendDuration, _timeProvider, cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+                    }
                 case ConsumeResult.Retry:
                     attempt++;
-                    await Task.Delay(_options.RetryDelay, cancellationToken).ConfigureAwait(false);
+                    var suspendDuration = ResolveSuspendDuration(
+                        batchResult.SuspendCurrentQueueDuration,
+                        _options.OrderlySuspendDuration);
+                    await Task.Delay(suspendDuration, _timeProvider, cancellationToken).ConfigureAwait(false);
                     break;
                 default:
-                    throw new InvalidOperationException($"Unsupported ordered consume result '{result}'.");
+                    throw new InvalidOperationException($"Unsupported ordered consume result '{batchResult.Result}'.");
             }
         }
+    }
+
+    internal static TimeSpan ResolveSuspendDuration(TimeSpan? requested, TimeSpan configured)
+    {
+        var duration = requested ?? configured;
+        if (duration < MinimumSuspendDuration)
+        {
+            return MinimumSuspendDuration;
+        }
+
+        return duration > MaximumSuspendDuration ? MaximumSuspendDuration : duration;
     }
 
     private bool UsesBrokerQueueLocks =>
@@ -257,8 +282,6 @@ internal sealed class OrderlyPullReceiveLoop
     private enum OrderlyDeliveryOutcome
     {
         Success,
-        Retry,
-        DeadLetter,
         LeaseLost
     }
 }

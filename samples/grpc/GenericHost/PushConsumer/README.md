@@ -63,13 +63,16 @@ Each handler result asks the consumer to perform a specific settlement operation
 | Result | SDK action |
 | --- | --- |
 | `ConsumeResult.Success` | Acknowledge the message. Return it only after the business effect is durable. |
-| `ConsumeResult.Failure` | Let the effective retry policy schedule another delivery. |
+| `ConsumeResult.Failure` | Use service-owned retry progression for non-FIFO delivery; retry locally and then attempt DLQ forwarding for FIFO delivery. A failed forwarding completion leaves the message unsettled for possible redelivery. |
+| `ConsumeResult.Suspend(duration)` | Normalize to `Failure`; regular Push does not apply the requested duration. |
 
-An unhandled handler exception is treated as `Failure`. If acknowledgement or retry scheduling fails, the
-message may be delivered again. Handlers must therefore be idempotent even when they return `Success`.
+An unhandled handler exception is treated as `Failure`. If acknowledgement, retry scheduling, or DLQ forwarding fails,
+the message may be delivered again. Return `Success` only after durable business processing; handlers must therefore
+remain idempotent even when they return `Success`.
 
 Corrupted messages do not reach `IGrpcPushMessageHandler`. A non-FIFO corrupted message is made eligible for retry;
-a corrupted FIFO message is dead-lettered before the next member of its message group is released.
+for a corrupted FIFO message, the client attempts DLQ forwarding before releasing the next member of its message group.
+If that completion fails, the message remains unsettled and may be redelivered.
 
 Push requests set `AutoRenew=true`, so a compatible Proxy renews the receipt while the handler is active; the .NET
 client does not run a second renewal timer. For non-FIFO messages, `ConsumeTimeout` bounds how long the dispatcher

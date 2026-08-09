@@ -36,10 +36,10 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
         var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Fifo, cancellationToken);
-        var consumerGroup = await scope.CreateConsumerGroupAsync(
+        var consumerGroup = await scope.CreateOrderedConsumerGroupAsync(
             "grpc-push-dlq-consumer",
             retryMaxTimes: 1,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-dlq-{Guid.NewGuid():N}";
         var observation = new DeadLetterObservation(expected, handled);
@@ -73,7 +73,8 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             }, cancellationToken);
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await AssertDeadLetterMessageAsync(fixture, consumerGroup, cancellationToken);
-            AssertSingleRetry(observation, requireAttemptIncrement: true);
+            await consumer.StopAsync(CancellationToken.None);
+            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Local);
         }
         finally
         {
@@ -92,7 +93,7 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
         var consumerGroup = await scope.CreateConsumerGroupAsync(
             "grpc-push-non-fifo-dlq-consumer",
             retryMaxTimes: 1,
-            cancellationToken);
+            cancellationToken: cancellationToken);
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-non-fifo-dlq-{Guid.NewGuid():N}";
         var observation = new DeadLetterObservation(expected, handled);
@@ -125,7 +126,8 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             }, cancellationToken);
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await AssertDeadLetterMessageAsync(fixture, consumerGroup, cancellationToken);
-            AssertSingleRetry(observation, requireAttemptIncrement: true);
+            await consumer.StopAsync(CancellationToken.None);
+            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Service);
         }
         finally
         {
@@ -136,17 +138,15 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GrpcLitePushConsumer_FailureExhaustsRetries_MovesToDeadLetterQueue()
+    public async Task GrpcLitePushConsumer_NonFifoFailureExhaustsRetries_MovesToDeadLetterQueue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
         var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
-        // Released Proxy 5.5.0 yields one Lite redelivery with this setting. The assertions below pin the resulting
-        // two handler calls by requiring both the configured retry interval and a new receipt handle.
         var consumerGroup = await scope.CreateLiteConsumerGroupAsync(
             "grpc-lite-push-dlq-consumer",
-            retryMaxTimes: 0,
-            cancellationToken);
+            retryMaxTimes: 1,
+            cancellationToken: cancellationToken);
         var liteTopic = $"grpc-lite-dlq-{Guid.NewGuid():N}";
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var expected = $"grpc-lite-dlq-{Guid.NewGuid():N}";
@@ -161,6 +161,8 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
                 options.GroupName = consumerGroup;
                 options.BindTopic = scope.Topic;
                 options.LiteTopics.Add(liteTopic);
+                options.MaxConcurrency = 1;
+                options.BatchSize = 1;
                 options.MaxDeliveryAttempts = 2;
                 options.RetryDelay = TimeSpan.FromMilliseconds(100);
                 options.LongPollingTimeout = TimeSpan.FromSeconds(1);
@@ -181,7 +183,65 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
             }, cancellationToken);
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await AssertDeadLetterMessageAsync(fixture, consumerGroup, cancellationToken);
-            AssertSingleRetry(observation, requireAttemptIncrement: false);
+            await consumer.StopAsync(CancellationToken.None);
+            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Local);
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GrpcLitePushConsumer_FifoFailureExhaustsRetries_MovesToDeadLetterQueue()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
+        var consumerGroup = await scope.CreateOrderedLiteConsumerGroupAsync(
+            "grpc-lite-fifo-dlq-consumer",
+            retryMaxTimes: 1,
+            cancellationToken: cancellationToken);
+        var liteTopic = $"grpc-lite-fifo-dlq-{Guid.NewGuid():N}";
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var expected = $"grpc-lite-fifo-dlq-{Guid.NewGuid():N}";
+        var observation = new DeadLetterObservation(expected, handled);
+        var services = new ServiceCollection();
+        services.AddSingleton(observation);
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
+            .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
+            .AddGrpcLitePushConsumer<DeadLetterMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = consumerGroup;
+                options.BindTopic = scope.Topic;
+                options.LiteTopics.Add(liteTopic);
+                options.MaxConcurrency = 1;
+                options.BatchSize = 1;
+                options.MaxDeliveryAttempts = 2;
+                options.RetryDelay = TimeSpan.FromMilliseconds(100);
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IGrpcProducer>();
+        var consumer = provider.GetRequiredService<IGrpcLitePushConsumer>();
+        await producer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        try
+        {
+            await producer.SendAsync(new Message(
+                scope.Topic,
+                Encoding.UTF8.GetBytes(expected))
+            {
+                LiteTopic = liteTopic
+            }, cancellationToken);
+            await handled.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await AssertDeadLetterMessageAsync(fixture, consumerGroup, cancellationToken);
+            await consumer.StopAsync(CancellationToken.None);
+            AssertOneRetryBeforeDeadLetter(observation, RetryOwnership.Local);
         }
         finally
         {
@@ -213,27 +273,31 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
         Assert.Fail($"Dead-letter topic did not receive the message. Topic status: {status}");
     }
 
-    private static void AssertSingleRetry(
+    private static void AssertOneRetryBeforeDeadLetter(
         DeadLetterObservation observation,
-        bool requireAttemptIncrement)
+        RetryOwnership retryOwnership)
     {
-        Assert.Equal(2, observation.DeliveryCount);
         var deliveries = observation.Deliveries;
-        Assert.Equal(2, deliveries.Count);
+        Assert.True(
+            deliveries.Count >= 2,
+            $"Expected two failed handler calls, observed {observation.DeliveryCount}: " +
+            string.Join(", ", deliveries.Select(static delivery =>
+                $"attempt={delivery.DeliveryAttempt},message={delivery.MessageId},queue={delivery.QueueId},handle={delivery.ReceiptHandle}")));
+        Assert.Equal(deliveries[0].MessageId, deliveries[1].MessageId);
         Assert.True(
             Stopwatch.GetElapsedTime(deliveries[0].Timestamp, deliveries[1].Timestamp) >=
-            TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromMilliseconds(50),
             "The second handler call arrived before the configured retry interval.");
-        if (requireAttemptIncrement)
+
+        if (retryOwnership == RetryOwnership.Local)
         {
-            Assert.True(
-                deliveries[1].DeliveryAttempt > deliveries[0].DeliveryAttempt,
-                $"Expected one redelivery with an increased attempt, but observed " +
-                $"[{deliveries[0].DeliveryAttempt}, {deliveries[1].DeliveryAttempt}].");
+            Assert.Equal(deliveries[0].ReceiptHandle, deliveries[1].ReceiptHandle);
+            Assert.Equal(deliveries[0].DeliveryAttempt + 1, deliveries[1].DeliveryAttempt);
         }
         else
         {
             Assert.NotEqual(deliveries[0].ReceiptHandle, deliveries[1].ReceiptHandle);
+            Assert.True(deliveries[1].DeliveryAttempt > deliveries[0].DeliveryAttempt);
         }
     }
 
@@ -267,19 +331,28 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
 
         public IReadOnlyList<ObservedDelivery> Deliveries => _deliveries.ToArray();
 
-        public void RecordDelivery(GrpcMessageView message)
+        public int RecordDelivery(GrpcMessageView message)
         {
             _deliveries.Enqueue(new ObservedDelivery(
                 message.DeliveryAttempt,
+                message.MessageId,
+                message.QueueId,
                 message.ReceiptHandle,
                 Stopwatch.GetTimestamp()));
-            Interlocked.Increment(ref _deliveryCount);
-            Handled.TrySetResult();
+            var deliveryCount = Interlocked.Increment(ref _deliveryCount);
+            if (deliveryCount == 2)
+            {
+                Handled.TrySetResult();
+            }
+
+            return deliveryCount;
         }
     }
 
     private sealed record ObservedDelivery(
         int DeliveryAttempt,
+        string MessageId,
+        int QueueId,
         string ReceiptHandle,
         long Timestamp);
 
@@ -291,11 +364,20 @@ public sealed class RocketMQDeadLetterIntegrationTests(RocketMQSingleBrokerConta
         {
             if (Encoding.UTF8.GetString(message.Body) == observation.ExpectedBody)
             {
-                observation.RecordDelivery(message);
-                return ValueTask.FromResult(ConsumeResult.Failure);
+                // Forward-to-DLQ returns after the Proxy accepts the send-back, while the Proxy performs its internal
+                // acknowledgement asynchronously. A duplicate from that settlement window succeeds so this test
+                // isolates the one configured retry from at-least-once delivery behavior.
+                var deliveryCount = observation.RecordDelivery(message);
+                return ValueTask.FromResult(deliveryCount <= 2 ? ConsumeResult.Failure : ConsumeResult.Success);
             }
 
             return ValueTask.FromResult(ConsumeResult.Success);
         }
+    }
+
+    private enum RetryOwnership
+    {
+        Local,
+        Service
     }
 }

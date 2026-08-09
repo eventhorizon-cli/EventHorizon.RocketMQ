@@ -76,7 +76,35 @@ public sealed class RocketMQTestScope
     {
         ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
         var group = CreateGroupName(role);
-        await _fixture.CreateConsumerGroupAsync(group, null, retryMaxTimes, cancellationToken).ConfigureAwait(false);
+        await _fixture.CreateConsumerGroupAsync(
+            group,
+            null,
+            retryMaxTimes,
+            consumeMessageOrderly: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return group;
+    }
+
+    /// <summary>
+    /// Creates and configures an isolated ordered consumer group with a maximum retry count.
+    /// </summary>
+    /// <param name="role">The role label included in the group name.</param>
+    /// <param name="retryMaxTimes">The non-negative maximum number of consumption retries.</param>
+    /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
+    /// <returns>The created ordered consumer group name.</returns>
+    public async Task<string> CreateOrderedConsumerGroupAsync(
+        string role,
+        int retryMaxTimes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
+        var group = CreateGroupName(role);
+        await _fixture.CreateConsumerGroupAsync(
+            group,
+            null,
+            retryMaxTimes,
+            consumeMessageOrderly: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return group;
     }
 
@@ -89,7 +117,12 @@ public sealed class RocketMQTestScope
     public async Task<string> CreateLiteConsumerGroupAsync(string role, CancellationToken cancellationToken = default)
     {
         var group = CreateGroupName(role);
-        await _fixture.CreateConsumerGroupAsync(group, Topic, null, cancellationToken).ConfigureAwait(false);
+        await _fixture.CreateConsumerGroupAsync(
+            group,
+            Topic,
+            null,
+            consumeMessageOrderly: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return group;
     }
 
@@ -110,7 +143,35 @@ public sealed class RocketMQTestScope
     {
         ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
         var group = CreateGroupName(role);
-        await _fixture.CreateConsumerGroupAsync(group, Topic, retryMaxTimes, cancellationToken).ConfigureAwait(false);
+        await _fixture.CreateConsumerGroupAsync(
+            group,
+            Topic,
+            retryMaxTimes,
+            consumeMessageOrderly: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return group;
+    }
+
+    /// <summary>
+    /// Creates and configures an isolated ordered LitePush consumer group with a maximum retry count.
+    /// </summary>
+    /// <param name="role">The role label included in the group name.</param>
+    /// <param name="retryMaxTimes">The non-negative maximum number of consumption retries.</param>
+    /// <param name="cancellationToken">The token used to cancel the Broker administration request.</param>
+    /// <returns>The created ordered LitePush consumer group name.</returns>
+    public async Task<string> CreateOrderedLiteConsumerGroupAsync(
+        string role,
+        int retryMaxTimes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(retryMaxTimes);
+        var group = CreateGroupName(role);
+        await _fixture.CreateConsumerGroupAsync(
+            group,
+            Topic,
+            retryMaxTimes,
+            consumeMessageOrderly: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return group;
     }
 

@@ -65,17 +65,22 @@ delivery still uses client-initiated long polling.
 ## Delivery and failure semantics
 
 LitePush uses the same `IGrpcPushMessageHandler` contract and dependency-injection lifetime rules as standard Push.
-`ConsumeResult.Success` acknowledges the message; `Failure` lets the effective retry policy schedule another delivery.
-Handler exceptions are treated as failures, and failed completion calls can produce duplicate delivery, so processing
-must be idempotent.
+`ConsumeResult.Success` acknowledges the message. `Failure` retries the handler locally and attempts to forward the
+message to DLQ after the effective attempt limit; if that completion fails, the message remains unsettled and may be
+redelivered. `ConsumeResult.Suspend(duration)` changes invisibility with `suspend=true`; the
+service owns the delivery attempt reported by the next receive. The minimum duration is 50 milliseconds. For FIFO LitePush, Suspend also covers every
+unprocessed same-LiteTopic message from the current receive batch without invoking those sibling handlers. Handler
+exceptions are treated as failures, and failed completion calls can produce duplicate delivery, so processing must be
+idempotent.
 
-Corrupted messages bypass the application handler. The client retries non-FIFO corrupted messages and dead-letters
-corrupted FIFO messages before releasing the next member of that message group.
+Corrupted messages bypass the application handler. The client retries non-FIFO corrupted messages and attempts to
+forward corrupted FIFO messages to DLQ before releasing the next delivery for that LiteTopic. If that completion fails,
+the message remains unsettled and may be redelivered.
 
 LitePush requests set `AutoRenew=true`, so a compatible Proxy renews the receipt while the handler runs; the .NET
 client does not run a second renewal timer. For non-FIFO work, `ConsumeTimeout` cancels the handler token and requests
-another delivery; it cannot forcibly terminate code that ignores cancellation. FIFO message groups
-remain attached to preserve order. The same local concurrency, bounded-cache, and server-policy fallback behavior as
+another delivery; it cannot forcibly terminate code that ignores cancellation. FIFO LiteTopics remain attached to
+preserve order. The same local concurrency, bounded-cache, and server-policy fallback behavior as
 `IGrpcPushConsumer` applies.
 
 ## Required RocketMQ capabilities
@@ -102,7 +107,7 @@ service with a Broker.
 | `SubscriptionSyncInterval` | Periodic reconciliation interval for the complete LiteTopic set. |
 | `MaxConcurrency`, `BatchSize`, and cache limits | Local handler parallelism, receive batch size, and bounded buffering inherited from Push. |
 | `InvisibleDuration` / `ConsumeTimeout` | Initial invisibility and the non-FIFO handler timeout behavior inherited from Push. |
-| `MaxDeliveryAttempts` / `RetryDelay` | Fallback FIFO local-attempt limit and retry delay when the Proxy does not supply a policy. Non-FIFO dead-letter progression remains service-owned. |
+| `MaxDeliveryAttempts` / `RetryDelay` | Fallback local-attempt limit and retry delay when the Proxy does not supply a policy. Applies to FIFO and non-FIFO LitePush. |
 | `LongPollingTimeout` | Maximum server wait for each receive long poll. |
 
 ## Run the sample

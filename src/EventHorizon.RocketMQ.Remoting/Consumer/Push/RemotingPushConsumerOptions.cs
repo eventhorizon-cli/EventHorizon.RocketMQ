@@ -107,8 +107,9 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     /// Gets or sets the maximum delivery attempt at which protocol-specific terminal retry handling begins.
     /// </summary>
     /// <remarks>
-    /// PULL sends a retried message to the dead-letter queue at this limit. Classic POP follows the Apache Java
-    /// client's age-based terminal handling instead: it continues changing invisibility until the message is older
+    /// Clustered PULL and orderly broadcasting attempt dead-letter send-back at this limit. Concurrent broadcasting
+    /// cannot use Broker retry or dead-letter send-back and drops an unsuccessful tail. Classic POP follows the Apache
+    /// Java client's age-based terminal handling instead: it continues changing invisibility until the message is older
     /// than twice the final POP retry delay, then acknowledges it without implicit dead-letter forwarding.
     /// </remarks>
     public int MaxDeliveryAttempts { get; set; } = 16;
@@ -119,13 +120,26 @@ public sealed class RemotingPushConsumerOptions : ConsumerOptions
     public TimeSpan LongPollingTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Gets or sets the local delay before retrying failed receive, settlement, or orderly handling work.
+    /// Gets or sets the local delay before retrying failed receive or settlement work.
     /// </summary>
     /// <remarks>
-    /// This value does not select the Broker redelivery interval. Use
-    /// <see cref="RemotingPushConsumeContext.DelayLevelWhenNextConsume"/> for that purpose.
+    /// This value does not select orderly handler suspension or the Broker redelivery interval. Use
+    /// <see cref="OrderlySuspendDuration"/> for the orderly fallback. Use
+    /// <see cref="RemotingPushConsumeContext.DelayLevelWhenNextConsume"/> for the Broker interval.
     /// </remarks>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Gets or sets the default local suspension duration after an orderly handler returns
+    /// <see cref="ConsumeResult.Retry"/>.
+    /// </summary>
+    /// <remarks>
+    /// The default is one second, matching released Apache RocketMQ Java clients. A handler may override one retry
+    /// through <see cref="RemotingPushConsumeContext.SuspendCurrentQueueDuration"/>. The effective value is limited
+    /// to 10 milliseconds through 30 seconds. This option does not control receive, settlement, <c>MessageGroup</c>,
+    /// concurrent PULL, or POP retry delays.
+    /// </remarks>
+    public TimeSpan OrderlySuspendDuration { get; set; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Gets or sets the maximum time a concurrent clustered message batch may occupy a handler before retry is requested.

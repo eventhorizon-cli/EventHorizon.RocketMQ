@@ -293,10 +293,18 @@ PULL。Broker 分配查询失败时，Consumer 会等待下一轮协调，不会
 `ConsumeMessageBatchSize` 控制一次处理器调用接收的消息列表上限。处理器返回 `Success` 或 `Retry`。对于并发的非 FIFO
 批次，返回 `Success` 前设置 `RemotingPushConsumeContext.AckIndex`，只确认连续前缀内的消息。
 `DelayLevelWhenNextConsume` 控制下一次重试的延迟。PULL 接收时，可在返回 `Retry` 前将其设为负值，请求直接执行死信
-send-back。POP 接收时，.NET 适配器会先将负值归一化为 `0`，再按 Java 兼容的不可见时间重试表处理。默认值为 `0`；
-PULL 由 Broker 决定重试时间，POP 则按 Java 重试表处理。
-达到 `MaxDeliveryAttempts` 后，PULL 重试按 classic send-back 进入死信；POP 重试则遵循官方 Java 的消息年龄策略，继续按
-年龄修改不可见时间，只有消息年龄超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。
+send-back；如果 send-back 结算失败，位点会保持未解决，消息仍可能再次投递。POP 接收时，.NET 适配器会先将负值归一化
+为 `0`，再按 Java 兼容的不可见时间重试表处理。默认值为 `0`；PULL 由 Broker 决定重试时间，POP 则按 Java 重试表处理。
+达到 `MaxDeliveryAttempts` 后，集群 PULL 和 orderly 广播都会尝试 classic send-back 进入死信；结算失败时位点保持未解决，
+消息仍可能再次投递。并发广播不使用 retry 或 DLQ send-back。POP 重试则遵循官方 Java 的消息年龄策略，继续按年龄修改不可见时间，
+只有消息年龄超过 POP 最后一级重试延迟的两倍时才 ACK，不会隐式转入死信。
+
+对于 orderly PULL 投递（`ConsumeOrderly = true`），handler 可在返回 `Retry` 前设置
+`RemotingPushConsumeContext.SuspendCurrentQueueDuration`，仅暂停当前物理 queue 的下一次本地尝试。未设置时使用
+`OrderlySuspendDuration`，默认值为 1 秒；有效时长限制在 10 毫秒至 30 秒之间，并且每次 handler 调用都会获得新的
+context。并发 PULL、POP 和 `MessageGroup` FIFO 投递会忽略此 override。集群和广播 orderly 达到
+`MaxDeliveryAttempts` 后都会尝试将消息转发到死信队列。send-back 失败时，当前消息会按本次尝试选择的暂停时长继续留在
+本地，重新调用 handler，且不会推进位点。
 
 `ServiceLifetime.Scoped` 或 `Transient` 会为每次处理尝试创建新的异步作用域。Singleton 处理器必须支持并发访问。
 由于投递语义是至少一次，处理器必须响应取消并保证幂等。

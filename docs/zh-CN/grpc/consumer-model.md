@@ -78,21 +78,39 @@ PushConsumer 启动后大致执行如下循环：
                   有界消息缓存与消费循环
                          │
                          ▼
-                  handler 返回 Success / Failure
+              handler 返回 Success / Failure / Suspend
                          │
                     ┌────┴────┐
                     ▼         ▼
                    确认      失败处理
 ```
 
-handler 只返回 `ConsumeResult.Success` 或 `ConsumeResult.Failure`，与
-[Apache Java gRPC 客户端的公开结果](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client-apis/src/main/java/org/apache/rocketmq/client/apis/consumer/ConsumeResult.java)
-一致。对于并发、非 FIFO 投递，`Failure` 会按当前重试策略调整不可见时间，后续重试和死信推进由服务端负责。
-对于 FIFO 投递，客户端会在本地重试 handler，并在达到最大次数后通过内部协议 RPC 转入死信队列；这一行为与
-[Java process queue](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/ProcessQueueImpl.java#L431-L445)
-一致。handler 结果和 SimpleConsumer 都不暴露内部死信 RPC。重试调度对应的 OpenTelemetry 结算 operation 仍为
-`nack`，但它不是 RocketMQ handler 结果。只有业务处理真正完成后才应返回 `Success`。网络超时、进程终止或确认
-失败仍可能造成重复投递，因此 handler 必须具备幂等性。
+handler 可以返回 `ConsumeResult.Success`、`ConsumeResult.Failure` 或
+`ConsumeResult.Suspend(duration)`；暂停时间不能短于 50 毫秒。dispatcher 根据明确的 Consumer 角色和 Proxy
+同步下发的 `Subscription.Fifo` 选择行为，不会根据可选消息字段猜测消费模式：
+
+| Consumer 模式 | `Failure` | `Suspend(duration)` |
+| --- | --- | --- |
+| 普通非 FIFO Push | 按生效的重试策略修改不可见时间，由服务端推进重试与死信。 | 转换为 `Failure`，忽略指定时长。 |
+| 普通 FIFO Push | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。 | 转换为 `Failure`，忽略指定时长。 |
+| 非 FIFO LitePush | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递。 | 使用指定时长、`lite_topic` 和 `suspend=true` 调用 `ChangeInvisibleDuration`。 |
+| FIFO LitePush | 在客户端本地重试 handler，耗尽后尝试转发 DLQ；转发结算失败时消息保持未结算，仍可能再次投递；FIFO key 为 `LiteTopic`。 | 暂停当前消息，并跳过同一 receive batch 中尚未处理的同 `LiteTopic` 消息；其他 LiteTopic 继续处理。 |
+
+可选的 `MessageGroup` 或 `LiteTopic` 缺失时，服务端下发的 FIFO 设置仍是最终依据。这类消息会使用物理 queue fallback
+key，对应 Java 的空 FIFO group，不会降级到非 FIFO 结算。对于 FIFO LitePush，同一 receive batch 中没有 key 的兄弟消息
+因此会共享 suspend 决策。
+
+这与正式版 `java-5.2.1` 中
+[`StandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/StandardConsumeService.java)、
+[`LiteStandardConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteStandardConsumeService.java)
+和
+[`LiteFifoConsumeService`](https://github.com/apache/rocketmq-clients/blob/java-5.2.1/java/client/src/main/java/org/apache/rocketmq/client/java/impl/consumer/LiteFifoConsumeService.java)
+的职责划分一致。协议已经包含 `suspend` 标志。Lite suspend 不会确认消息、选择重试策略的间隔、暂停无关
+LiteTopic，也不会向 handler 暴露内部死信 RPC。该标志要求服务端不要把这次不可见时间变更计作重试；但后续 receive
+返回的 `DeliveryAttempt` 由服务端生成，客户端不会自行覆盖或保证其数值不变。OpenTelemetry 将按重试策略安排的
+重新投递记录为 `nack`，将调用方指定时长的 Lite 暂停记录为 `suspend`。只有业务处理真正持久化后才应返回
+`Success`；网络超时、进程终止、结算失败，或重新投递与忽略取消的 handler 调用重叠，都可能造成重复投递，因此
+handler 必须保持幂等。
 
 普通 Push 与 LitePush 的 receive request 会设置 `AutoRenew=true`。目标 Proxy 启用 `enableProxyAutoRenew` 后，会在
 handler 执行期间通过客户端连接托管 receipt 续期；.NET dispatcher 不再额外启动一套客户端续期定时器。

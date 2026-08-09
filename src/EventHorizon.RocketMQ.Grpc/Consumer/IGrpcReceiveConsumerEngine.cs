@@ -57,6 +57,11 @@ internal interface IGrpcReceiveConsumerEngine : IAsyncDisposable
         TimeSpan invisibleDuration,
         CancellationToken cancellationToken);
 
+    Task SuspendAsync(
+        GrpcMessageView message,
+        TimeSpan invisibleDuration,
+        CancellationToken cancellationToken);
+
     Task ForwardToDeadLetterQueueAsync(
         GrpcMessageView message,
         int maxDeliveryAttempts,

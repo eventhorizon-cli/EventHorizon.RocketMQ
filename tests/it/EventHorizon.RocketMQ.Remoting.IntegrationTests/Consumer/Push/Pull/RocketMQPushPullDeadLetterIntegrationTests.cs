@@ -19,6 +19,7 @@ using EventHorizon.RocketMQ.Remoting.Consumer;
 using EventHorizon.RocketMQ.Remoting.Consumer.LitePull;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push;
 using EventHorizon.RocketMQ.Remoting.Consumer.Push.Assignment;
+using EventHorizon.RocketMQ.Remoting.Consumer.Push.Pull.Offset;
 using EventHorizon.RocketMQ.Remoting.IntegrationTests.Consumer.Push.Pop.Support;
 using EventHorizon.RocketMQ.Remoting.Producer;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,6 +66,15 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
             TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task PushPullBroadcastConsumer_OrderlyRetryFailsAgain_ForwardsToDeadLetterQueue()
+    {
+        await RunDeadLetterWorkflowAsync(
+            DeadLetterScenario.OrderlyBroadcastRetryExhausted,
+            TestContext.Current.CancellationToken);
+    }
+
     private async Task RunDeadLetterWorkflowAsync(
         DeadLetterScenario scenario,
         CancellationToken cancellationToken)
@@ -77,6 +87,7 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
             DeadLetterScenario.ConcurrentRetryExhausted => "concurrent",
             DeadLetterScenario.MessageGroupRetryExhausted => "message-group",
             DeadLetterScenario.OrderlyRetryExhausted => "orderly",
+            DeadLetterScenario.OrderlyBroadcastRetryExhausted => "orderly-broadcast",
             _ => throw new ArgumentOutOfRangeException(nameof(scenario))
         };
         var topicType = scenario == DeadLetterScenario.MessageGroupRetryExhausted
@@ -90,6 +101,10 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
         var expectedDeliveryCount = scenario == DeadLetterScenario.Explicit ? 1 : 2;
         var terminalAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var deliveryCount = 0;
+        var isOrderlyBroadcast = scenario == DeadLetterScenario.OrderlyBroadcastRetryExhausted;
+        var localOffsetPath = isOrderlyBroadcast
+            ? Path.Combine(Path.GetTempPath(), $"rocketmq-remoting-dlq-{Guid.NewGuid():N}.json")
+            : null;
         var services = new ServiceCollection();
         var rocketMQ = services.AddRocketMQRemoting(options =>
         {
@@ -108,7 +123,11 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
             options.MaxDeliveryAttempts = expectedDeliveryCount;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.RetryDelay = TimeSpan.FromMilliseconds(100);
-            options.ConsumeOrderly = scenario == DeadLetterScenario.OrderlyRetryExhausted;
+            options.ConsumerMode = isOrderlyBroadcast ? ConsumerMode.Broadcasting : ConsumerMode.Clustering;
+            options.LocalOffsetStorePath = localOffsetPath;
+            options.ConsumeOrderly = scenario is
+                DeadLetterScenario.OrderlyRetryExhausted or
+                DeadLetterScenario.OrderlyBroadcastRetryExhausted;
             options.Subscribe(scope.Topic, new FilterExpression(tag));
         }, (messages, context, _) =>
             {
@@ -121,6 +140,13 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
                 if (Interlocked.Increment(ref deliveryCount) == expectedDeliveryCount)
                 {
                     terminalAttempt.TrySetResult();
+                }
+
+                if (scenario is
+                    DeadLetterScenario.OrderlyRetryExhausted or
+                    DeadLetterScenario.OrderlyBroadcastRetryExhausted)
+                {
+                    context.SuspendCurrentQueueDuration = TimeSpan.FromMilliseconds(50);
                 }
 
                 context.DelayLevelWhenNextConsume = scenario switch
@@ -193,14 +219,30 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
                 cancellationToken);
             Assert.Equal(scope.Topic, deadLetter.Topic);
             Assert.Equal(body, Encoding.UTF8.GetString(deadLetter.Body));
-            var commit = await fixture.WaitForConsumerCommitAsync(
-                consumerGroup,
-                scope.Topic,
-                sent.MessageQueue.BrokerName,
-                sent.MessageQueue.QueueId,
-                BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
-                cancellationToken);
-            Assert.True(commit.Committed, $"PULL dead-letter source offset was not committed. {commit.Progress}");
+            if (isOrderlyBroadcast)
+            {
+                var queue = new RemotingConsumerQueue(
+                    scope.Topic,
+                    sent.MessageQueue.BrokerName,
+                    sent.MessageQueue.QueueId);
+                await BrokerAssignedPopIntegrationTestSupport.WaitUntilAsync(
+                    async () => await new BroadcastOffsetStore(localOffsetPath, "unused", "unused")
+                        .ReadAsync(queue, cancellationToken) == sent.QueueOffset + 1,
+                    BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
+                    cancellationToken);
+            }
+            else
+            {
+                var commit = await fixture.WaitForConsumerCommitAsync(
+                    consumerGroup,
+                    scope.Topic,
+                    sent.MessageQueue.BrokerName,
+                    sent.MessageQueue.QueueId,
+                    BrokerAssignedPopIntegrationTestSupport.DeliveryTimeout,
+                    cancellationToken);
+                Assert.True(commit.Committed, $"PULL dead-letter source offset was not committed. {commit.Progress}");
+            }
+
             Assert.Equal(1, settlements.Count("reject", scope.Topic, consumerGroup, sent.MessageId));
             Assert.Equal(expectedDeliveryCount, Volatile.Read(ref deliveryCount));
         }
@@ -208,6 +250,10 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
         {
             await consumer.StopAsync(CancellationToken.None);
             await producer.StopAsync(CancellationToken.None);
+            if (localOffsetPath is not null)
+            {
+                File.Delete(localOffsetPath);
+            }
         }
     }
 
@@ -266,6 +312,7 @@ public sealed class RocketMQPushPullDeadLetterIntegrationTests(
         Explicit,
         ConcurrentRetryExhausted,
         MessageGroupRetryExhausted,
-        OrderlyRetryExhausted
+        OrderlyRetryExhausted,
+        OrderlyBroadcastRetryExhausted
     }
 }

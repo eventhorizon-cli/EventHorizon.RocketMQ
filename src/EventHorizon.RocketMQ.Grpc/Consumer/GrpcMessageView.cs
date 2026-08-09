@@ -155,6 +155,7 @@ public sealed class GrpcMessageView
     public string? CorruptionReason { get; }
 
     internal Uri Endpoint { get; }
+    internal bool IsFifo { get; set; }
     internal ActivityContext? ReceiveActivityContext { get; set; }
     internal object? Owner { get; set; }
 }

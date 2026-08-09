@@ -69,6 +69,16 @@ dotnet run -c Release --project tests/benchmarks/EventHorizon.RocketMQ.Remoting.
 - Consumer 对 gRPC `Success` / `Failure`，以及 Remoting `Success`、部分批量确认、`Retry`、PULL 负 delay 主动死信和
   POP 负 delay 归一化的处理决策。
 
+聚焦的 Consumer 结果单元测试还覆盖：
+
+- gRPC 普通 Push 将 `Suspend` 归一化为 `Failure`（非 FIFO 走服务端 retry/NACK，FIFO 走本地重试）；LitePush 使用
+  调用方的精确时长发送 `suspend=true`，FIFO receive batch 会暂停尚未处理的同 `LiteTopic` 兄弟消息，其他 LiteTopic 保持独立；
+  `MessageGroup` 或 `LiteTopic` 缺失时仍通过物理 queue fallback 保持 FIFO 行为；
+- gRPC 本地重试取消会及时停止等待；结算失败会保持消息未解决、维持 FIFO 阻塞，并在停止期间正确取消；
+- Remoting orderly PULL 会把调用方和配置的暂停时长限制在 10 毫秒至 30 秒，重置每次调用的 context；handler 抛出
+  异常时仍保留当前尝试的 override，仅在未设置时使用配置默认值；它还会隔离单个物理 queue、停止时取消等待，
+  在集群和广播模式下都执行终态 send-back，并在 send-back 失败时保留当前消息及本次暂停时长。
+
 对于客户端能够确定性验证的行为，IT 覆盖不能替代 UT。即使 IT 已覆盖完整工作流，底层状态转换、分配、调度、
 offset、重试和失败不变量仍必须保留聚焦的 UT；IT 只在此基础上补充真实 Broker、NameServer、Proxy、transport、
 持久化和跨进程边界验证。
@@ -130,6 +140,16 @@ Remoting Broker-assigned Push case 仅通过测试管理操作把一个唯一 to
 归一化后不直接死信的行为；清理时再恢复为 PULL。`SET_MESSAGE_REQUEST_MODE` 始终属于测试管理面，不会成为生产
 Consumer API。普通 LitePull 与默认 Push 工作流不依赖 Broker 侧 POP 配置；PULL 死信测试会同时覆盖负 delay 显式请求
 和重试策略耗尽。
+
+gRPC DLQ 集成测试包含四条工作流：普通 FIFO Push、普通非 FIFO Push、非 FIFO LitePush 和 FIFO LitePush。每条都配置
+一次重试（`MaxDeliveryAttempts=2`）与 100 毫秒 `RetryDelay`，然后验证 DLQ 消息和职责划分：普通非 FIFO 的推进由服务端
+负责，FIFO 与 LitePush 则由客户端尝试转发 DLQ。转发或结算失败会保持未解决，不会被当作 ACK。Lite suspend 工作流另行请求
+精确 100 毫秒，验证不会提前重投且 receipt 会被替换；由于 `DeliveryAttempt` 由服务端负责，测试刻意不对其数值作保证。
+
+Remoting PULL DLQ 集成测试覆盖负 delay 直接 send-back，以及并发、`MessageGroup` FIFO、集群 orderly 和广播 orderly
+的重试耗尽场景。重试耗尽场景使用一次重试（`MaxDeliveryAttempts=2`）和 100 毫秒重试延迟；orderly 另外覆盖短时的本地
+queue 暂停。每条工作流都会观察一次 reject 和 DLQ 消息，再验证集群 Broker 位点或广播本地持久化位点，并保留结算失败时
+位点未解决的契约。
 
 single-Broker 的运行时间也属于需要持续测量的测试设计约束。在 commit `9ef119f` 上，本地使用
 `Topology!=MultiBroker` 筛选条件运行 Remoting 测试，29 个测试全部通过，测试阶段耗时 167.7 秒，其中共享

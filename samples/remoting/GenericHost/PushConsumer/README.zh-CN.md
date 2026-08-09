@@ -134,7 +134,7 @@ classic POP 重试表将级别换算为不可见时间，并修改 receipt 不�
 
 每个 PULL `PullProcessQueue` 都独立维护连续完成水位。后面的 batch，或者来自其他队列、其他 Broker 的 batch，即使先
 完成，也不能跳过前面尚未解决的队列位点。拉取可以先于 handler 完成继续前进。在集群模式下，Broker 已提交位点不能
-越过成功结算；广播模式则会把不可用的重试和死信结果视为本地已解决并丢弃，具体见后文。
+越过成功结算；并发广播会把不可用的重试和死信结果视为本地已解决并丢弃，具体见后文。
 
 在集群并发 `PullProcessQueue` 路径中，如果重试或死信结算失败，客户端会在 `RetryDelay` 后仅在本地重试结算，
 不会再次调用应用 handler；完成水位仍保持阻塞。位点持久化失败也会重试。如果分配被撤销，旧分配上延迟返回的
@@ -154,9 +154,10 @@ Broker 重新投递。assignment 被移除或切换模式时，旧 generation �
 在集群模式下，顺序消费会获取并续约 classic Broker 队列锁；`MaxConcurrency` 仍可并发处理不同的已锁队列。重试会
 阻塞当前队列，使后面的消息不能超越它。队列锁保持顺序，但不会改变至少一次投递，因此顺序 handler 也必须幂等。
 
-`Broadcasting` 会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点。它没有 group 所属的 Broker 重试或
-死信流程：`Retry` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。当客户端标识不稳定时，应配置
-稳定且每实例独立的 `LocalOffsetStorePath`。
+`Broadcasting` 会把每个可读队列分配给每个 Consumer 实例，并在本地存储位点。并发投递没有 group 所属的 Broker
+重试或死信流程：`Retry` 和未确认的 batch 尾部都会被丢弃，同时推进本地位点。orderly 广播则在本地重试当前消息，
+达到 `MaxDeliveryAttempts` 后尝试 DLQ send-back；send-back 失败时保留当前消息与位点，并按本次暂停时长等待后重新调用
+handler。当客户端标识不稳定时，应配置稳定且每实例独立的 `LocalOffsetStorePath`。
 
 对于普通 PULL 队列，`InitialPosition` 只在当前模式使用的位点存储没有值时提供起点：集群模式读取 Broker group
 位点，广播模式读取当前实例的本地位点文件。它不会重置已有位置。重试队列会保留自己的恢复边界，不使用这一普通队列

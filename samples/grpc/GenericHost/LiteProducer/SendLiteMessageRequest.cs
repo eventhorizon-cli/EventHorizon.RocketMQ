@@ -17,5 +17,7 @@ namespace EventHorizon.RocketMQ.Samples.Grpc.LiteProducer;
 
 internal sealed class SendLiteMessageRequest
 {
+    public string? LiteTopic { get; init; }
+
     public string? Message { get; init; }
 }

@@ -16,44 +16,42 @@ LiteTopic 自动分发到 handler 时，才适合使用 LitePushConsumer。
 
 ## SDK 工作流
 
-注册 gRPC 传输和 LitePush 角色。`BindTopic` 指定 LITE parent topic，`LiteTopics` 是初始的完整逻辑订阅集合：
+`BindTopic` 指向唯一的 LITE parent topic。`LiteTopics` 可以提供启动时的逻辑订阅集合，但本示例会刻意以空集合启动：Web
+API 用来承接应用中的会话连接、断开等事件。
 
 ```csharp
-rocketMQ.AddGrpcLitePushConsumer<OrderMessageHandler>(ServiceLifetime.Scoped, options =>
+rocketMQ.AddGrpcLitePushConsumer<LitePushConsumerMessageHandler>(ServiceLifetime.Scoped, options =>
 {
-    options.GroupName = "orders-lite-push-consumer";
-    options.BindTopic = "orders-lite";
-    options.LiteTopics.Add("orders-us");
-    options.LiteTopics.Add("orders-eu");
-    options.MaxConcurrency = 8;
+    options.GroupName = "eventhorizon-test-lite-push-consumer";
+    options.BindTopic = "eventhorizon-test-lite-parent-topic";
+    options.MaxConcurrency = 4;
 });
 ```
 
-同一个 `AddRocketMQGrpc` 注册可以添加多个配置彼此独立的 LitePush Consumer，并复用底层 gRPC channel。同一 group
-中的 Consumer 必须使用相同 `BindTopic`，但 LiteTopic 集合可以不同；不同 group 则会独立接收消息。
-
-不要为该角色调用继承的 `ConsumerOptions.Subscribe`。LitePush 通过 `BindTopic` 接收消息，并用 `LiteTopics`、
-`SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 管理逻辑订阅；它不接受普通 topic 过滤条件。
-
-Generic Host 集成会启动该角色、同步已配置的集合，并随 Host 停止该角色。不使用 Host 时，应通过
-`IGrpcLitePushConsumer` 管理 `StartAsync` 和 `StopAsync`。`LiteTopics` 返回当前本地集合的快照。
-
-在运行时，新 LiteTopic 可以附带一个初始 offset 选择：
+SDK 的 hosted service 启动 Consumer 后，API 会调用公开的运行时订阅方法：
 
 ```csharp
-await consumer.SubscribeLiteAsync(
-    "orders-apac",
-    GrpcLiteOffsetOption.Last,
-    cancellationToken);
+await consumer.SubscribeLiteAsync(liteTopic, cancellationToken: cancellationToken);
+await consumer.UnsubscribeLiteAsync(liteTopic, cancellationToken);
 ```
 
-`GrpcLiteOffsetOption` 支持服务端定义的最近位置（`Last`）、最早或最新可用位置（`Min` / `Max`）、明确的非负 queue
-offset（`AtOffset`）、最近若干条消息（`Tail`），或者该时间点或之后存储的第一条消息（`AtTimestamp`）。该选项在创建对应
-LiteTopic 订阅时生效。
+`POST /subscriptions/{liteTopic}` 新增订阅，`DELETE /subscriptions/{liteTopic}` 删除订阅，
+`GET /subscriptions` 返回当前本地快照。LiteTopic 只能使用字母、数字、连字符和下划线，因此
+`chat-session-123` 适合用来演示按会话管理 LiteTopic。接口成功返回前已经完成与 RocketMQ 的同步；
+`chat.session-123` 这类无效名称会返回 HTTP 400，SDK 调用失败会返回 HTTP 503，且不会修改本地集合。
 
-客户端会在启动时发送完整的已配置 LiteTopic 集合，并按 `SubscriptionSyncInterval` 定期协调。名称和配额规则仍由服务端
-决定。运行时变更被拒绝时会抛出 `GrpcServiceException`，且不会更新本地集合。`SyncLiteSubscription` 只负责订阅控制；
-消息投递仍然由客户端发起长轮询。
+不要为该角色调用继承的 `ConsumerOptions.Subscribe`。LitePush 通过 `BindTopic` 接收消息，并用 `LiteTopics`、
+`SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 管理逻辑订阅；它不接受普通 topic 过滤条件。同一个
+`AddRocketMQGrpc` 注册可以添加多个配置彼此独立的 LitePush Consumer，并复用底层 gRPC channel。同一 group 中的 Consumer
+必须使用相同 `BindTopic`，但 LiteTopic 集合可以不同；不同 group 则会独立接收消息。
+
+Generic Host 会通过 SDK 的 hosted service 启动和停止 Consumer。API 只修改订阅，不负责 Consumer 生命周期。运行时订阅是
+应用本地状态，Consumer 重启后应由应用事件重新建立。`LiteTopics` 返回当前本地集合的快照。
+
+生产代码可以在新增 LiteTopic 时通过 `GrpcLiteOffsetOption` 选择初始 offset，例如
+`GrpcLiteOffsetOption.Last`。本示例使用服务端默认值，避免把重点从会话订阅流程上移开。客户端会按
+`SubscriptionSyncInterval` 定期协调完整的本地集合；`SyncLiteSubscription` 只负责订阅控制，消息仍通过客户端发起的
+长轮询投递。
 
 ## 投递与失败语义
 
@@ -92,7 +90,7 @@ LitePush 要求客户端、Proxy、Broker、Topic 和 consumer group 的配置�
 | `GrpcClientOptions.Endpoint` | RocketMQ Proxy 端点；Proxy 必须支持 `SyncLiteSubscription`。 |
 | `GrpcLitePushConsumerOptions.GroupName` | 与 LITE parent topic 绑定的 consumer group。 |
 | `BindTopic` | 用于分配和消息接收的单一 parent topic。 |
-| `LiteTopics` | 启动时同步的完整初始逻辑 LiteTopic 集合。 |
+| `LiteTopics` | 可选的启动初始逻辑 LiteTopic 集合；本示例刻意保持为空。 |
 | `SubscriptionSyncInterval` | 定期协调完整 LiteTopic 集合的间隔。 |
 | `MaxConcurrency`、`BatchSize` 和缓存限制 | 从 Push 继承的本地 handler 并发、Receive 批量和有界缓冲。 |
 | `InvisibleDuration` / `ConsumeTimeout` | 从 Push 继承的初始不可见时长和非 FIFO handler 超时行为。 |
@@ -109,10 +107,30 @@ docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-`appsettings.json` 只保存 Proxy 连接设置，Consumer 角色参数都直接写在 `Program.cs` 的注册旁。可运行代码绑定
-`eventhorizon-test-lite-parent-topic`，并订阅 `eventhorizon-test-lite-topic`。启动此 Consumer 后，可运行配套的
-[LiteProducer](../LiteProducer/README.zh-CN.md)，以在该 parent 下发送 Lite message；普通 Producer 示例不会写入 LiteTopic。
-LiteProducer 请求投递后，handler 会记录该消息并返回 `Success`，因此 SDK 会确认它。Host 会持续运行到按下 Ctrl+C。
+Consumer Web API 运行在 `http://localhost:5233`，Swagger 地址为 `http://localhost:5233/swagger`。在另一个终端先为
+会话新增订阅，再发送同一 LiteTopic 的消息：
+
+```shell
+curl http://localhost:5233/subscriptions
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+curl http://localhost:5233/subscriptions
+```
+
+在第三个终端启动 LiteProducer，再在第四个终端提交同一 LiteTopic 的消息：
+
+```shell
+dotnet run --project samples/grpc/GenericHost/LiteProducer
+```
+
+```shell
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
+```
+
+会话结束时，可调用 `curl --request DELETE http://localhost:5233/subscriptions/chat-session-123`。`appsettings.json`
+只保存 Proxy 连接设置，parent topic 绑定直接写在 `Program.cs` 的注册旁。handler 会记录 parent topic 和 LiteTopic，然后返回
+`Success`，由 SDK 在处理完成后确认消息。Host 会持续运行到按下 Ctrl+C。
 
 完整 API 和部署约束请参阅
 [gRPC 指南](../../../../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)与

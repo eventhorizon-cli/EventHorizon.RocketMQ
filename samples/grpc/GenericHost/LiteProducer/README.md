@@ -3,8 +3,8 @@
 [English](README.md) | [Simplified Chinese](README.zh-CN.md)
 
 `IGrpcProducer` sends a Lite message by publishing to a LITE parent topic and setting the message's `LiteTopic`.
-This Generic Host Web API sample publishes to `eventhorizon-test-lite-parent-topic` with the logical LiteTopic
-`eventhorizon-test-lite-topic`. Run it with the companion
+This Generic Host Web API sample keeps `eventhorizon-test-lite-parent-topic` fixed as its parent topic, while each
+`POST /messages` request supplies the logical LiteTopic. Run it with the companion
 [LitePushConsumer](../LitePushConsumer/README.md) to exercise the complete Lite publish-and-dispatch path.
 
 ## When to use it
@@ -25,15 +25,15 @@ shutdown. Application code injects and uses `IGrpcProducer`; it must not manuall
 
 ## Sending a Lite message
 
-The HTTP endpoint constructs a protocol-specific `Message` with the LITE parent topic, then sets `LiteTopic` before
-calling `SendAsync`:
+The HTTP endpoint validates the requested LiteTopic, constructs a protocol-specific `Message` with the LITE parent
+topic, then sets `LiteTopic` before calling `SendAsync`:
 
 ```csharp
 var message = new Message(
     "eventhorizon-test-lite-parent-topic",
     Encoding.UTF8.GetBytes(body))
 {
-    LiteTopic = "eventhorizon-test-lite-topic"
+    LiteTopic = liteTopic
 };
 
 GrpcSendReceipt receipt = await producer.SendAsync(message, cancellationToken);
@@ -56,18 +56,29 @@ docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-In a second terminal, start this Web API and post a message:
+With the Consumer running, add the LiteTopic that will receive the message. The Consumer sample starts with no logical
+subscriptions, so this models a session or tenant becoming active:
+
+```shell
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+```
+
+In a third terminal, start this Web API. Then post a message for that same LiteTopic from a fourth terminal:
 
 ```shell
 dotnet run --project samples/grpc/GenericHost/LiteProducer
+```
+
+```shell
 curl --request POST http://localhost:5232/messages \
   --header 'Content-Type: application/json' \
-  --data '{"message":"hello Lite"}'
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
 ```
 
 The API returns the send receipt data. The LitePushConsumer logs the delivered message after its LiteTopic
 subscription is synchronized. The sample keeps only the Proxy connection settings in `appsettings.json`; the parent
-topic and LiteTopic remain next to the message construction so the Lite routing decision is visible.
+topic remains next to the message construction, and the logical destination remains visible in the API request.
+LiteTopic names use only letters, digits, hyphens, and underscores.
 
 For server capability requirements and the full Producer contract, see the
 [gRPC guide](../../../../src/EventHorizon.RocketMQ.Grpc/README.md) and the

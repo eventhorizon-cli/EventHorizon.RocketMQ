@@ -77,13 +77,19 @@ server capabilities, and complete command.
 
 The LiteProducer and LitePushConsumer workflow requires a LITE parent topic, a bound consumer group, Broker LMQ
 support, and a cluster-mode Proxy that implements `SyncLiteSubscription`. Use its dedicated environment instead of
-the normal stack. Start the Consumer first, then start LiteProducer in a second terminal:
+the normal stack. Start the Consumer, add its runtime LiteTopic subscription, then send a matching message:
 
 ```shell
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 # In another terminal:
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+# In a third terminal:
 dotnet run --project samples/grpc/GenericHost/LiteProducer
+# In a fourth terminal:
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
 ```
 
 For the observability workflow, run the normal RocketMQ environment together with
@@ -98,15 +104,15 @@ use their separate `OpenTelemetry` section.
 
 Every project includes runnable defaults in `appsettings.json`. Normal .NET configuration overrides apply, for
 example `RocketMQ__Client__Endpoint=proxy.example:8081` or
-`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`. Producer and Admin Web API projects expose Swagger; their
-HTTP endpoints are application shells around the SDK workflows documented in their guides.
+`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`. The Web API samples expose Swagger; their HTTP endpoints
+are application shells around the SDK workflows documented in their guides.
 
 ## Coverage boundaries
 
 Each project demonstrates one coherent end-to-end workflow, not every overload. Advanced paths that require different
 resources, a cooperating peer, or a real processing reason remain in the protocol guides until they justify a
-dedicated runnable sample. Examples include Producer transactions and request-reply, runtime subscription changes,
-LitePull manual assignment and seeking, and operator selection of Broker-side POP request mode.
+dedicated runnable sample. Examples include Producer transactions and request-reply, LitePull manual assignment and
+seeking, and operator selection of Broker-side POP request mode.
 
 See the [gRPC guide](../src/EventHorizon.RocketMQ.Grpc/README.md) and
 [Remoting guide](../src/EventHorizon.RocketMQ.Remoting/README.md) for the complete public APIs.

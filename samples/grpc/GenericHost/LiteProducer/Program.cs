@@ -45,8 +45,8 @@ app.UseSwaggerUI();
 
 app.MapPost("/messages", SendLiteMessageAsync)
     .WithName("SendLiteMessage")
-    .WithSummary("Sends a Lite message to the configured logical LiteTopic.")
-    .WithDescription("Uses the gRPC producer and the LITE parent topic prepared by the LitePush environment.")
+    .WithSummary("Sends a Lite message to the requested logical LiteTopic.")
+    .WithDescription("Uses the gRPC producer and the LITE parent topic prepared by the LitePush environment. LiteTopic names use letters, digits, hyphens, and underscores.")
     .Produces<SendLiteMessageResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
@@ -62,16 +62,32 @@ static async Task<IResult> SendLiteMessageAsync(
     CancellationToken cancellationToken)
 {
     var messageBody = request?.Message;
-    if (string.IsNullOrWhiteSpace(messageBody))
+    var liteTopic = request?.LiteTopic;
+    if (string.IsNullOrWhiteSpace(messageBody) || string.IsNullOrWhiteSpace(liteTopic))
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (string.IsNullOrWhiteSpace(messageBody))
+        {
+            errors["message"] = ["A message is required."];
+        }
+
+        if (string.IsNullOrWhiteSpace(liteTopic))
+        {
+            errors["liteTopic"] = ["A LiteTopic is required."];
+        }
+
+        return Results.ValidationProblem(errors);
+    }
+
+    if (!IsValidLiteTopic(liteTopic))
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
-            ["message"] = ["A message is required."]
+            ["liteTopic"] = ["A LiteTopic may contain only letters, digits, hyphens, and underscores."]
         });
     }
 
     const string parentTopic = "eventhorizon-test-lite-parent-topic";
-    const string liteTopic = "eventhorizon-test-lite-topic";
     // LiteTopic selects a logical child of the LITE parent Topic. It is mutually exclusive with FIFO,
     // delayed, and priority message modes, and requires Broker and Proxy Lite support.
     var message = new Message(parentTopic, Encoding.UTF8.GetBytes(messageBody))
@@ -109,3 +125,7 @@ static async Task<IResult> SendLiteMessageAsync(
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }
+
+// Apache RocketMQ 5.5.0 (rocketmq-all-5.5.0) validates LiteTopic characters as [A-Za-z0-9_-].
+static bool IsValidLiteTopic(string liteTopic) =>
+    liteTopic.All(static character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');

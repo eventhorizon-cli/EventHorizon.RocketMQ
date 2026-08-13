@@ -22,10 +22,9 @@ RocketMQ Dashboard 的访问地址为 `http://localhost:8082`。它的浏览器�
 | --- | --- | --- |
 | LITE parent Topic | `eventhorizon-test-lite-parent-topic` | `message.type=LITE` |
 | Consumer Group | `eventhorizon-test-lite-push-consumer` | `lite.bind.topic=eventhorizon-test-lite-parent-topic` |
-| 示例使用的 LiteTopic | `eventhorizon-test-lite-topic` | 示例启动时由 `IGrpcLitePushConsumer` 通过 `SyncLiteSubscription` 同步。 |
 
-`eventhorizon-test-lite-topic` 是 LITE parent Topic 下的逻辑 LiteTopic，并不是 `resource-init` 需要创建的独立普通
-Topic。
+LiteTopic 是 LITE parent Topic 下的逻辑子级，并不是 `resource-init` 需要创建的独立普通 Topic。LitePushConsumer 示例会刻意以
+空集合启动，再通过 HTTP API 在运行时调用 `IGrpcLitePushConsumer.SubscribeLiteAsync` 和 `UnsubscribeLiteAsync` 同步当前名称。
 
 Broker 已启用 `enableLmq=true` 和 `enableMultiDispatch=true`。Proxy 作为独立进程以 `mqproxy -pm cluster` 启动；
 RocketMQ 5.5.0 的 Broker-integrated Proxy 不支持 `SyncLiteSubscription` RPC。
@@ -36,7 +35,7 @@ RocketMQ 5.5.0 的 Broker-integrated Proxy 不支持 `SyncLiteSubscription` RPC�
 flowchart TB
     Host[开发者宿主机]
     Producer[LiteProducer 示例\nHTTP: localhost:5232]
-    Consumer[LitePushConsumer 示例\ngRPC endpoint: localhost:8081]
+    Consumer[LitePushConsumer 示例\nHTTP: localhost:5233]
     DashboardUi[浏览器\nhttp://localhost:8082]
 
     subgraph Environment[test-environments/rocketmq-litepush]
@@ -102,26 +101,36 @@ docker compose logs --no-color resource-init
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-再在第二个终端启动 LiteProducer，并向其 HTTP API 提交消息：
+Consumer 运行后，在另一个终端新增运行时订阅。LiteTopic 只能使用字母、数字、连字符和下划线：
+
+```shell
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+curl http://localhost:5233/subscriptions
+```
+
+在第三个终端启动 LiteProducer，再在第四个终端向同一个 LiteTopic 提交消息：
 
 ```shell
 dotnet run --project samples/grpc/GenericHost/LiteProducer
-curl --request POST http://localhost:5232/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"hello Lite"}'
 ```
 
-Consumer 启动时会同步 `eventhorizon-test-lite-topic`。LiteProducer 会在
-`eventhorizon-test-lite-parent-topic` 下向该 LiteTopic 发送 Lite message，因此消息可由此订阅接收。标准 Producer 示例发送的是
-普通消息，不会写入 LiteTopic。两个 Lite 示例都运行在 Generic Host 中，由 Host 负责 Producer 或 Consumer 的
-`StartAsync` 和 `StopAsync` 生命周期。
+```shell
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
+```
+
+LiteProducer 会在 `eventhorizon-test-lite-parent-topic` 下向请求指定的 LiteTopic 发送 Lite message，因此消息可由当前订阅
+接收。标准 Producer 示例发送的是普通消息，不会写入 LiteTopic。两个 Lite 示例都运行在 Generic Host 中，由 Host 负责
+Producer 或 Consumer 的 `StartAsync` 和 `StopAsync` 生命周期。运行时订阅属于 Consumer 进程，重启后需要重新建立。
 
 ## 端点与限制
 
 | 用途 | 宿主机端点 | 说明 |
 | --- | --- | --- |
 | gRPC Lite 示例 | `localhost:8081` | 默认的 `RocketMQ:Client:Endpoint`。 |
-| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON，例如 `{"message":"hello Lite"}`。 |
+| LitePushConsumer HTTP API | `http://localhost:5233/subscriptions` | `POST` 或 `DELETE /{liteTopic}` 修改运行时订阅；`GET` 返回本地快照。 |
+| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON，例如 `{"liteTopic":"chat-session-123","message":"hello Lite"}`。 |
 | NameServer 诊断 | `localhost:19876` | 可选的检查端点，不是 gRPC 客户端端点。 |
 | RocketMQ Dashboard | `http://localhost:8082` | 集群的本地管理界面。 |
 | Broker | 不公开 | 仅能在 Compose 网络内通过 `broker:10911` 访问。 |

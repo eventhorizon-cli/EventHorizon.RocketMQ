@@ -16,7 +16,6 @@
 using EventHorizon.RocketMQ.Grpc;
 using EventHorizon.RocketMQ.Grpc.Consumer.LitePush;
 using EventHorizon.RocketMQ.Samples.Grpc.LitePushConsumer;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
 
 const string parentTopic = "eventhorizon-test-lite-parent-topic";

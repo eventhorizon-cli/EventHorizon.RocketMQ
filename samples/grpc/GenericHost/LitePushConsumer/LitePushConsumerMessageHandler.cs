@@ -16,7 +16,6 @@
 using System.Text;
 using EventHorizon.RocketMQ.Grpc.Consumer;
 using EventHorizon.RocketMQ.Grpc.Consumer.Push;
-using Microsoft.Extensions.Logging;
 
 namespace EventHorizon.RocketMQ.Samples.Grpc.LitePushConsumer;
 
@@ -26,9 +25,10 @@ internal sealed class LitePushConsumerMessageHandler(
     public ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message, CancellationToken cancellationToken)
     {
         logger.LogInformation(
-            "Received message {MessageId} from {Topic}: {Body}",
+            "Received message {MessageId} from parent topic {Topic}, LiteTopic {LiteTopic}: {Body}",
             message.MessageId,
             message.Topic,
+            message.LiteTopic,
             Encoding.UTF8.GetString(message.Body));
         // The consumer acknowledges the message only after the handler returns Success.
         return ValueTask.FromResult(ConsumeResult.Success);

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -10,11 +10,11 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+        <ProjectReference Include="../../../../src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj" />
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../../../../src/EventHorizon.RocketMQ.Grpc/EventHorizon.RocketMQ.Grpc.csproj" />
+        <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
     </ItemGroup>
 
     <ItemGroup>

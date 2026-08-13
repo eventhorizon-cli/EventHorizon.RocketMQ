@@ -24,10 +24,10 @@ creates or updates the following idempotently:
 | --- | --- | --- |
 | LITE parent Topic | `eventhorizon-test-lite-parent-topic` | `message.type=LITE` |
 | Consumer Group | `eventhorizon-test-lite-push-consumer` | `lite.bind.topic=eventhorizon-test-lite-parent-topic` |
-| LiteTopic used by the sample | `eventhorizon-test-lite-topic` | Synchronized by `IGrpcLitePushConsumer` through `SyncLiteSubscription` when the sample starts. |
 
-`eventhorizon-test-lite-topic` is a logical LiteTopic below the LITE parent Topic. It is not an independent ordinary
-Topic that `resource-init` needs to create.
+LiteTopics are logical children of the LITE parent Topic, not independent ordinary Topics that `resource-init` creates.
+The LitePushConsumer sample intentionally starts with none, then its HTTP API synchronizes current names through
+`IGrpcLitePushConsumer.SubscribeLiteAsync` and `UnsubscribeLiteAsync` at runtime.
 
 The Broker enables `enableLmq=true` and `enableMultiDispatch=true`. The Proxy starts separately with
 `mqproxy -pm cluster`; RocketMQ 5.5.0's Broker-integrated Proxy does not provide `SyncLiteSubscription`.
@@ -38,7 +38,7 @@ The Broker enables `enableLmq=true` and `enableMultiDispatch=true`. The Proxy st
 flowchart TB
     Host[Developer host]
     Producer[LiteProducer sample\nHTTP: localhost:5232]
-    Consumer[LitePushConsumer sample\ngRPC endpoint: localhost:8081]
+    Consumer[LitePushConsumer sample\nHTTP: localhost:5233]
     DashboardUi[Browser\nhttp://localhost:8082]
 
     subgraph Environment[test-environments/rocketmq-litepush]
@@ -106,26 +106,38 @@ Start the Consumer in one terminal:
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 ```
 
-Then start LiteProducer in a second terminal and post a message to its HTTP API:
+With the Consumer running, add a runtime subscription in another terminal. LiteTopic names use only letters, digits,
+hyphens, and underscores:
+
+```shell
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+curl http://localhost:5233/subscriptions
+```
+
+Start LiteProducer in a third terminal, then post a message to that same LiteTopic from a fourth terminal:
 
 ```shell
 dotnet run --project samples/grpc/GenericHost/LiteProducer
-curl --request POST http://localhost:5232/messages \
-  --header 'Content-Type: application/json' \
-  --data '{"message":"hello Lite"}'
 ```
 
-The Consumer synchronizes `eventhorizon-test-lite-topic` at startup. LiteProducer sends a Lite message under
-`eventhorizon-test-lite-parent-topic` with that LiteTopic, so it becomes eligible for that subscription. The standard
-Producer sample sends ordinary messages and therefore does not populate the LiteTopic. Both Lite samples run in a
-Generic Host, which owns their Producer or Consumer `StartAsync` and `StopAsync` lifecycle.
+```shell
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
+```
+
+LiteProducer sends a Lite message under `eventhorizon-test-lite-parent-topic` with the requested LiteTopic, so it
+becomes eligible for the current subscription. The standard Producer sample sends ordinary messages and therefore does
+not populate a LiteTopic. Both Lite samples run in a Generic Host, which owns their Producer or Consumer `StartAsync`
+and `StopAsync` lifecycle. Runtime subscriptions belong to the Consumer process, so recreate them after it restarts.
 
 ## Endpoints and limits
 
 | Purpose | Host endpoint | Notes |
 | --- | --- | --- |
 | gRPC Lite samples | `localhost:8081` | The default `RocketMQ:Client:Endpoint`. |
-| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON such as `{"message":"hello Lite"}`. |
+| LitePushConsumer HTTP API | `http://localhost:5233/subscriptions` | `POST` or `DELETE /{liteTopic}` changes runtime subscriptions; `GET` returns the local snapshot. |
+| LiteProducer HTTP API | `http://localhost:5232/messages` | `POST` JSON such as `{"liteTopic":"chat-session-123","message":"hello Lite"}`. |
 | NameServer diagnostics | `localhost:19876` | Optional inspection endpoint, not the gRPC client endpoint. |
 | RocketMQ Dashboard | `http://localhost:8082` | Local management interface for the cluster. |
 | Broker | Not published | Reachable only as `broker:10911` inside the Compose network. |

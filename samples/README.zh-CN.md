@@ -68,14 +68,20 @@ dotnet run --project samples/grpc/GenericHost/SimpleConsumer
 将项目路径替换为任一普通示例即可。每个项目 README 会说明额外资源、权限、服务端能力和完整命令。
 
 LiteProducer 和 LitePushConsumer 工作流需要 LITE parent topic、绑定的 consumer group、Broker LMQ 能力，以及实现
-`SyncLiteSubscription` 的 cluster-mode Proxy。应使用专用环境，而不是通用 stack。先启动 Consumer，再在第二个终端启动
-LiteProducer：
+`SyncLiteSubscription` 的 cluster-mode Proxy。应使用专用环境，而不是通用 stack。先启动 Consumer，新增运行时 LiteTopic
+订阅，再发送相同 LiteTopic 的消息：
 
 ```shell
 docker compose -f test-environments/rocketmq-litepush/compose.yaml up -d --wait
 dotnet run --project samples/grpc/GenericHost/LitePushConsumer
 # 在另一个终端：
+curl --request POST http://localhost:5233/subscriptions/chat-session-123
+# 在第三个终端：
 dotnet run --project samples/grpc/GenericHost/LiteProducer
+# 在第四个终端：
+curl --request POST http://localhost:5232/messages \
+  --header 'Content-Type: application/json' \
+  --data '{"liteTopic":"chat-session-123","message":"hello Lite"}'
 ```
 
 可观测性工作流需要同时运行通用 RocketMQ 环境和 `test-environments/otel-lgtm/compose.yaml`，然后启动 OpenTelemetry
@@ -89,14 +95,14 @@ SDK 自己的连接与角色 options 使用协议专用的 `RocketMQ` 配置节�
 
 每个项目的 `appsettings.json` 都提供可运行默认值，也支持标准 .NET 配置覆盖，例如
 `RocketMQ__Client__Endpoint=proxy.example:8081` 或
-`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`。Producer 与 Admin Web API 项目会提供 Swagger；其 HTTP
-端点只是对应指南中 SDK 工作流的应用外壳。
+`RocketMQ__Remoting__NamesrvAddr=nameserver.example:9876`。Web API 示例会提供 Swagger；其 HTTP 端点只是对应指南中 SDK
+工作流的应用外壳。
 
 ## 覆盖边界
 
 每个项目演示一条完整连贯的端到端工作流，而不是每个 overload。需要不同资源、协作端或真实处理时机的高级路径会先留在
-协议指南中，直到它们值得拥有独立的可运行示例，例如 Producer 事务与请求/响应、运行时订阅变更、LitePull 手工分配与
-seek，以及由运维选择 Broker 侧 POP 请求模式。
+协议指南中，直到它们值得拥有独立的可运行示例，例如 Producer 事务与请求/响应、LitePull 手工分配与 seek，以及由运维
+选择 Broker 侧 POP 请求模式。
 
 完整公共 API 请参阅 [gRPC 指南](../src/EventHorizon.RocketMQ.Grpc/README.zh-CN.md)和
 [Remoting 指南](../src/EventHorizon.RocketMQ.Remoting/README.zh-CN.md)。

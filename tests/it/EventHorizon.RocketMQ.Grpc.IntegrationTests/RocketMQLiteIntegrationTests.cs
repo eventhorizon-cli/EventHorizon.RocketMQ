@@ -78,6 +78,79 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 
     [Fact]
     [Trait("Category", "Integration")]
+    public async Task GrpcLitePushConsumer_EmptyInitialSubscriptions_RuntimeSubscriptionDispatchesAndUnsubscribes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Lite, cancellationToken);
+        var consumerGroup = await scope.CreateLiteConsumerGroupAsync(
+            "grpc-runtime-lite-push-consumer",
+            cancellationToken);
+        var liteTopic = $"lite-runtime-{Guid.NewGuid():N}";
+        var subscribedBody = $"grpc-lite-runtime-subscribed-{Guid.NewGuid():N}";
+        var unsubscribedBody = $"grpc-lite-runtime-unsubscribed-{Guid.NewGuid():N}";
+        var observation = new RuntimeLiteMessageObservation(liteTopic, subscribedBody, unsubscribedBody);
+        var services = new ServiceCollection();
+        services.AddSingleton(observation);
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = fixture.GrpcEndpoint)
+            .AddGrpcProducer(options => options.Topics.Add(scope.Topic))
+            .AddGrpcLitePushConsumer<RuntimeLiteMessageHandler>(ServiceLifetime.Singleton, options =>
+            {
+                options.GroupName = consumerGroup;
+                options.BindTopic = scope.Topic;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IGrpcProducer>();
+        var consumer = provider.GetRequiredService<IGrpcLitePushConsumer>();
+        await producer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        try
+        {
+            Assert.Empty(consumer.LiteTopics);
+
+            await consumer.SubscribeLiteAsync(liteTopic, cancellationToken: cancellationToken);
+            Assert.Contains(liteTopic, consumer.LiteTopics);
+
+            var receipt = await producer.SendAsync(new Message(
+                scope.Topic,
+                Encoding.UTF8.GetBytes(subscribedBody))
+            {
+                LiteTopic = liteTopic
+            }, cancellationToken);
+
+            var messageId = await observation.SubscribedMessage.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            Assert.Equal(receipt.MessageId, messageId);
+
+            await consumer.UnsubscribeLiteAsync(liteTopic, cancellationToken);
+            Assert.DoesNotContain(liteTopic, consumer.LiteTopics);
+
+            await producer.SendAsync(new Message(
+                scope.Topic,
+                Encoding.UTF8.GetBytes(unsubscribedBody))
+            {
+                LiteTopic = liteTopic
+            }, cancellationToken);
+
+            var completion = await Task.WhenAny(
+                observation.MessageAfterUnsubscribe.Task,
+                Task.Delay(TimeSpan.FromSeconds(3), cancellationToken));
+            if (ReferenceEquals(completion, observation.MessageAfterUnsubscribe.Task))
+            {
+                Assert.Fail($"Received message '{await observation.MessageAfterUnsubscribe.Task}' after unsubscribing from LiteTopic '{liteTopic}'.");
+            }
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
     public async Task GrpcLitePushConsumer_FifoSuspend_RedeliversAfterRequestedDuration()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -255,6 +328,46 @@ public sealed class RocketMQLiteIntegrationTests(RocketMQSingleBrokerContainerFi
 
             return ValueTask.FromResult(ConsumeResult.Success);
         }
+    }
+
+    private sealed class RuntimeLiteMessageObservation(
+        string liteTopic,
+        string subscribedBody,
+        string unsubscribedBody)
+    {
+        public TaskCompletionSource<string> SubscribedMessage { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<string> MessageAfterUnsubscribe { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask<ConsumeResult> HandleAsync(GrpcMessageView message)
+        {
+            if (!string.Equals(message.LiteTopic, liteTopic, StringComparison.Ordinal))
+            {
+                return ValueTask.FromResult(ConsumeResult.Success);
+            }
+
+            var body = Encoding.UTF8.GetString(message.Body);
+            if (string.Equals(body, subscribedBody, StringComparison.Ordinal))
+            {
+                SubscribedMessage.TrySetResult(message.MessageId);
+            }
+            else if (string.Equals(body, unsubscribedBody, StringComparison.Ordinal))
+            {
+                MessageAfterUnsubscribe.TrySetResult(message.MessageId);
+            }
+
+            return ValueTask.FromResult(ConsumeResult.Success);
+        }
+    }
+
+    private sealed class RuntimeLiteMessageHandler(RuntimeLiteMessageObservation observation)
+        : IGrpcPushMessageHandler
+    {
+        public ValueTask<ConsumeResult> HandleAsync(
+            GrpcMessageView message,
+            CancellationToken cancellationToken) => observation.HandleAsync(message);
     }
 
     private sealed class LiteSuspendObservation(string expectedBody, TimeSpan suspendDuration)

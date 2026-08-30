@@ -50,10 +50,11 @@ The Java `RebalancePushImpl` forces client rebalance for broadcasting and orderl
 mode in each Broker assignment as an internal receiver choice and creates either a PullRequest or a PopRequest. The
 application listener and its consumption result do not change.
 
-The Broker stores request mode by topic and consumer group. Its default is PULL; POP is selected through Broker
-configuration or the administrative `SET_MESSAGE_REQUEST_MODE` operation. The runtime Push consumer queries that
-decision but never writes it. Push heartbeats continue to advertise passive consumption regardless of the effective
-assignment or receive mode.
+The Broker stores explicit request modes by topic and consumer group. When a pair has no explicit entry, a retry topic
+is forced to PULL and an application topic uses the Broker-wide `defaultMessageRequestMode`, whose released default is
+PULL. POP is selected through Broker configuration or the administrative `SET_MESSAGE_REQUEST_MODE` operation. The
+runtime Push consumer queries that decision but never writes it. Push heartbeats continue to advertise passive
+consumption regardless of the effective assignment or receive mode.
 
 Every clustered Java Push consumer also subscribes to its classic `%RETRY%{consumerGroup}` topic. That subscription
 participates in the same client or Broker assignment path as application topics. The Broker assignment processor
@@ -298,13 +299,57 @@ Queue-assignment ownership and receive mode are separate dimensions:
 | `Client` | The client uses topic routes, group membership, and its allocation strategy. This is the default. | PULL only. | The Push handler receives messages. |
 | `Broker` | The Broker returns assignments for concurrent clustered consumption. | PULL or POP, selected by each returned assignment. | The same Push handler receives messages. |
 
-`QueueAssignmentMode` selects who owns queue-assignment calculation; it is not a public PULL/POP selector. As in Java Remoting,
-broadcasting or `ConsumeOrderly` internally uses client assignment and PULL even when `Broker` is requested. Eligible
-concurrent clustered consumers query the Broker and obey each returned request mode. They do not call
-`SET_MESSAGE_REQUEST_MODE`; operators configure the desired topic/group request mode on the Broker. A missing
-assignment mode decodes as `PULL`, a `null` assignment set preserves the prior state, and an empty set clears it. An
-unsupported or failed Broker assignment query fails that reconciliation; it never silently falls back to client
-assignment because that can create overlapping ownership.
+`QueueAssignmentMode` selects who owns queue-assignment calculation; it is not a public PULL/POP selector. The effective
+paths are:
+
+| Public role and configuration | Broker request-mode state | Effective assignment and reception |
+| --- | --- | --- |
+| LitePull | Any value | SDK-managed assignment and PULL. LitePull never queries Broker assignment. |
+| Push with `QueueAssignmentMode.Client` | Any value | Client assignment and PULL. The Broker request-mode entry is not consulted. |
+| Concurrent clustered Push with `QueueAssignmentMode.Broker` | Explicit PULL for the topic/group pair | Broker assignment and PULL. |
+| Concurrent clustered Push with `QueueAssignmentMode.Broker` | Explicit POP for the topic/group pair | Broker assignment and POP. |
+| Concurrent clustered Push with `QueueAssignmentMode.Broker` | No explicit entry | Retry topics use PULL; application topics use the Broker-wide default, which is PULL unless operators change it. |
+| Broadcasting or orderly Push | Any value | Effective client assignment and PULL, even when `Broker` is requested. |
+
+For an eligible Broker-assigned Push consumer, `QUERY_ASSIGNMENT` identifies the topic, consumer group, client, message
+model, and allocation strategy. The Broker resolves its response in this order:
+
+1. Use the explicit request-mode entry stored for the `(topic, consumer group)` pair.
+2. If no entry exists and the queried topic is a classic retry topic, use PULL.
+3. Otherwise use the Broker-wide `defaultMessageRequestMode`. RocketMQ 5.5.0 initializes that setting to PULL; if an
+   operator changes the global default to POP, an unconfigured application-topic pair inherits POP instead.
+
+This server-side fallback is distinct from wire compatibility in this client: if an assignment object is returned
+without its `mode` field, the client decodes that assignment as PULL. A `null` assignment set preserves the prior state,
+while an empty set clears it. An unsupported or failed Broker assignment query fails that reconciliation; it never
+silently falls back to client assignment because that can create overlapping ownership.
+
+Explicit entries are isolated by topic and consumer group. Different groups may consume the same topic independently,
+with one pair on PULL and another on POP. One Broker-assigned Push group may also receive one application topic through
+PULL and another through POP. Those internal choices do not make public roles or assignment owners interchangeable. This
+client rejects locally registered Push and LitePull members of the same group, and same-group Push members with different
+`QueueAssignmentMode` values. Across processes, no local validator sees both registrations, so deployment configuration
+must preserve the same public role and assignment owner for every member of the group.
+
+The request-mode map is persisted by each Broker, rather than centralized in the NameServer. Operators should therefore
+apply a mode consistently to every relevant master. The released `mqadmin` command supports a cluster target:
+
+```bash
+mqadmin setConsumeMode \
+  -c <cluster-name> \
+  -t <topic> \
+  -g <consumer-group> \
+  -m POP \
+  -q 0
+```
+
+Here `-q` is `popShareQueueNum`, the Broker's POP queue-sharing input; it is not the client `PopBatchSize`. A value of
+`0` uses the released all-readable-queues-per-Broker assignment represented by POP queue ID `-1`. For a Push consumer
+already configured with `QueueAssignmentMode.Broker`, changing `-m` to `PULL` makes later Broker assignments select
+PULL reception; the command does not change the client's assignment owner. Runtime consumers never send
+`SET_MESSAGE_REQUEST_MODE`; this remains an operator-owned control-plane decision. The released
+[`SetConsumeModeSubCommand`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/tools/src/main/java/org/apache/rocketmq/tools/command/consumer/SetConsumeModeSubCommand.java)
+defines the command arguments and applies a cluster target to its master Brokers.
 
 This boundary follows the official classic
 [PushConsumer guide](https://rocketmq.apache.org/docs/4.x/consumer/02push/), which keeps rebalance and pull logic away
@@ -312,14 +357,52 @@ from application handlers. In the 5.5.0 source,
 [`RebalancePushImpl`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/RebalancePushImpl.java#L125-L128)
 defines when client assignment remains effective, while
 [`QueryAssignmentProcessor`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/QueryAssignmentProcessor.java#L92-L132)
-places the configured PULL or POP request mode on each Broker assignment.
+resolves and places the PULL or POP mode on each Broker assignment. The released
+[`MessageRequestModeManager`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/loadbalance/MessageRequestModeManager.java)
+owns the per-Broker topic/group map, and
+[`BrokerConfig`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/common/src/main/java/org/apache/rocketmq/common/BrokerConfig.java)
+defines the global defaults.
 
-All clustered modes advertise and reconcile the classic retry topic. With Broker assignment, the consumer queries an
-assignment for that topic and accepts the Broker-forced PULL mode. Excluding it would make a successful PULL
-`CONSUMER_SEND_MSG_BACK` operation unreachable by the same Push consumer.
+#### Why the classic retry topic stays on PULL
+
+All clustered Push consumers advertise and reconcile the classic `%RETRY%{consumerGroup}` topic. It is the settlement
+continuation for PULL delivery:
+
+```text
+application-topic PULL
+    -> handler requests retry
+    -> CONSUMER_SEND_MSG_BACK
+    -> %RETRY%{consumerGroup}
+    -> retry-topic PULL and offset settlement
+```
+
+POP retry uses a separate receipt lifecycle:
+
+```text
+application-topic POP
+    -> handler requests retry
+    -> CHANGE_MESSAGE_INVISIBLETIME
+    -> Broker checkpoint/revive processing
+    -> POP redelivery and receipt settlement
+```
+
+The PULL path may have pending send-back messages when another application topic in the group uses POP or when an
+application topic changes from PULL to POP. Keeping the classic group retry subscription on PULL makes those messages
+reachable without converting offset state into POP receipts. POP retry topics remain Broker-managed details reached
+through the application topic's POP flow; they are not public subscriptions that replace `%RETRY%{consumerGroup}`.
+
+When no explicit entry exists, the Broker therefore forces a queried classic retry topic to PULL. The administrative
+operation rejects `SET_MESSAGE_REQUEST_MODE` for retry-topic names, so operators cannot create such an entry through the
+supported control path. A Broker-assigned Push consumer can legitimately own a POP receiver for an application topic and
+a PULL receiver for its classic retry topic at the same time. The rule preserves both retry paths; it does not mean POP
+delivery cannot retry.
 
 The Broker may return PULL for one topic and POP for another, or change a topic between them. Reconciliation treats
-the mode as part of assignment identity: the old receiver is stopped and drained before its replacement starts.
+the mode as part of assignment identity: the old receiver is stopped and drained before its replacement starts. The
+change is observed on a later assignment query rather than pushed to the client. Because delivery remains at least
+once, an uncommitted PULL delivery or unsettled POP receipt may be redelivered across a mode change; handlers must remain
+idempotent. Moving a client-assigned Push group to POP additionally requires every member to be restarted with consistent
+Broker assignment instead of mixing assignment owners during the transition.
 
 Broker-assigned POP adds these Push options:
 

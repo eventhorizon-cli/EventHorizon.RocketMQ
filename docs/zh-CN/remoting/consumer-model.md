@@ -48,9 +48,10 @@ Consumer 成员共享物理队列。
 因此这些路径仍使用 PULL。对于集群并发消费，`RebalanceImpl` 把每条 Broker assignment 的 mode 当成内部 receiver
 选择，分别创建 PullRequest 或 PopRequest；应用 listener 及其消费结果不会改变。
 
-Broker 按 topic 和 consumer group 保存 request mode，默认值是 PULL。POP 通过 Broker 配置或管理操作
-`SET_MESSAGE_REQUEST_MODE` 选择；运行时 Push Consumer 只查询该决策，不会写入它。无论有效 assignment 或
-receive mode 是什么，Push heartbeat 都继续声明被动消费。
+Broker 按 topic 和 consumer group 保存显式 request mode。没有专属配置时，retry topic 强制使用 PULL，业务
+topic 则回退到 Broker 全局 `defaultMessageRequestMode`；RocketMQ 5.5.0 的默认值是 PULL。POP 通过 Broker 配置或
+管理操作 `SET_MESSAGE_REQUEST_MODE` 选择；运行时 Push Consumer 只查询该决策，不会写入它。无论有效
+assignment 或 receive mode 是什么，Push heartbeat 都继续声明被动消费。
 
 每个集群 Java Push Consumer 还会订阅 classic `%RETRY%{consumerGroup}` topic。该订阅与业务 topic 一样参与 client
 或 Broker assignment。即使业务 topic 使用 POP，Broker assignment processor 也会强制 retry topic 使用 PULL，
@@ -268,12 +269,54 @@ assignment 归属与 receive mode 是两个独立维度：
 | `Client` | 客户端根据 topic route、group 成员和分配策略计算；这是默认值。 | 仅 PULL。 | 消息交给 Push handler。 |
 | `Broker` | Broker 为集群并发消费返回 assignment。 | PULL 或 POP，由每条返回的 assignment 决定。 | 消息仍交给同一个 Push handler。 |
 
-`QueueAssignmentMode` 只选择由谁计算队列 assignment，不是公开的 PULL/POP 开关。与 Java Remoting 一致，即使请求
-`Broker`，广播或 `ConsumeOrderly` 也在内部使用客户端 assignment 和 PULL。满足条件的集群并发 Consumer 查询
-Broker，并服从每条返回的 request mode。Consumer 不会调用 `SET_MESSAGE_REQUEST_MODE`；运维人员应在 Broker
-上配置 topic/group 的 request mode。assignment 缺少 mode 时按 `PULL` 解码；assignment 集合为 `null` 时保留
-旧状态，为空集合时清空旧状态。Broker 不支持 assignment 查询或查询失败时，本次对账失败，绝不静默退回
-client assignment；否则可能形成重叠 ownership。
+`QueueAssignmentMode` 只决定由谁计算队列 assignment，不是公开的 PULL/POP 开关。各种配置最终走向如下：
+
+| 公开角色与配置 | Broker request mode 状态 | 实际 assignment 与接收方式 |
+| --- | --- | --- |
+| LitePull | 任意 | SDK 管理 assignment，始终 PULL；LitePull 不查询 Broker assignment。 |
+| Push，`QueueAssignmentMode.Client` | 任意 | 客户端 assignment 与 PULL；不会读取 Broker request mode。 |
+| 并发集群 Push，`QueueAssignmentMode.Broker` | topic/group 显式配置为 PULL | Broker assignment 与 PULL。 |
+| 并发集群 Push，`QueueAssignmentMode.Broker` | topic/group 显式配置为 POP | Broker assignment 与 POP。 |
+| 并发集群 Push，`QueueAssignmentMode.Broker` | 没有显式配置 | retry topic 使用 PULL；业务 topic 使用 Broker 全局默认，运维未修改时为 PULL。 |
+| 广播或顺序 Push | 任意 | 即使请求 `Broker`，实际仍是客户端 assignment 与 PULL。 |
+
+满足条件的 Broker-assigned Push Consumer 会在 `QUERY_ASSIGNMENT` 中携带 topic、consumer group、client ID、
+message model 和分配策略。Broker 按以下顺序生成结果：
+
+1. `(topic, consumer group)` 存在显式 request mode 时，直接使用该配置。
+2. 没有显式配置且查询的是 classic retry topic 时，使用 PULL。
+3. 其余情况使用 Broker 全局 `defaultMessageRequestMode`。RocketMQ 5.5.0 将它初始化为 PULL；如果运维把全局
+   默认改成 POP，未单独配置的业务 topic/group 也会继承 POP。
+
+这里的服务端回退与客户端的 wire 兼容行为不是一回事。Broker 已返回 assignment、但其中缺少 `mode` 字段时，
+本客户端才按 PULL 解码。assignment 集合为 `null` 时保留旧状态，为空集合时清空旧状态。Broker 不支持 assignment
+查询或查询失败时，本次对账失败，绝不静默退回 client assignment；否则可能形成重叠 ownership。
+
+显式配置按 topic 和 consumer group 隔离。同一 topic 可以由两个 group 分别使用 PULL 与 POP；一个
+Broker-assigned Push group 也可以对一个业务 topic 使用 PULL、对另一个使用 POP。这种内部接收方式的组合不表示公开
+角色或 assignment 归属可以混用。本客户端会拒绝在本地注册同组 Push 与 LitePull，也会拒绝同组 Push 成员使用不同的
+`QueueAssignmentMode`。跨进程时，本地校验器无法同时看到两份注册，部署配置必须保证该 group 的所有成员使用相同
+公开角色和 assignment 归属。
+
+`request mode` 映射由每台 Broker 分别持久化，不集中存放在 NameServer。运维应将同一配置应用到所有相关 Master；
+官方发布版 `mqadmin` 支持按集群下发：
+
+```bash
+mqadmin setConsumeMode \
+  -c <cluster-name> \
+  -t <topic> \
+  -g <consumer-group> \
+  -m POP \
+  -q 0
+```
+
+这里的 `-q` 对应 `popShareQueueNum`，控制 Broker 的 POP 队列共享方式，不是客户端的 `PopBatchSize`。`0` 使用
+RocketMQ 5.5.0 的默认分配行为：每个 POP 成员通过 `queueId=-1` 接收对应 Broker 的全部可读队列。对于已经配置
+`QueueAssignmentMode.Broker` 的 Push Consumer，将 `-m` 改成 `PULL` 后，Broker 才会在后续 assignment 中选择
+PULL；该命令不会修改客户端的 assignment 归属。运行时 Consumer 不发送
+`SET_MESSAGE_REQUEST_MODE`；该配置属于运维控制面。发布版
+[`SetConsumeModeSubCommand`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/tools/src/main/java/org/apache/rocketmq/tools/command/consumer/SetConsumeModeSubCommand.java)
+定义了这些命令参数，并在按集群执行时逐个更新 Master Broker。
 
 这个边界遵循官方 classic
 [PushConsumer 指南](https://rocketmq.apache.org/docs/4.x/consumer/02push/)：应用 handler 不负责 rebalance 与
@@ -281,14 +324,50 @@ pull 逻辑。在 5.5.0 源码中，
 [`RebalancePushImpl`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/client/src/main/java/org/apache/rocketmq/client/impl/consumer/RebalancePushImpl.java#L125-L128)
 决定何时仍使用客户端 assignment；
 [`QueryAssignmentProcessor`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/processor/QueryAssignmentProcessor.java#L92-L132)
-则把配置的 PULL 或 POP request mode 写入每条 Broker assignment。
+负责解析 PULL/POP 决策并写入每条 Broker assignment。发布版
+[`MessageRequestModeManager`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/broker/src/main/java/org/apache/rocketmq/broker/loadbalance/MessageRequestModeManager.java)
+维护每台 Broker 的 topic/group 映射，
+[`BrokerConfig`](https://github.com/apache/rocketmq/blob/rocketmq-all-5.5.0/common/src/main/java/org/apache/rocketmq/common/BrokerConfig.java)
+则定义全局默认值。
 
-所有集群模式都必须在 heartbeat 中声明并对账 classic retry topic。使用 Broker assignment 时，Consumer 也会
-查询该 topic 的 assignment，并接受 Broker 强制返回的 PULL mode。排除它会导致成功执行的 PULL
-`CONSUMER_SEND_MSG_BACK` 无法被同一个 Push Consumer 再次接收。
+#### 为什么 classic retry topic 始终使用 PULL
+
+所有集群 Push Consumer 都会在 heartbeat 中声明并对账 classic `%RETRY%{consumerGroup}` topic。它承接 PULL
+投递失败后的结算流程：
+
+```text
+业务 topic PULL
+    -> handler 请求重试
+    -> CONSUMER_SEND_MSG_BACK
+    -> %RETRY%{consumerGroup}
+    -> retry topic PULL 与 offset 结算
+```
+
+POP 重试使用另一套 receipt 生命周期：
+
+```text
+业务 topic POP
+    -> handler 请求重试
+    -> CHANGE_MESSAGE_INVISIBLETIME
+    -> Broker checkpoint/revive
+    -> POP 重投与 receipt 结算
+```
+
+同组另一个业务 topic 使用 POP，或者原 topic 已从 PULL 切到 POP 时，PULL 路径仍可能有尚未处理的 send-back
+消息。classic group retry subscription 固定使用 PULL，才能继续处理这些消息，而不把 offset 状态转换成 POP
+receipt。POP retry topic 仍是 Broker 通过业务 topic POP 流程管理的内部细节，不是用来替代
+`%RETRY%{consumerGroup}` 的公开订阅。
+
+因此，没有显式映射时，Broker 会为查询到的 classic retry topic 强制返回 PULL。管理操作会拒绝对 retry topic
+名称执行 `SET_MESSAGE_REQUEST_MODE`，运维无法通过受支持的控制路径创建这类映射。同一个 Broker-assigned Push
+Consumer 可以同时为业务 topic 运行 POP receiver，为 classic retry topic 运行 PULL receiver。这个约束保留了
+两条重试路径，并不表示 POP 消息不能重试。
 
 Broker 可以为一个 topic 返回 PULL、为另一个返回 POP，也可以动态切换同一 topic。对账时 mode 是 assignment
-identity 的组成部分：旧 receiver 完成停止与排空后，才启动替代 receiver。
+identity 的组成部分：旧 receiver 完成停止与排空后，才启动替代 receiver。配置变化不会由 Broker 主动推送，而是
+在后续 assignment 查询中被 Consumer 发现。投递仍是至少一次语义；切换期间，未提交的 PULL 消息或尚未结算的
+POP receipt 可能重新投递，handler 必须保持幂等。如果要把 client-assigned Push group 改成 POP，还必须让所有成员
+一致重启为 Broker assignment，不能在迁移期间混用两种 assignment owner。
 
 Broker-assigned POP 为 Push 增加以下 options：
 

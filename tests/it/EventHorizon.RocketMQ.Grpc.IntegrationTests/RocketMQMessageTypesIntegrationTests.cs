@@ -35,7 +35,10 @@ public sealed class RocketMQMessageTypesIntegrationTests(RocketMQSingleBrokerCon
         var cancellationToken = TestContext.Current.CancellationToken;
         var fixture = await registry.GetFixtureAsync(cancellationToken);
         var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Fifo, cancellationToken);
-        var consumerGroup = scope.CreateConsumerGroupName("grpc-fifo-consumer");
+        var consumerGroup = await scope.CreateOrderedConsumerGroupAsync(
+            "grpc-fifo-consumer",
+            retryMaxTimes: 16,
+            cancellationToken);
         var tag = $"fifo-{Guid.NewGuid():N}";
         var messageGroup = $"account-{Guid.NewGuid():N}";
         var received = new ConcurrentQueue<int>();

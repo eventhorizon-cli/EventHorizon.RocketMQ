@@ -331,6 +331,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
         rocketMQ.AddRemotingPushConsumerWithTestHandler<OrdersPushConsumerMarker>(options =>
         {
             options.GroupName = orders.CreateConsumerGroupName("orders-remoting-push-consumer");
+            options.InitialPosition = ConsumeFromPosition.Beginning;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.Subscribe(orders.Topic, new FilterExpression("orders"));
         }, (messages, _, _) =>
@@ -354,6 +355,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
         rocketMQ.AddRemotingPushConsumerWithTestHandler<OrdersObserverPushConsumerMarker>(options =>
         {
             options.GroupName = orders.CreateConsumerGroupName("orders-observer-remoting-push-consumer");
+            options.InitialPosition = ConsumeFromPosition.Beginning;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.Subscribe(orders.Topic, new FilterExpression("orders"));
         }, (messages, _, _) =>
@@ -377,6 +379,7 @@ public sealed class RocketMQContainerTests(RocketMQSingleBrokerContainerFixtureR
         rocketMQ.AddRemotingPushConsumerWithTestHandler<PaymentsPushConsumerMarker>(options =>
         {
             options.GroupName = payments.CreateConsumerGroupName("payments-remoting-push-consumer");
+            options.InitialPosition = ConsumeFromPosition.Beginning;
             options.LongPollingTimeout = TimeSpan.FromSeconds(1);
             options.Subscribe(payments.Topic, new FilterExpression("payments"));
         }, (messages, _, _) =>

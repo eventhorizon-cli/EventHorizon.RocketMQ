@@ -230,6 +230,203 @@ public sealed class RocketMQRebalanceIntegrationTests(
 
     [Fact]
     [Trait("Category", "Integration")]
+    public async Task PushConsumers_MemberJoins_Rebalances()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var scope = await _fixture.CreateTestScopeAsync(RocketMQTestTopicType.Normal, cancellationToken);
+        var group = scope.CreateConsumerGroupName("remoting-push-rebalance");
+        var suffix = Guid.NewGuid().ToString("N");
+        var tag = $"remoting-push-rebalance-{suffix}";
+        var bodyPrefix = $"{tag}-message";
+        var expectedBodies = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        var deliveryCounts = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+        var deliveryOwners = new ConcurrentDictionary<(string Body, int Consumer), int>();
+        var unexpectedDeliveries = new ConcurrentQueue<string>();
+
+        Func<IReadOnlyList<RemotingMessageView>, RemotingPushConsumeContext, CancellationToken, ValueTask<ConsumeResult>>
+            CreateHandler(int consumerIndex) => (messages, _, _) =>
+            {
+                foreach (var message in messages)
+                {
+                    var body = Encoding.UTF8.GetString(message.Body);
+                    if (message.Topic != scope.Topic ||
+                        !body.StartsWith(bodyPrefix, StringComparison.Ordinal) ||
+                        !expectedBodies.ContainsKey(body))
+                    {
+                        unexpectedDeliveries.Enqueue(
+                            $"consumer={consumerIndex}, topic={message.Topic}, body={body}");
+                        continue;
+                    }
+
+                    deliveryCounts.AddOrUpdate(body, 1, static (_, count) => count + 1);
+                    deliveryOwners.AddOrUpdate(
+                        (body, consumerIndex),
+                        1,
+                        static (_, count) => count + 1);
+                }
+
+                return ValueTask.FromResult(ConsumeResult.Success);
+            };
+
+        var services = new ServiceCollection();
+        var rocketMQ = services.AddRocketMQRemoting(options =>
+        {
+            options.NamesrvAddr = _fixture.NameServerAddress;
+            options.InstanceName = $"remoting-push-rebalance-{suffix}";
+            options.HeartbeatBrokerInterval = TimeSpan.FromHours(1);
+            options.PollNameServerInterval = TimeSpan.FromHours(1);
+        });
+        rocketMQ.AddRemotingProducer(options =>
+            options.GroupName = scope.CreateProducerGroupName("remoting-push-rebalance-producer"));
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<FirstPushConsumerMarker>(options =>
+        {
+            ConfigurePushConsumer(options, group, scope.Topic, tag);
+        }, CreateHandler(0));
+        rocketMQ.AddRemotingPushConsumerWithTestHandler<SecondPushConsumerMarker>(options =>
+        {
+            ConfigurePushConsumer(options, group, scope.Topic, tag);
+        }, CreateHandler(1));
+
+        await using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IRemotingProducer>();
+        var consumers = provider.GetServices<IRemotingPushConsumer>().ToArray();
+        Assert.Equal(2, consumers.Length);
+        var pushConsumers = consumers.Select(Assert.IsType<RemotingPushConsumer>).ToArray();
+        var runningConsumers = new bool[consumers.Length];
+
+        await producer.StartAsync(cancellationToken);
+        try
+        {
+            var queues = (await producer.GetPublishMessageQueuesAsync(scope.Topic, cancellationToken))
+                .OrderBy(static queue => queue.BrokerName, StringComparer.Ordinal)
+                .ThenBy(static queue => queue.QueueId)
+                .ToArray();
+            Assert.True(queues.Length > 1, $"Rebalance test requires multiple queues, but found {queues.Length}.");
+            var expectedQueues = queues.Select(FormatQueue).ToHashSet(StringComparer.Ordinal);
+            var commitQueues = queues.Select(queue => (scope.Topic, queue.BrokerName, queue.QueueId)).ToArray();
+
+            await consumers[0].StartAsync(cancellationToken);
+            runningConsumers[0] = true;
+
+            await WaitUntilAsync(
+                () => expectedQueues.SetEquals(pushConsumers[0].Assignment
+                    .Where(queue => string.Equals(queue.Topic, scope.Topic, StringComparison.Ordinal))
+                    .Select(QueueKey)),
+                RebalanceTimeout,
+                () =>
+                    "The initial Push consumer did not own every queue before scale out. " +
+                    FormatPushAssignmentDiagnostics(pushConsumers, scope.Topic, expectedQueues),
+                cancellationToken);
+            Assert.Empty(pushConsumers[1].Assignment);
+
+            var initialBodies = await SendRoundToEveryQueueAsync(
+                producer,
+                queues,
+                scope.Topic,
+                tag,
+                $"{bodyPrefix}-initial",
+                expectedBodies,
+                cancellationToken);
+            await WaitUntilAsync(
+                () => initialBodies.All(deliveryCounts.ContainsKey),
+                RebalanceTimeout,
+                () =>
+                    "The initial Push consumer did not consume every queue before scale out. " +
+                    FormatPushDiagnostics(initialBodies, deliveryCounts, deliveryOwners),
+                cancellationToken);
+            var initialCommitResult = await _fixture.WaitForConsumerCommitsAsync(
+                group,
+                commitQueues,
+                RebalanceTimeout,
+                cancellationToken);
+            Assert.True(
+                initialCommitResult.Committed,
+                $"Initial offsets were not committed for " +
+                $"[{string.Join(", ", queues.Select(FormatQueue))}]. {initialCommitResult.Progress}");
+
+            await consumers[1].StartAsync(cancellationToken);
+            runningConsumers[1] = true;
+
+            await WaitUntilAsync(
+                () => PushAssignmentsAreMutuallyExclusiveAndComplete(pushConsumers, scope.Topic, expectedQueues),
+                RebalanceTimeout,
+                () =>
+                    "Push consumers did not reach mutually exclusive complete assignments after scale out. " +
+                    FormatPushAssignmentDiagnostics(pushConsumers, scope.Topic, expectedQueues),
+                cancellationToken);
+            var firstAssignment = pushConsumers[0].Assignment
+                .Where(queue => string.Equals(queue.Topic, scope.Topic, StringComparison.Ordinal))
+                .Select(QueueKey)
+                .ToHashSet(StringComparer.Ordinal);
+
+            var scaleOutBodies = await SendRoundToEveryQueueAsync(
+                producer,
+                queues,
+                scope.Topic,
+                tag,
+                $"{bodyPrefix}-scale-out",
+                expectedBodies,
+                cancellationToken);
+            await WaitUntilAsync(
+                () => scaleOutBodies.All(deliveryCounts.ContainsKey),
+                RebalanceTimeout,
+                () =>
+                    "The scaled-out Push consumers did not consume every queue. " +
+                    FormatPushDiagnostics(scaleOutBodies, deliveryCounts, deliveryOwners),
+                cancellationToken);
+            var scaleOutCommitResult = await _fixture.WaitForConsumerCommitsAsync(
+                group,
+                commitQueues,
+                RebalanceTimeout,
+                cancellationToken);
+            Assert.True(
+                scaleOutCommitResult.Committed,
+                $"Scale-out offsets were not committed for " +
+                $"[{string.Join(", ", queues.Select(FormatQueue))}]. {scaleOutCommitResult.Progress}");
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+
+            Assert.Empty(unexpectedDeliveries);
+            Assert.Equal(
+                expectedBodies.Keys.Order(StringComparer.Ordinal),
+                deliveryCounts.Keys.Order(StringComparer.Ordinal));
+            Assert.All(deliveryCounts, static delivery => Assert.Equal(1, delivery.Value));
+            Assert.All(
+                initialBodies,
+                body => Assert.Equal(
+                    [0],
+                    deliveryOwners
+                        .Where(delivery => string.Equals(delivery.Key.Body, body, StringComparison.Ordinal))
+                        .Select(static delivery => delivery.Key.Consumer)
+                        .Order()));
+            for (var index = 0; index < scaleOutBodies.Count; index++)
+            {
+                var body = scaleOutBodies[index];
+                var expectedConsumer = firstAssignment.Contains(FormatQueue(queues[index])) ? 0 : 1;
+                Assert.Equal(
+                    [expectedConsumer],
+                    deliveryOwners
+                        .Where(delivery => string.Equals(delivery.Key.Body, body, StringComparison.Ordinal))
+                        .Select(static delivery => delivery.Key.Consumer)
+                        .Order());
+            }
+        }
+        finally
+        {
+            for (var index = consumers.Length - 1; index >= 0; index--)
+            {
+                if (runningConsumers[index])
+                {
+                    await consumers[index].StopAsync(CancellationToken.None);
+                }
+            }
+
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
     public async Task LitePullConsumers_MemberStops_Rebalances()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -316,6 +513,7 @@ public sealed class RocketMQRebalanceIntegrationTests(
         string tag)
     {
         options.GroupName = group;
+        options.QueueAssignmentMode = RemotingPushQueueAssignmentMode.Client;
         options.InitialPosition = ConsumeFromPosition.Beginning;
         options.MaxConcurrency = 1;
         options.PullBatchSize = 1;

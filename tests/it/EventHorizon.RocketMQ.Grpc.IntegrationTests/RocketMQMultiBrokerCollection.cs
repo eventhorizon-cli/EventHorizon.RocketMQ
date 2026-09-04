@@ -26,7 +26,7 @@ namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 /// required.
 /// </remarks>
 [CollectionDefinition(Name)]
-public sealed class RocketMQMultiBrokerCollection : ICollectionFixture<RocketMQMultiBrokerGrpcContainerFixture>
+public sealed class RocketMQMultiBrokerCollection : ICollectionFixture<RocketMQMultiBrokerClusterProxyContainerFixture>
 {
     public const string Name = "RocketMQ gRPC multi-Broker integration";
 }

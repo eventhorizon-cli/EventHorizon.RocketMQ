@@ -23,7 +23,7 @@ using Xunit;
 namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 
 /// <summary>
-/// Provides a cluster-mode Proxy and three network-addressable Brokers for gRPC integration tests.
+/// Provides two cluster-mode Proxies and three network-addressable Brokers for gRPC integration tests.
 /// </summary>
 /// <remarks>
 /// The Brokers advertise Docker network aliases at a fixed internal port so the separate Proxy container can reach
@@ -31,12 +31,14 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// <see cref="RocketMQMultiBrokerRemotingContainerFixture"/>. xUnit owns this type directly as a collection fixture;
 /// an additional lazy registry would not extend its lifecycle.
 /// </remarks>
-public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
+public sealed class RocketMQMultiBrokerClusterProxyContainerFixture : IAsyncLifetime
 {
     private const string Image = "apache/rocketmq:5.5.0";
     private const int NameServerPort = 9876;
     private const int BrokerPort = 10911;
     private const int GrpcPort = 8081;
+    private const string ProxyAAlias = "proxy-a";
+    private const string ProxyBAlias = "proxy-b";
 
     /// <summary>
     /// Gets the name of the first Broker in the test cluster.
@@ -63,17 +65,20 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
     private readonly IContainer _brokerA;
     private readonly IContainer _brokerB;
     private readonly IContainer _brokerC;
-    private readonly IContainer _proxy;
+    private readonly IContainer _proxyA;
+    private readonly IContainer _proxyB;
     private readonly RocketMQHostPortReservation _portReservation;
-    private readonly int _proxyHostPort;
+    private readonly int _proxyAHostPort;
+    private readonly int _proxyBHostPort;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="RocketMQMultiBrokerGrpcContainerFixture"/> class.
+    /// Initializes a new instance of the <see cref="RocketMQMultiBrokerClusterProxyContainerFixture"/> class.
     /// </summary>
-    public RocketMQMultiBrokerGrpcContainerFixture()
+    public RocketMQMultiBrokerClusterProxyContainerFixture()
     {
-        _portReservation = RocketMQHostPortReservation.Reserve(1);
-        _proxyHostPort = _portReservation[0];
+        _portReservation = RocketMQHostPortReservation.Reserve(2);
+        _proxyAHostPort = _portReservation[0];
+        _proxyBHostPort = _portReservation[1];
         _nameServer = new ContainerBuilder(Image)
             .WithNetwork(_network)
             .WithNetworkAliases("nameserver")
@@ -86,39 +91,24 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
         _brokerB = CreateBroker(BrokerBName);
         _brokerC = CreateBroker(BrokerCName);
 
-        var proxyConfiguration = Encoding.UTF8.GetBytes(
-            "{\n" +
-            "  \"rocketMQClusterName\": \"DefaultCluster\",\n" +
-            "  \"proxyClusterName\": \"DefaultCluster\",\n" +
-            $"  \"grpcServerPort\": {GrpcPort},\n" +
-            "  \"useEndpointPortFromRequest\": true\n" +
-            "}\n");
-        _proxy = new ContainerBuilder(Image)
-            .WithNetwork(_network)
-            .WithNetworkAliases("proxy")
-            .WithPortBinding(_proxyHostPort, GrpcPort)
-            .WithEnvironment("NAMESRV_ADDR", $"nameserver:{NameServerPort}")
-            .WithEnvironment("JAVA_OPT_EXT", "-Duser.home=/home/rocketmq -Xms512m -Xmx512m")
-            .WithResourceMapping(proxyConfiguration, "/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json")
-            .WithCommand(
-                "sh",
-                "mqproxy",
-                "-pm",
-                "cluster",
-                "-n",
-                $"nameserver:{NameServerPort}",
-                "-pc",
-                "/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json")
-            .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilInternalTcpPortIsAvailable(GrpcPort)
-                .UntilMessageIsLogged("rocketmq-proxy startup successfully"))
-            .Build();
+        _proxyA = CreateProxy(ProxyAAlias, _proxyAHostPort);
+        _proxyB = CreateProxy(ProxyBAlias, _proxyBHostPort);
     }
 
     /// <summary>
-    /// Gets the host-reachable gRPC endpoint for the cluster-mode Proxy.
+    /// Gets the host-reachable gRPC endpoint for Proxy A.
     /// </summary>
-    public string GrpcEndpoint => $"{_proxy.Hostname}:{_proxy.GetMappedPublicPort(GrpcPort)}";
+    public string GrpcEndpointA => $"{_proxyA.Hostname}:{_proxyA.GetMappedPublicPort(GrpcPort)}";
+
+    /// <summary>
+    /// Gets the host-reachable gRPC endpoint for Proxy B.
+    /// </summary>
+    public string GrpcEndpointB => $"{_proxyB.Hostname}:{_proxyB.GetMappedPublicPort(GrpcPort)}";
+
+    /// <summary>
+    /// Gets both host-reachable gRPC endpoints as a semicolon-separated client setting.
+    /// </summary>
+    public string GrpcEndpoints => $"{GrpcEndpointA};{GrpcEndpointB}";
 
     /// <inheritdoc/>
     public async ValueTask InitializeAsync()
@@ -132,7 +122,9 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
 
         await WaitForClusterRegistrationAsync().ConfigureAwait(false);
         await CreateTopicAsync().ConfigureAwait(false);
-        await _proxy.StartAsync().ConfigureAwait(false);
+        await Task.WhenAll(
+            _proxyA.StartAsync(),
+            _proxyB.StartAsync()).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -140,7 +132,8 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
     {
         try
         {
-            await _proxy.DisposeAsync().ConfigureAwait(false);
+            await _proxyB.DisposeAsync().ConfigureAwait(false);
+            await _proxyA.DisposeAsync().ConfigureAwait(false);
             await _brokerC.DisposeAsync().ConfigureAwait(false);
             await _brokerB.DisposeAsync().ConfigureAwait(false);
             await _brokerA.DisposeAsync().ConfigureAwait(false);
@@ -152,6 +145,33 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
             _portReservation.Dispose();
         }
     }
+
+    /// <summary>
+    /// Stops Proxy A so a test can verify gRPC access-point failover to Proxy B.
+    /// </summary>
+    /// <param name="cancellationToken">The token used to cancel the stop operation.</param>
+    /// <returns>A task that represents the asynchronous stop operation.</returns>
+    public Task StopProxyAAsync(CancellationToken cancellationToken = default) =>
+        _proxyA.StopAsync(cancellationToken);
+
+    /// <summary>
+    /// Restarts Proxy A and waits for its gRPC service to become available again.
+    /// </summary>
+    /// <param name="cancellationToken">The token used to cancel recovery.</param>
+    /// <returns>A task that represents the asynchronous recovery operation.</returns>
+    public Task RestoreProxyAAsync(CancellationToken cancellationToken = default) =>
+        _proxyA.StartAsync(cancellationToken);
+
+    /// <summary>
+    /// Gets the current aggregate maximum queue offsets by Broker for <paramref name="topic"/>.
+    /// </summary>
+    /// <param name="topic">The topic whose queue offsets to inspect.</param>
+    /// <param name="cancellationToken">The token used to cancel the inspection.</param>
+    /// <returns>The aggregate maximum queue offsets by Broker.</returns>
+    public Task<IReadOnlyDictionary<string, long>> GetBrokerMessageOffsetsAsync(
+        string topic,
+        CancellationToken cancellationToken = default) =>
+        GetBrokerMaxOffsetsAsync(topic, cancellationToken);
 
     /// <summary>
     /// Waits until all three Brokers have stored at least one message in <paramref name="topic"/>.
@@ -181,6 +201,39 @@ public sealed class RocketMQMultiBrokerGrpcContainerFixture : IAsyncLifetime
         while (DateTimeOffset.UtcNow < deadline);
 
         return await GetBrokerMaxOffsetsAsync(topic, cancellationToken).ConfigureAwait(false);
+    }
+
+    private IContainer CreateProxy(string proxyName, int hostPort)
+    {
+        var proxyConfiguration = Encoding.UTF8.GetBytes(
+            "{\n" +
+            "  \"rocketMQClusterName\": \"DefaultCluster\",\n" +
+            "  \"proxyClusterName\": \"DefaultCluster\",\n" +
+            $"  \"proxyName\": \"{proxyName}\",\n" +
+            $"  \"grpcServerPort\": {GrpcPort},\n" +
+            "  \"useEndpointPortFromRequest\": true\n" +
+            "}\n");
+
+        return new ContainerBuilder(Image)
+            .WithNetwork(_network)
+            .WithNetworkAliases(proxyName)
+            .WithPortBinding(hostPort, GrpcPort)
+            .WithEnvironment("NAMESRV_ADDR", $"nameserver:{NameServerPort}")
+            .WithEnvironment("JAVA_OPT_EXT", "-Duser.home=/home/rocketmq -Xms512m -Xmx512m")
+            .WithResourceMapping(proxyConfiguration, "/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json")
+            .WithCommand(
+                "sh",
+                "mqproxy",
+                "-pm",
+                "cluster",
+                "-n",
+                $"nameserver:{NameServerPort}",
+                "-pc",
+                "/home/rocketmq/rocketmq-5.5.0/conf/rmq-proxy.json")
+            .WithWaitStrategy(Wait.ForUnixContainer()
+                .UntilInternalTcpPortIsAvailable(GrpcPort)
+                .UntilMessageIsLogged("rocketmq-proxy startup successfully"))
+            .Build();
     }
 
     private IContainer CreateBroker(string brokerName)

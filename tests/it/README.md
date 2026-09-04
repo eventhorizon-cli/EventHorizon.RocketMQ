@@ -10,7 +10,7 @@ production client code.
 
 | Project | Responsibility |
 | --- | --- |
-| `EventHorizon.RocketMQ.Grpc.IntegrationTests` | Exercises the gRPC client through a real cluster-mode Proxy. |
+| `EventHorizon.RocketMQ.Grpc.IntegrationTests` | Exercises the gRPC client through real local-mode and cluster-mode Proxies. |
 | `EventHorizon.RocketMQ.Remoting.IntegrationTests` | Exercises classic NameServer and Broker Remoting behavior. |
 | `EventHorizon.RocketMQ.IntegrationTestInfrastructure` | Owns reusable Testcontainers topologies, host-port allocation, and test resource names. |
 | `EventHorizon.RocketMQ.Remoting.CrossProcessTestHost` | Runs test-only Remoting consumers in separate operating-system processes for cross-process Rebalance coverage. |
@@ -37,7 +37,7 @@ test topology and CI policy.
 
 ## Infrastructure structure
 
-`EventHorizon.RocketMQ.IntegrationTestInfrastructure` has six public top-level types and one internal helper.
+`EventHorizon.RocketMQ.IntegrationTestInfrastructure` has seven public top-level types and one internal helper.
 
 | Type | Responsibility |
 | --- | --- |
@@ -46,7 +46,8 @@ test topology and CI policy.
 | `RocketMQTestScope` | Produces test-specific topic and producer or consumer group names. |
 | `RocketMQTestTopicType` | Selects normal, transaction, FIFO, delay, or Lite topic provisioning. |
 | `RocketMQHostPortReservation` | Coordinates dynamic host-port choices within the current test process. |
-| `RocketMQMultiBrokerGrpcContainerFixture` | Runs three Docker-network Brokers behind a cluster-mode Proxy. |
+| `RocketMQLocalProxyContainerFixture` | Runs a Broker-integrated local-mode Proxy for focused gRPC compatibility coverage. |
+| `RocketMQMultiBrokerClusterProxyContainerFixture` | Runs three Docker-network Brokers behind two cluster-mode Proxies. |
 | `RocketMQMultiBrokerRemotingContainerFixture` | Runs two independent NameServers and three host-reachable classic Remoting Brokers; every Broker registers with both. |
 
 The internal type dependencies are:
@@ -59,7 +60,10 @@ RocketMQSingleBrokerContainerFixtureRegistry
                            `-- creates --> RocketMQTestScope
                                               `-- calls back --> RocketMQSingleBrokerContainerFixture
 
-RocketMQMultiBrokerGrpcContainerFixture
+RocketMQLocalProxyContainerFixture
+    `-- uses --> RocketMQHostPortReservation
+
+RocketMQMultiBrokerClusterProxyContainerFixture
     `-- uses --> RocketMQHostPortReservation
 
 RocketMQMultiBrokerRemotingContainerFixture
@@ -98,13 +102,24 @@ Test assembly finishes
 
 `GetFixtureAsync` uses a semaphore and double-checked access so parallel test classes initialize exactly one fixture.
 If initialization fails, the registry disposes the partially initialized fixture before propagating the failure. A
-multi-Broker-only filtered run still creates the inexpensive assembly registry, but never starts the single-Broker
-topology because it does not call `GetFixtureAsync`.
+local-Proxy-only or multi-Broker-only filtered run still creates the inexpensive assembly registry, but never starts
+the single-Broker topology because it does not call `GetFixtureAsync`.
 
 `RocketMQSingleBrokerContainerFixture` provisions a unique normal topic for each scope. Transaction, FIFO, delay, and Lite topics
 are predefined because their Broker semantics require configuration, but every scope still receives a unique suffix
 for group and message identity isolation. Broker administration is limited to four concurrent operations to match the
 parallel integration-test workload without serializing the entire assembly.
+
+### Local Proxy collection
+
+`RocketMQLocalProxyContainerFixture` is a dedicated gRPC collection fixture. It starts a NameServer and invokes
+`mqbroker --enable-proxy` in a second container. At the official released baseline tag `rocketmq-all-5.5.0`, that
+command starts `ProxyStartup` with `-pm local` and embeds the Broker in the Proxy process. Local routes advertise the
+configured gRPC port directly, so the fixture uses the same dynamically reserved port inside the container and on the
+host. The fixture creates one normal topic after the Broker registers. Before telemetry starts, the focused test
+explicitly creates its unique consumer group because local mode validates the group during telemetry, then completes
+a producer/SimpleConsumer send, receive, and acknowledgement round-trip. It does not exercise LitePush because local
+mode at that release tag does not implement `SyncLiteSubscription`.
 
 ### Multi-Broker collections
 
@@ -112,7 +127,7 @@ The multi-Broker fixtures are registered directly as xUnit collection fixtures:
 
 ```text
 gRPC multi-Broker collection
-    `-- RocketMQMultiBrokerGrpcContainerFixture
+    `-- RocketMQMultiBrokerClusterProxyContainerFixture
 
 Remoting multi-Broker collection
     `-- RocketMQMultiBrokerRemotingContainerFixture
@@ -125,14 +140,16 @@ not add laziness or sharing because the collection fixture already provides both
 The gRPC multi-Broker initialization order is:
 
 ```text
-reserve one Proxy host port
+reserve two Proxy host ports
     -> network -> NameServer -> Broker A/B/C in parallel
     -> wait for all Broker registrations
     -> create the topic on every Broker and wait for the complete route
-    -> start Proxy
+    -> start Proxy A/B in parallel
 ```
 
-Disposal runs in the reverse ownership direction: Proxy, Brokers, NameServer, network, then the port reservation.
+Clients use both Proxy addresses as one semicolon-separated endpoint setting. A focused failover test stops Proxy A,
+publishes through Proxy B, and restores Proxy A before cleanup. Disposal runs in the reverse ownership direction:
+Proxy B/A, Brokers, NameServer, network, then the port reservation.
 
 The Remoting multi-Broker initialization order is:
 
@@ -180,8 +197,8 @@ The multi-Broker topologies have incompatible Broker address-advertisement requi
 | Client entry point | Proxy | NameServer and Brokers |
 | Advertised Broker host | Docker alias such as `broker-a` | `127.0.0.1` |
 | Broker ports | Fixed `10911` in separate containers | Distinct dynamically allocated host ports |
-| Host mappings | Proxy only | NameServer A/B and every Broker |
-| Additional behavior | Proxy startup and per-Broker offset inspection | Explicit queue counts, independent NameServer routes, and host-reachable addresses |
+| Host mappings | Proxy A/B only | NameServer A/B and every Broker |
+| Additional behavior | Proxy failover and per-Broker offset inspection | Explicit queue counts, independent NameServer routes, and host-reachable addresses |
 
 A separate Proxy container can resolve `broker-a`, `broker-b`, and `broker-c`, while a host Remoting client cannot. If
 the Brokers advertise `127.0.0.1`, the host can reach them through distinct mapped ports, but `127.0.0.1` inside the

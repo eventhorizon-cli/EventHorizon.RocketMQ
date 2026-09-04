@@ -22,7 +22,8 @@ Unit and compatibility tests
 
 Integration tests
     -> protocol-isolated Testcontainers fixtures
-    -> single-Broker baseline and three-Broker route coverage
+    -> cluster-mode single-Broker baseline and three-Broker/two-Proxy failover coverage
+    -> Broker-integrated local-mode Proxy compatibility coverage
     -> protocol-specific integration test assemblies
 
 Manual samples
@@ -139,7 +140,17 @@ creates an isolated Docker network, starts an Apache RocketMQ 5.5.0 NameServer a
 starts a cluster-mode Proxy after the Broker registers. A lazy xUnit v3 assembly-fixture registry
 owns one baseline fixture per integration-test assembly, so independent test classes can share the
 same Docker stack without serializing the whole project. The runner permits up to four parallel test
-collections; a filtered multi-Broker job does not initialize the baseline fixture.
+collections; a filtered local-Proxy or multi-Broker job does not initialize the baseline fixture.
+
+[`RocketMQLocalProxyContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQLocalProxyContainerFixture.cs)
+uses the official released baseline tag `rocketmq-all-5.5.0`. Its `mqbroker --enable-proxy` command delegates to
+`ProxyStartup` with `-pm local` and embeds the Broker in the Proxy process. At that tag, local routes advertise the
+configured `grpcServerPort` directly, so the fixture uses the same dynamically reserved port inside the container and
+on the host. The test explicitly creates its unique consumer group before telemetry because local mode validates the
+group at that point. Its focused gRPC round-trip verifies route lookup, settings telemetry, publish, assignment,
+receive, and acknowledgement through the Broker-integrated deployment. The local-mode suite intentionally uses a
+normal topic: local mode at that release tag does not implement `SyncLiteSubscription`, so LitePush remains covered
+only through the cluster-mode fixtures.
 
 Each ordinary test scope receives a unique normal topic and consumer group. The fixture explicitly
 creates the topic before use because gRPC route lookup requires an existing route, while the Broker
@@ -224,9 +235,11 @@ The multi-Broker fixtures complement the baseline fixture:
   complete route and sends successfully. Finally it restarts A and waits for A to report all three Brokers and the complete
   nine-queue topic route before cleanup so the shared collection is not left degraded. The ten-consumer case confirms that
   consumers in excess of the nine queues remain unassigned without duplicate delivery.
-- [`RocketMQMultiBrokerGrpcContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerGrpcContainerFixture.cs)
-  starts a NameServer, three master Brokers, and a cluster-mode Proxy on an isolated Docker network. The gRPC test
-  sends through the Proxy and confirms that every Broker has stored messages.
+- [`RocketMQMultiBrokerClusterProxyContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQMultiBrokerClusterProxyContainerFixture.cs)
+  starts a NameServer, three master Brokers, and two cluster-mode Proxies on an isolated Docker network. The ordinary
+  gRPC test sends through the semicolon-combined Proxy endpoints and confirms that every Broker has stored messages. A
+  focused failover test stops Proxy A before publishing, verifies that route lookup and send complete through Proxy B,
+  and restarts Proxy A before cleanup so the shared collection is not left degraded.
 
 The fixtures create the test topic on each Broker with `mqadmin updateTopic -b` and wait for the complete route.
 Do not assume that `updateTopic -c DefaultCluster` creates a topic on every master Broker.
@@ -249,14 +262,15 @@ run in parallel. Each unit-test job restores, builds and tests its `net10.0` pro
 report. Two additional non-coverage jobs install the .NET 8 runtime and run the protocol unit suites with
 `-p:TargetFramework=net8.0`; the solution build and release pack verify both target frameworks of each publishable
 library.
-After both stages complete, Docker-backed gRPC and Remoting integration tests run in four parallel `ubuntu-latest`
-matrix jobs: one single-Broker and one multi-Broker job for each protocol. A class-level `Topology=MultiBroker` trait
-selects the multi-Broker tests; the single-Broker jobs run the complementary set. Each job restores
+After both stages complete, Docker-backed gRPC and Remoting integration tests run in five parallel `ubuntu-latest`
+matrix jobs: cluster-mode single-Broker, local-mode Proxy, and multi-Broker/multi-Proxy jobs for gRPC, plus single-Broker
+and multi-Broker jobs for Remoting. Class-level `Topology=LocalProxy` and `Topology=MultiBroker` traits select the two
+specialized gRPC topologies; the ordinary single-Broker job excludes both. Each job restores
 and builds only its protocol-specific integration-test dependency graph, has its own timeout budget,
 and reuses the repository's NuGet package cache. Within a single-Broker job, isolated test classes
 run concurrently up to the runner limit; the legacy Remoting suite remains serial by design.
 Testcontainers still starts isolated Broker, NameServer, and Proxy fixtures for every job; the multi-Broker Remoting
-fixture includes two independent NameServers. All four
+fixture includes two independent NameServers. All five
 jobs collect Cobertura reports and upload them to Codecov with distinct upload names under the shared
 `integration-tests` flag. Codecov combines those reports with the `unit-tests` reports; the repository
 configuration continues to exclude `samples` from coverage.

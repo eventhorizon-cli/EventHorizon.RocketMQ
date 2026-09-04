@@ -16,5 +16,16 @@
 using EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 using Xunit;
 
-// The registry defers the single-Broker topology so specialized-topology-only filtered runs do not start it.
-[assembly: AssemblyFixture(typeof(RocketMQSingleBrokerContainerFixtureRegistry))]
+namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
+
+/// <summary>
+/// Defines the test collection that owns the Broker-integrated local-mode Proxy topology.
+/// </summary>
+[CollectionDefinition(Name)]
+public sealed class RocketMQLocalProxyCollection : ICollectionFixture<RocketMQLocalProxyContainerFixture>
+{
+    /// <summary>
+    /// Gets the xUnit collection name for local-mode Proxy integration tests.
+    /// </summary>
+    public const string Name = "RocketMQ gRPC local-mode Proxy integration";
+}

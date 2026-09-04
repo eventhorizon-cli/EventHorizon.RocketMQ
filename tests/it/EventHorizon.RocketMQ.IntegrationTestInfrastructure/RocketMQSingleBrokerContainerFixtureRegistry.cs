@@ -22,8 +22,8 @@ namespace EventHorizon.RocketMQ.IntegrationTestInfrastructure;
 /// </summary>
 /// <remarks>
 /// Registering this holder instead of the container fixture keeps xUnit assembly initialization inexpensive and avoids
-/// starting the baseline topology for a multi-Broker-only filtered run. Multi-Broker collection fixtures do not need
-/// this indirection because xUnit already creates them only when their collection runs.
+/// starting the baseline topology for a specialized-topology-only filtered run. Specialized collection fixtures do
+/// not need this indirection because xUnit already creates them only when their collection runs.
 /// </remarks>
 public sealed class RocketMQSingleBrokerContainerFixtureRegistry : IAsyncLifetime
 {

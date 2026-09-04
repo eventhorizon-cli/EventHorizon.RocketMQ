@@ -182,13 +182,19 @@ jobs:
       matrix:
         include:
           - protocol: gRPC
-            topology: single-Broker
+            topology: cluster-mode-single-Broker
             test_project: tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
-            test_filter: Topology!=MultiBroker
+            test_filter: Topology!=MultiBroker&Topology!=LocalProxy
             coverage_directory: grpc-single-broker-integration
             coverage_name: dotnet-grpc-single-broker-integration-tests
           - protocol: gRPC
-            topology: multi-Broker
+            topology: local-mode-Proxy
+            test_project: tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
+            test_filter: Topology=LocalProxy
+            coverage_directory: grpc-local-proxy-integration
+            coverage_name: dotnet-grpc-local-proxy-integration-tests
+          - protocol: gRPC
+            topology: multi-Broker-multi-Proxy
             test_project: tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests/EventHorizon.RocketMQ.Grpc.IntegrationTests.csproj
             test_filter: Topology=MultiBroker
             coverage_directory: grpc-multi-broker-integration

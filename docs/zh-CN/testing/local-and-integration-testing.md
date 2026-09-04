@@ -23,7 +23,7 @@ gRPC 的行为同时受 Proxy、Broker feature 与 protobuf API 影响。任一�
 | [`tests/ut/EventHorizon.RocketMQ.Grpc.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Grpc.Tests) | 单元测试 | gRPC route、receipt、consumer 调度、DI 和错误处理。 |
 | [`tests/ut/EventHorizon.RocketMQ.Remoting.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Remoting.Tests) | 单元测试 | frame、连接、路由、经典 Consumer/Producer 和 Admin 行为。 |
 | [`tests/ut/EventHorizon.RocketMQ.Compatibility.Tests`](../../../tests/ut/EventHorizon.RocketMQ.Compatibility.Tests) | 兼容性测试 | 同时引用两个协议 Project，验证两套公开 API、命名空间隔离与双 Package 共存。 |
-| [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | Proxy gRPC 的发送、消费、事务、Lite、死信和三 Broker route 写入路径。 |
+| [`tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Grpc.IntegrationTests) | Docker 集成测试 | 覆盖 local 与 cluster mode Proxy gRPC 的发送、消费、事务、Lite、死信、多 Proxy 故障切换和三 Broker 路由写入。 |
 | [`tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests`](../../../tests/it/EventHorizon.RocketMQ.Remoting.IntegrationTests) | Docker 集成测试 | NameServer/Broker 的 Admin、LitePull、Push PULL/POP、发送、请求-响应、事务、撤回和三 Broker route 路径。 |
 | [`tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost`](../../../tests/it/EventHorizon.RocketMQ.Remoting.CrossProcessTestHost) | 跨进程 IT 宿主 | 仅供 Remoting IT 启动独立 Push Consumer 进程，不包含测试断言且不打包。 |
 | [`tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure) | 测试基础设施库 | Testcontainers fixture 与可复用环境，不引用任一生产协议项目。 |
@@ -130,7 +130,15 @@ test 项目，而不是在 unit test 中偷偷连接本地 `localhost`。
 基础 fixture 创建隔离 Docker network，等待 NameServer 与 Broker 就绪，确认 Broker 已注册。每个 integration-test
 assembly 通过惰性的 xUnit v3 assembly-fixture registry 共享一套基础容器，因此独立测试类可以复用 Docker stack，
 而不必让整个项目串行。runner 最多并行四个 test collection；被筛选出的 multi-Broker job 不会初始化这套基础
-fixture。
+fixture；只运行 local-Proxy job 时同样不会初始化。
+
+[`RocketMQLocalProxyContainerFixture`](../../../tests/it/EventHorizon.RocketMQ.IntegrationTestInfrastructure/RocketMQLocalProxyContainerFixture.cs)
+以官方正式版本标签 `rocketmq-all-5.5.0` 为行为基线。其 `mqbroker --enable-proxy` 命令会把启动委托给带
+`-pm local` 的 `ProxyStartup`，将 Broker 嵌入 Proxy 进程。该版本在 local mode 下会直接把配置中的
+`grpcServerPort` 写入返回路由，因此 fixture 在容器内和宿主机上使用同一个动态预留端口。local mode 还会在
+telemetry 阶段校验 consumer group，测试会在此之前显式创建唯一 group。这条 gRPC 往返流程完整验证路由查询、
+settings telemetry、消息发送、队列分配、接收与 ACK。测试只使用普通 Topic：该版本的 local mode 没有实现
+`SyncLiteSubscription`，LitePush 因此仍由 cluster-mode fixture 覆盖。
 
 普通测试 scope 会生成唯一的 normal topic 和 consumer group。fixture 会在使用前显式创建 topic，因为 gRPC 的
 route lookup 需要已有 route；普通 subscription group 则由 Broker 自动创建。事务、FIFO、延迟和 Lite topic 因为
@@ -198,8 +206,10 @@ Broker 与 cluster-mode Proxy 在同一容器中按顺序启动：Broker 先注�
   一次 route，再停止 A，等待 10 毫秒的 route cache 过期，确认客户端对 A 的尝试失败并切换到 B，随后仍能刷新完整 route 并成功
   发送消息。最后重启 A，等待 A 再次报告三台 Broker 和完整的九个队列 topic route，再完成清理，避免污染共享 collection。
   Consumer 多于九个队列时，多出的实例保持未分配，且不会产生重复投递。
-- gRPC fixture 在隔离 Docker network 中启动 NameServer、三个 master Broker 和 cluster-mode Proxy。测试通过 Proxy
-  发送消息，再查询每台 Broker 的 topic 状态，确认三台 Broker 都有实际写入。
+- gRPC fixture 在隔离 Docker network 中启动 NameServer、三个 master Broker 和两个 cluster-mode Proxy。常规测试使用
+  由分号连接的两个 Proxy endpoint 发送消息，再查询每台 Broker 的 topic 状态，确认三台 Broker 都有实际写入。专门的
+  故障切换测试会在发送前停止 Proxy A，验证路由查询与发送能够通过 Proxy B 完成，并在清理前重启 Proxy A，避免让
+  共享 collection 保持降级状态。
 
 创建多 Broker topic 时，fixture 会逐台 Broker 执行 `mqadmin updateTopic -b` 并等待完整 route。不能假定
 `updateTopic -c DefaultCluster` 会自动把 topic 创建到每台 master Broker。
@@ -247,14 +257,15 @@ Docker 不可用时，应报告没有运行哪一个 integration test 以及原�
 GitHub Actions 会在一个 job 中完成格式化和 solution 全量构建，同时并行运行三个按协议/兼容性拆分的单元测试
 job。每个单元测试 job 都会 restore、build、运行对应的 `net10.0` 测试项目并单独上传覆盖率报告；solution build
 另有两个不上传覆盖率的 job 会安装 .NET 8 runtime，并用 `-p:TargetFramework=net8.0` 运行两个协议的单元测试；
-solution build 和发版 pack 负责验证两个可发布库的全部目标框架。两层验证均通过后，再于四个
-并行的 `ubuntu-latest` matrix job 运行 Docker 驱动的 gRPC 与 Remoting integration test：每个协议各有一个
-single-Broker 与一个 multi-Broker job。类级别的 `Topology=MultiBroker` trait 选择 multi-Broker 测试；
-single-Broker job 运行其余测试。每个 job 只 restore
+solution build 和发版 pack 负责验证两个可发布库的全部目标框架。两层验证均通过后，再由五个并行的
+`ubuntu-latest` matrix job 运行 Docker 驱动的 gRPC 与 Remoting integration test：gRPC 拆成 cluster-mode 单
+Broker、local-mode Proxy 和多 Broker/多 Proxy 三个 job，Remoting 则保留单 Broker 与多 Broker 两个 job。类级别的
+`Topology=LocalProxy` 与 `Topology=MultiBroker` trait 分别选择两套专用 gRPC 拓扑，普通单 Broker job 排除二者。
+每个 job 只 restore
 和 build 对应协议的 integration-test 依赖图，使用独立超时预算，并复用仓库的 NuGet 包缓存。Testcontainers
 仍会在每个 job 内独立启动隔离的 Broker、NameServer 与 Proxy fixture；多 Broker Remoting fixture 包含两个相互独立的
 NameServer。single-Broker job 内，已经隔离的测试类
-会在 runner 上限内并发执行；legacy Remoting suite 则按设计保持串行。四个 job 都会生成 Cobertura 报告，以不同
+会在 runner 上限内并发执行；legacy Remoting suite 则按设计保持串行。五个 job 都会生成 Cobertura 报告，以不同
 的上传名称归入共享的 `integration-tests` flag；Codecov 会将其与 `unit-tests` 报告合并。仓库配置仍会排除
 `samples`，不会将 sample 计入覆盖率。
 

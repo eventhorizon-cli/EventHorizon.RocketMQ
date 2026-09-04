@@ -25,9 +25,9 @@ namespace EventHorizon.RocketMQ.Grpc.IntegrationTests;
 [Trait("Topology", "MultiBroker")]
 public sealed class RocketMQMultiBrokerIntegrationTests
 {
-    private readonly RocketMQMultiBrokerGrpcContainerFixture _fixture;
+    private readonly RocketMQMultiBrokerClusterProxyContainerFixture _fixture;
 
-    public RocketMQMultiBrokerIntegrationTests(RocketMQMultiBrokerGrpcContainerFixture fixture)
+    public RocketMQMultiBrokerIntegrationTests(RocketMQMultiBrokerClusterProxyContainerFixture fixture)
     {
         _fixture = fixture;
     }
@@ -40,7 +40,7 @@ public sealed class RocketMQMultiBrokerIntegrationTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var services = new ServiceCollection();
         services
-            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoint)
+            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoints)
             .AddGrpcProducer();
 
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -52,32 +52,98 @@ public sealed class RocketMQMultiBrokerIntegrationTests
             {
                 var receipt = await producer.SendAsync(
                     new Message(
-                        RocketMQMultiBrokerGrpcContainerFixture.TestTopic,
+                        RocketMQMultiBrokerClusterProxyContainerFixture.TestTopic,
                         Encoding.UTF8.GetBytes($"grpc-multi-broker-{index}-{Guid.NewGuid():N}")),
                     cancellationToken);
                 Assert.NotEmpty(receipt.MessageId);
             }
 
             var offsets = await _fixture.WaitForMessagesOnAllBrokersAsync(
-                RocketMQMultiBrokerGrpcContainerFixture.TestTopic,
+                RocketMQMultiBrokerClusterProxyContainerFixture.TestTopic,
                 TimeSpan.FromSeconds(15),
                 cancellationToken);
             Assert.True(
-                offsets.TryGetValue(RocketMQMultiBrokerGrpcContainerFixture.BrokerAName, out var brokerAOffset) &&
+                offsets.TryGetValue(RocketMQMultiBrokerClusterProxyContainerFixture.BrokerAName, out var brokerAOffset) &&
                 brokerAOffset > 0,
-                $"No gRPC message reached {RocketMQMultiBrokerGrpcContainerFixture.BrokerAName}. Offsets: {FormatOffsets(offsets)}");
+                $"No gRPC message reached {RocketMQMultiBrokerClusterProxyContainerFixture.BrokerAName}. Offsets: {FormatOffsets(offsets)}");
             Assert.True(
-                offsets.TryGetValue(RocketMQMultiBrokerGrpcContainerFixture.BrokerBName, out var brokerBOffset) &&
+                offsets.TryGetValue(RocketMQMultiBrokerClusterProxyContainerFixture.BrokerBName, out var brokerBOffset) &&
                 brokerBOffset > 0,
-                $"No gRPC message reached {RocketMQMultiBrokerGrpcContainerFixture.BrokerBName}. Offsets: {FormatOffsets(offsets)}");
+                $"No gRPC message reached {RocketMQMultiBrokerClusterProxyContainerFixture.BrokerBName}. Offsets: {FormatOffsets(offsets)}");
             Assert.True(
-                offsets.TryGetValue(RocketMQMultiBrokerGrpcContainerFixture.BrokerCName, out var brokerCOffset) &&
+                offsets.TryGetValue(RocketMQMultiBrokerClusterProxyContainerFixture.BrokerCName, out var brokerCOffset) &&
                 brokerCOffset > 0,
-                $"No gRPC message reached {RocketMQMultiBrokerGrpcContainerFixture.BrokerCName}. Offsets: {FormatOffsets(offsets)}");
+                $"No gRPC message reached {RocketMQMultiBrokerClusterProxyContainerFixture.BrokerCName}. Offsets: {FormatOffsets(offsets)}");
         }
         finally
         {
             await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Producer_ProxyAUnavailable_FallsBackToProxyB()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQGrpc(options => options.Endpoint = _fixture.GrpcEndpoints)
+            .AddGrpcProducer();
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IGrpcProducer>();
+        var proxyAStopped = false;
+        try
+        {
+            var beforeOffsets = await _fixture.GetBrokerMessageOffsetsAsync(
+                RocketMQMultiBrokerClusterProxyContainerFixture.TestTopic,
+                cancellationToken);
+            var beforeTotalOffset = beforeOffsets.Values.Sum();
+
+            proxyAStopped = true;
+            await _fixture.StopProxyAAsync(CancellationToken.None);
+            await producer.StartAsync(cancellationToken);
+            var receipt = await producer.SendAsync(
+                new Message(
+                    RocketMQMultiBrokerClusterProxyContainerFixture.TestTopic,
+                    Encoding.UTF8.GetBytes($"grpc-proxy-failover-{Guid.NewGuid():N}")),
+                cancellationToken);
+
+            Assert.NotEmpty(receipt.MessageId);
+            var offsets = beforeOffsets;
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
+            do
+            {
+                offsets = await _fixture.GetBrokerMessageOffsetsAsync(
+                    RocketMQMultiBrokerClusterProxyContainerFixture.TestTopic,
+                    cancellationToken);
+                if (offsets.Values.Sum() > beforeTotalOffset)
+                {
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+            }
+            while (DateTimeOffset.UtcNow < deadline);
+
+            Assert.True(
+                offsets.Values.Sum() > beforeTotalOffset,
+                $"The failover message was not stored by any Broker. Offsets: {FormatOffsets(offsets)}");
+        }
+        finally
+        {
+            try
+            {
+                await producer.StopAsync(CancellationToken.None);
+            }
+            finally
+            {
+                if (proxyAStopped)
+                {
+                    await _fixture.RestoreProxyAAsync(CancellationToken.None);
+                }
+            }
         }
     }
 

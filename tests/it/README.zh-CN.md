@@ -9,7 +9,7 @@
 
 | 项目 | 职责 |
 | --- | --- |
-| `EventHorizon.RocketMQ.Grpc.IntegrationTests` | 通过真实的 cluster-mode Proxy 验证 gRPC 客户端。 |
+| `EventHorizon.RocketMQ.Grpc.IntegrationTests` | 通过真实的 local-mode 与 cluster-mode Proxy 验证 gRPC 客户端。 |
 | `EventHorizon.RocketMQ.Remoting.IntegrationTests` | 验证经典 NameServer 和 Broker Remoting 行为。 |
 | `EventHorizon.RocketMQ.IntegrationTestInfrastructure` | 管理可复用的 Testcontainers 拓扑、主机端口分配和测试资源名称。 |
 | `EventHorizon.RocketMQ.Remoting.CrossProcessTestHost` | 在独立操作系统进程中运行测试专用 Remoting consumer，用于跨进程 Rebalance 覆盖。 |
@@ -34,7 +34,7 @@ IntegrationTestInfrastructure --> Testcontainers
 
 ## 基础设施结构
 
-`EventHorizon.RocketMQ.IntegrationTestInfrastructure` 包含六个 public 顶层类型和一个 internal 辅助类型。
+`EventHorizon.RocketMQ.IntegrationTestInfrastructure` 包含七个 public 顶层类型和一个 internal 辅助类型。
 
 | 类型 | 职责 |
 | --- | --- |
@@ -43,7 +43,8 @@ IntegrationTestInfrastructure --> Testcontainers
 | `RocketMQTestScope` | 生成测试专用 topic 以及 producer 或 consumer group 名称。 |
 | `RocketMQTestTopicType` | 选择普通、事务、FIFO、延时或 Lite topic 的预配方式。 |
 | `RocketMQHostPortReservation` | 在当前测试进程内协调动态主机端口选择。 |
-| `RocketMQMultiBrokerGrpcContainerFixture` | 运行位于 cluster-mode Proxy 后面的三个 Docker 网络 Broker。 |
+| `RocketMQLocalProxyContainerFixture` | 运行 Broker 内嵌的 local-mode Proxy，提供专门的 gRPC 兼容性覆盖。 |
+| `RocketMQMultiBrokerClusterProxyContainerFixture` | 运行位于两个 cluster-mode Proxy 后面的三个 Docker 网络 Broker。 |
 | `RocketMQMultiBrokerRemotingContainerFixture` | 运行两个相互独立的 NameServer 和三个可从主机访问的经典 Remoting Broker；每台 Broker 都向两个 NameServer 注册。 |
 
 内部类型依赖如下：
@@ -56,7 +57,10 @@ RocketMQSingleBrokerContainerFixtureRegistry
                          `-- 创建 --> RocketMQTestScope
                                           `-- 回调 --> RocketMQSingleBrokerContainerFixture
 
-RocketMQMultiBrokerGrpcContainerFixture
+RocketMQLocalProxyContainerFixture
+    `-- 使用 --> RocketMQHostPortReservation
+
+RocketMQMultiBrokerClusterProxyContainerFixture
     `-- 使用 --> RocketMQHostPortReservation
 
 RocketMQMultiBrokerRemotingContainerFixture
@@ -93,12 +97,21 @@ Registry 刻意设计为惰性持有者，而不是通用的 Fixture 目录：
 ```
 
 `GetFixtureAsync` 使用 semaphore 和双重检查，确保并行测试类只初始化一套 Fixture。初始化失败时，Registry
-会先释放部分初始化的 Fixture，再向上传递异常。只筛选 multi-Broker 测试时，xUnit 仍会创建开销很小的
-assembly Registry，但由于没有调用 `GetFixtureAsync`，单 Broker 拓扑不会启动。
+会先释放部分初始化的 Fixture，再向上传递异常。只筛选 local-Proxy 或 multi-Broker 测试时，xUnit 仍会创建开销
+很小的 assembly Registry，但由于没有调用 `GetFixtureAsync`，单 Broker 拓扑不会启动。
 
 `RocketMQSingleBrokerContainerFixture` 会为每个 scope 预配唯一的普通 topic。事务、FIFO、延时和 Lite topic 因 Broker
 语义需要配置而预先创建，但每个 scope 仍通过唯一 suffix 隔离 group 和消息标识。Broker 管理操作的并发数
 限制为四，与集成测试的并行负载一致，同时避免串行化整个测试程序集。
+
+### Local Proxy collection
+
+`RocketMQLocalProxyContainerFixture` 是 gRPC 专用的 collection fixture。它启动一个 NameServer，并在第二个容器中执行
+`mqbroker --enable-proxy`。在官方正式版本标签 `rocketmq-all-5.5.0` 中，该命令会以 `-pm local` 启动
+`ProxyStartup`，将 Broker 嵌入 Proxy 进程。local mode 返回的路由会直接使用配置中的 gRPC 端口，因此 fixture 在
+容器内和宿主机上使用同一个动态预留端口。Broker 注册后，fixture 创建一个普通 Topic；telemetry 启动前，测试会
+显式创建唯一 consumer group，然后由 Producer 和 SimpleConsumer 完成发送、接收与 ACK。该版本的 local mode 没有
+实现 `SyncLiteSubscription`，因此这里不运行 LitePush。
 
 ### 多 Broker collection
 
@@ -106,7 +119,7 @@ assembly Registry，但由于没有调用 `GetFixtureAsync`，单 Broker 拓扑�
 
 ```text
 gRPC multi-Broker collection
-    `-- RocketMQMultiBrokerGrpcContainerFixture
+    `-- RocketMQMultiBrokerClusterProxyContainerFixture
 
 Remoting multi-Broker collection
     `-- RocketMQMultiBrokerRemotingContainerFixture
@@ -119,14 +132,15 @@ Remoting multi-Broker collection
 gRPC 多 Broker 初始化顺序为：
 
 ```text
-预留一个 Proxy 主机端口
+预留两个 Proxy 主机端口
     -> network -> NameServer -> 并行启动 Broker A/B/C
     -> 等待全部 Broker 注册
     -> 在每个 Broker 上创建 topic 并等待完整路由
-    -> 启动 Proxy
+    -> 并行启动 Proxy A/B
 ```
 
-释放按所有权的反方向执行：Proxy、各 Broker、NameServer、network，最后释放端口记录。
+客户端把两个 Proxy 地址作为一个分号分隔的 endpoint 配置。聚焦的故障切换测试会停止 Proxy A、通过 Proxy B 发送，
+并在清理前恢复 Proxy A。释放按所有权的反方向执行：Proxy B/A、各 Broker、NameServer、network，最后释放端口记录。
 
 Remoting 多 Broker 初始化顺序为：
 
@@ -171,8 +185,8 @@ Fixture 暴露的所有 endpoint 在整个生命周期内都有效。两个协�
 | 客户端入口 | Proxy | NameServer 和 Broker |
 | Broker 通告主机 | `broker-a` 等 Docker alias | `127.0.0.1` |
 | Broker 端口 | 各容器固定使用 `10911` | 各自使用动态分配的主机端口 |
-| 主机端口映射 | 只映射 Proxy | 映射 NameServer A/B 和每个 Broker |
-| 附加行为 | 启动 Proxy 并检查各 Broker offset | 显式队列数、独立 NameServer route 和主机可达地址 |
+| 主机端口映射 | 只映射 Proxy A/B | 映射 NameServer A/B 和每个 Broker |
+| 附加行为 | Proxy 故障切换并检查各 Broker offset | 显式队列数、独立 NameServer route 和主机可达地址 |
 
 独立 Proxy 容器可以解析 `broker-a`、`broker-b` 和 `broker-c`，但主机上的 Remoting client 无法解析这些
 地址。如果 Broker 通告 `127.0.0.1`，主机可以通过不同的映射端口访问它们，但 Proxy 容器中的

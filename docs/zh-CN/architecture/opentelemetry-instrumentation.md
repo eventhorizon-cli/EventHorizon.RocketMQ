@@ -133,6 +133,8 @@ metrics。
 - gRPC 和 Remoting 的 source 与 meter 名称不同，因为这两个协议 Package 本身就是独立的客户端边界。
 - 原有的 RocketMQ protocol telemetry session 仍属于各协议 `Protocol` 目录中的控制面行为，不是 OpenTelemetry
   instrumentation。
+- 经典 Remoting Producer 的心跳和注销用于维护控制面成员记录，不创建消息发送 Activity，也不增加发送消息数
+  指标。心跳失败不应改变独立消息发送的成功、取消或失败记录。
 
 ## 延伸阅读
 

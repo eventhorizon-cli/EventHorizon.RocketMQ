@@ -151,6 +151,9 @@ carry an error type. Metrics can be collected even when tracing is not enabled.
   boundaries.
 - Existing RocketMQ protocol telemetry sessions remain control-plane behavior under each protocol's `Protocol`
   directory. They are not OpenTelemetry instrumentation.
+- Classic Remoting Producer heartbeats and unregister requests are control-plane membership operations. They do not
+  create messaging send Activities or increment sent-message metrics; heartbeat failures must not change the
+  success, cancellation, or failure result recorded for an independent message send.
 
 ## Related Reading
 

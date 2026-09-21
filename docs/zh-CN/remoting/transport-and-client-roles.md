@@ -197,6 +197,25 @@ handler 的批次不会继续占用该容量。
 `SendAsync` 的 `RemotingSendResult.Status` 必须由调用方检查：Broker 可能返回磁盘或 slave 相关状态而不抛出
 异常。`SendOnewayAsync` 返回只表示请求已写入连接，并不表示 Broker 已持久化消息。
 
+每次启动 Producer 都会创建独立的心跳会话。队列发现、普通发送、指定队列发送、批量发送、单向发送、事务发送、
+回复发送和消息撤回在成功取得路由后，都会将其中的 Master Broker 登记为心跳目标。后续路由中的 Master 地址
+会替换同名 Broker 的旧地址。会话按 `HeartbeatBrokerInterval` 定期发送标准 `HEART_BEAT` 命令，默认间隔为
+30 秒；即使没有新消息，也会继续发送。报文包含逻辑客户端 ID、带命名空间的 Producer Group 和空的 Consumer
+集合。刚启动且尚未发现路由时，Producer 还不会在 Broker 上建立成员记录。
+
+这一行为以正式发布的 Java 客户端 `rocketmq-all-5.5.1` 为主参考，并与
+`apache/rocketmq-client-go` 的 `v2.1.2` 对照：仅有 Producer 的客户端也会向已知 Master 发送心跳，无须配置
+Consumer 或调用 request/reply。Broker 通过这些记录执行事务回查、投递回复和查询在线 Producer。本客户端
+从 Producer 操作取得的路由中维护心跳目标，心跳循环本身不会额外查询 NameServer。
+
+普通发送不等待心跳响应。某个 Broker 的周期心跳失败时，会话记录日志并在下一周期重试，同时继续向其他已知
+Broker 发送心跳。request/reply 仍在发送消息前立即发送心跳，确保 Broker 已建立客户端 ID 到连接的映射。
+同一会话内的心跳请求串行执行；停止时先取消并等待这些请求结束，再向已知端点注销。再次启动会创建新会话，
+旧操作不会把心跳目标登记到新一轮运行中。
+
+心跳和注销属于控制面操作，不创建消息发送 span，也不增加发送消息数指标。现有 Producer 发送的成功、取消和
+失败 telemetry 仍只描述消息操作本身。
+
 `IRemotingAdmin` 保持只读边界：它以 `RemotingConsumerQueue` 返回可读队列，并让 min、max、timestamp 和
 消费组 offset 查询直接接收这些值；同时可以按 `OffsetMessageId` 查看物理消息。Producer 发布队列仍由
 Producer API 以 `RemotingMessageQueue` 表示。这是一项适合运维、诊断和审计工具的 API；它不是 topic、group

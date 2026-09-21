@@ -41,13 +41,11 @@ internal sealed class RemotingProducer : IRemotingProducer
     private readonly ILogger<RemotingProducer> _logger;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly ConcurrentDictionary<string, PendingReply> _pendingReplies = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, ProducerBrokerEndpoint> _requestReplyBrokers = new(StringComparer.Ordinal);
     private readonly string _clientId;
     private IDisposable? _replyMessageRegistration;
     private IDisposable? _transactionCheckRegistration;
     private TransactionCheckDispatcher? _transactionChecks;
-    private CancellationTokenSource? _producerHeartbeatCancellationTokenSource;
-    private Task? _producerHeartbeatTask;
+    private ProducerHeartbeatSession? _heartbeatSession;
     private int _started;
     private int _disposed;
     private int _queueIndex;
@@ -91,7 +89,7 @@ internal sealed class RemotingProducer : IRemotingProducer
             IDisposable? replyMessageRegistration = null;
             IDisposable? transactionCheckRegistration = null;
             TransactionCheckDispatcher? transactionChecks = null;
-            CancellationTokenSource? producerHeartbeatCancellationTokenSource = null;
+            ProducerHeartbeatSession? heartbeatSession = null;
             try
             {
                 replyMessageRegistration = _remotingClient.RegisterRequestHandler(
@@ -108,18 +106,20 @@ internal sealed class RemotingProducer : IRemotingProducer
                         HandleTransactionCheckAsync);
                 }
 
-                producerHeartbeatCancellationTokenSource = new CancellationTokenSource();
+                heartbeatSession = new ProducerHeartbeatSession(
+                    _remotingClient, _clientOptions, _timeProvider, _logger, _clientId, GetWireProducerGroup());
                 _replyMessageRegistration = replyMessageRegistration;
                 _transactionCheckRegistration = transactionCheckRegistration;
                 Volatile.Write(ref _transactionChecks, transactionChecks);
-                _producerHeartbeatCancellationTokenSource = producerHeartbeatCancellationTokenSource;
-                _producerHeartbeatTask = RunProducerHeartbeatLoopAsync(producerHeartbeatCancellationTokenSource.Token);
+                Volatile.Write(ref _heartbeatSession, heartbeatSession);
                 Volatile.Write(ref _started, 1);
             }
             catch
             {
-                producerHeartbeatCancellationTokenSource?.Cancel();
-                producerHeartbeatCancellationTokenSource?.Dispose();
+                if (heartbeatSession is not null)
+                {
+                    await heartbeatSession.StopAsync().ConfigureAwait(false);
+                }
                 transactionCheckRegistration?.Dispose();
                 if (transactionChecks is not null)
                 {
@@ -138,12 +138,6 @@ internal sealed class RemotingProducer : IRemotingProducer
 
     public async ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
-        IDisposable? replyMessageRegistration = null;
-        IDisposable? transactionCheckRegistration = null;
-        TransactionCheckDispatcher? transactionChecks = null;
-        CancellationTokenSource? producerHeartbeatCancellationTokenSource = null;
-        Task? producerHeartbeatTask = null;
-        ProducerBrokerEndpoint[] producerBrokers = [];
         await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -153,57 +147,36 @@ internal sealed class RemotingProducer : IRemotingProducer
             }
 
             Volatile.Write(ref _started, 0);
-            replyMessageRegistration = _replyMessageRegistration;
+            var replyMessageRegistration = _replyMessageRegistration;
             _replyMessageRegistration = null;
-            transactionCheckRegistration = _transactionCheckRegistration;
+            var transactionCheckRegistration = _transactionCheckRegistration;
             _transactionCheckRegistration = null;
-            transactionChecks = Interlocked.Exchange(ref _transactionChecks, null);
-            producerHeartbeatCancellationTokenSource = _producerHeartbeatCancellationTokenSource;
-            _producerHeartbeatCancellationTokenSource = null;
-            producerHeartbeatTask = _producerHeartbeatTask;
-            _producerHeartbeatTask = null;
-            producerBrokers = _requestReplyBrokers.Values.ToArray();
-            _requestReplyBrokers.Clear();
+            var transactionChecks = Interlocked.Exchange(ref _transactionChecks, null);
+            var heartbeatSession = Interlocked.Exchange(ref _heartbeatSession, null);
+
+            replyMessageRegistration?.Dispose();
+            transactionCheckRegistration?.Dispose();
+            if (transactionChecks is not null)
+            {
+                await transactionChecks.DisposeAsync().ConfigureAwait(false);
+            }
+
+            foreach (var pending in _pendingReplies)
+            {
+                if (_pendingReplies.TryRemove(pending.Key, out var reply))
+                {
+                    reply.Completion.TrySetException(new InvalidOperationException("The producer stopped before the reply arrived."));
+                }
+            }
+
+            if (heartbeatSession is not null)
+            {
+                await heartbeatSession.StopAsync().ConfigureAwait(false);
+            }
         }
         finally
         {
             _lifecycleGate.Release();
-        }
-
-        replyMessageRegistration?.Dispose();
-        transactionCheckRegistration?.Dispose();
-        if (transactionChecks is not null)
-        {
-            await transactionChecks.DisposeAsync().ConfigureAwait(false);
-        }
-
-        if (producerHeartbeatCancellationTokenSource is not null)
-        {
-            producerHeartbeatCancellationTokenSource.Cancel();
-            try
-            {
-                if (producerHeartbeatTask is not null)
-                {
-                    await producerHeartbeatTask.ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                producerHeartbeatCancellationTokenSource.Dispose();
-            }
-        }
-
-        foreach (var pending in _pendingReplies)
-        {
-            if (_pendingReplies.TryRemove(pending.Key, out var reply))
-            {
-                reply.Completion.TrySetException(new InvalidOperationException("The producer stopped before the reply arrived."));
-            }
-        }
-
-        foreach (var broker in producerBrokers)
-        {
-            await UnregisterProducerAsync(broker).ConfigureAwait(false);
         }
     }
 
@@ -214,8 +187,10 @@ internal sealed class RemotingProducer : IRemotingProducer
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         EnsureStarted();
+        var heartbeatSession = GetHeartbeatSession();
         var wireTopic = LegacyNamespace.Wrap(_clientOptions.Namespace, topic);
         var route = await _routeService.GetAsync(wireTopic, cancellationToken: cancellationToken).ConfigureAwait(false);
+        heartbeatSession.ObserveRoute(route);
         return GetPublishQueues(wireTopic, route)
             .Select(queue => new RemotingMessageQueue(topic, queue.MessageQueue.BrokerName, queue.MessageQueue.QueueId))
             .ToArray();
@@ -374,6 +349,7 @@ internal sealed class RemotingProducer : IRemotingProducer
         CancellationToken cancellationToken = default)
     {
         EnsureStarted();
+        var heartbeatSession = GetHeartbeatSession();
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentException.ThrowIfNullOrWhiteSpace(recallHandle);
         if (topic.StartsWith("%RETRY%", StringComparison.Ordinal) ||
@@ -390,6 +366,7 @@ internal sealed class RemotingProducer : IRemotingProducer
         }
 
         var route = await _routeService.GetAsync(wireTopic, cancellationToken: cancellationToken).ConfigureAwait(false);
+        heartbeatSession.ObserveRoute(route);
         var brokerAddress = GetRecallBrokerAddress(route, handle.BrokerName);
         var response = await _remotingClient.InvokeAsync(
             EndpointParser.Parse(brokerAddress),
@@ -525,7 +502,7 @@ internal sealed class RemotingProducer : IRemotingProducer
                 transactionPrepared: false,
                 cancellationToken: timeoutCancellationTokenSource.Token,
                 queueSelector: queueSelector,
-                beforeInvoke: EnsureProducerHeartbeatAsync).ConfigureAwait(false);
+                ensureHeartbeat: true).ConfigureAwait(false);
             return await pending.Completion.Task.WaitAsync(timeoutCancellationTokenSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
@@ -544,7 +521,7 @@ internal sealed class RemotingProducer : IRemotingProducer
         bool transactionPrepared,
         CancellationToken cancellationToken,
         PublishQueueSelector? queueSelector = null,
-        Func<EndPoint, string, CancellationToken, Task>? beforeInvoke = null)
+        bool ensureHeartbeat = false)
     {
         ThrowIfReplyMessage(message);
         ValidateMessage(message, transactionPrepared);
@@ -560,7 +537,7 @@ internal sealed class RemotingProducer : IRemotingProducer
                 (response, topic, brokerName) => CreateSendResult(message, topic, brokerName, response),
                 cancellationToken,
                 queueSelector,
-                beforeInvoke).ConfigureAwait(false);
+                ensureHeartbeat).ConfigureAwait(false);
             telemetry.Complete();
             return outcome;
         }
@@ -581,11 +558,12 @@ internal sealed class RemotingProducer : IRemotingProducer
         Func<RemotingCommand, string, string, RemotingSendResult> resultFactory,
         CancellationToken cancellationToken,
         PublishQueueSelector? queueSelector,
-        Func<EndPoint, string, CancellationToken, Task>? beforeInvoke = null)
+        bool ensureHeartbeat = false)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(requestFactory);
         ArgumentNullException.ThrowIfNull(resultFactory);
+        var heartbeatSession = GetHeartbeatSession();
 
         Exception? lastException = null;
         string? lastBroker = null;
@@ -600,14 +578,15 @@ internal sealed class RemotingProducer : IRemotingProducer
                     topic,
                     forceRefresh: attempt > 0,
                     cancellationToken).ConfigureAwait(false);
+                heartbeatSession.ObserveRoute(route);
                 var queue = queueSelector is null
                     ? SelectQueue(message, topic, route, lastBroker)
                     : queueSelector(topic, route, lastBroker);
                 lastBroker = queue.MessageQueue.BrokerName;
                 var brokerEndPoint = EndpointParser.Parse(queue.BrokerAddress);
-                if (beforeInvoke is not null)
+                if (ensureHeartbeat)
                 {
-                    await beforeInvoke(brokerEndPoint, queue.MessageQueue.BrokerName, cancellationToken)
+                    await heartbeatSession.EnsureRegisteredAsync(queue.BrokerAddress, queue.MessageQueue.BrokerName, cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -715,101 +694,6 @@ internal sealed class RemotingProducer : IRemotingProducer
                 Code = ResponseCodes.ResError,
                 Remark = "The reply callback could not be processed."
             }));
-        }
-    }
-
-    private async Task EnsureProducerHeartbeatAsync(
-        EndPoint endPoint,
-        string brokerName,
-        CancellationToken cancellationToken)
-    {
-        var broker = new ProducerBrokerEndpoint(brokerName, endPoint);
-        _requestReplyBrokers[broker.Key] = broker;
-        await SendProducerHeartbeatAsync(broker, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task RunProducerHeartbeatLoopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            while (true)
-            {
-                await Task.Delay(_clientOptions.HeartbeatBrokerInterval, _timeProvider, cancellationToken)
-                    .ConfigureAwait(false);
-                foreach (var broker in _requestReplyBrokers.Values)
-                {
-                    try
-                    {
-                        await SendProducerHeartbeatAsync(broker, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
-                    catch (Exception exception)
-                    {
-                        _logger.LogWarning(
-                            exception,
-                            "Unable to renew producer heartbeat with broker {BrokerName} at {EndPoint}",
-                            broker.BrokerName,
-                            broker.EndPoint);
-                    }
-                }
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-    }
-
-    private async Task SendProducerHeartbeatAsync(
-        ProducerBrokerEndpoint broker,
-        CancellationToken cancellationToken)
-    {
-        var response = await _remotingClient.InvokeAsync(
-            broker.EndPoint,
-            new RemotingCommand(RequestCode.HeartBeat)
-            {
-                Body = ProducerHeartbeatCodec.Encode(_clientId, GetWireProducerGroup())
-            },
-            _clientOptions.RequestTimeout,
-            cancellationToken).ConfigureAwait(false);
-        if (response.Code != ResponseCodes.ResSuccess)
-        {
-            throw new RemotingCommandException(response.Code, response.Remark ?? "Broker rejected the producer heartbeat.");
-        }
-    }
-
-    private async Task UnregisterProducerAsync(ProducerBrokerEndpoint broker)
-    {
-        try
-        {
-            var response = await _remotingClient.InvokeAsync(
-                broker.EndPoint,
-                new RemotingCommand(RequestCode.UnregisterClient, new UnregisterClientRequestHeader
-                {
-                    ClientID = _clientId,
-                    ProducerGroup = GetWireProducerGroup(),
-                    Bname = broker.BrokerName
-                }),
-                _clientOptions.RequestTimeout,
-                CancellationToken.None).ConfigureAwait(false);
-            if (response.Code != ResponseCodes.ResSuccess)
-            {
-                _logger.LogDebug(
-                    "Broker {BrokerName} rejected producer unregister with code {ResponseCode}: {Remark}",
-                    broker.BrokerName,
-                    response.Code,
-                    response.Remark);
-            }
-        }
-        catch (Exception exception)
-        {
-            _logger.LogDebug(
-                exception,
-                "Unable to unregister producer from broker {BrokerName} at {EndPoint}",
-                broker.BrokerName,
-                broker.EndPoint);
         }
     }
 
@@ -947,6 +831,7 @@ internal sealed class RemotingProducer : IRemotingProducer
         ThrowIfReplyMessage(message);
         ValidateMessage(message);
         EnsureStarted();
+        var heartbeatSession = GetHeartbeatSession();
         EnsureUniqueMessageId(message);
         var telemetry = _telemetry.StartSend(message.Topic, 1, message.Body.LongLength);
         try
@@ -965,6 +850,7 @@ internal sealed class RemotingProducer : IRemotingProducer
                         topic,
                         forceRefresh: attempt > 0,
                         cancellationToken).ConfigureAwait(false);
+                    heartbeatSession.ObserveRoute(route);
                     var queue = queueSelector is null
                         ? SelectQueue(message, topic, route, lastBroker)
                         : queueSelector(topic, route, lastBroker);
@@ -1716,6 +1602,17 @@ internal sealed class RemotingProducer : IRemotingProducer
         }
     }
 
+    private ProducerHeartbeatSession GetHeartbeatSession()
+    {
+        var session = Volatile.Read(ref _heartbeatSession);
+        if (session is null)
+        {
+            throw new InvalidOperationException("The producer is not started.");
+        }
+
+        return session;
+    }
+
     private void EnsureStarted()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -1747,11 +1644,6 @@ internal sealed class RemotingProducer : IRemotingProducer
     private sealed record RecallHandle(string Topic, string BrokerName);
 
     private sealed record PendingReply(TaskCompletionSource<RemotingReplyMessage> Completion);
-
-    private sealed record ProducerBrokerEndpoint(string BrokerName, EndPoint EndPoint)
-    {
-        public string Key => $"{BrokerName}|{EndPoint}";
-    }
 
     private sealed record LocalTransactionOutcome(RemotingTransactionResolution Resolution, string? Remark);
 

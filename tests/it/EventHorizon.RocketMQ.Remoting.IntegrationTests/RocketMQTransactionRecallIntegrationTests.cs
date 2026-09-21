@@ -26,6 +26,10 @@ namespace EventHorizon.RocketMQ.Remoting.IntegrationTests;
 
 public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrokerContainerFixtureRegistry registry)
 {
+    // Apache RocketMQ rocketmq-all-5.5.0 BrokerConfig defaults are transactionTimeOut=6s and
+    // transactionCheckInterval=30s. Keep one bounded deadline for the real Broker check and delivery.
+    private static readonly TimeSpan UnknownTransactionTimeout = TimeSpan.FromSeconds(120);
+
     [Fact]
     [Trait("Category", "Integration")]
     public async Task CommittedTransaction_PushConsumer_BecomesVisible()
@@ -151,6 +155,97 @@ public sealed class RocketMQTransactionRecallIntegrationTests(RocketMQSingleBrok
 
             await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
             Assert.False(delivered.Task.IsCompleted, "A rolled-back transaction message was delivered to the consumer.");
+        }
+        finally
+        {
+            await consumer.StopAsync(CancellationToken.None);
+            await producer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task UnknownTransaction_BrokerCheck_CommitsAndBecomesVisible()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var fixture = await registry.GetFixtureAsync(cancellationToken);
+        var scope = await fixture.CreateTestScopeAsync(RocketMQTestTopicType.Transaction, cancellationToken);
+        var consumerGroup = scope.CreateConsumerGroupName("remoting-transaction-unknown-consumer");
+        var suffix = Guid.NewGuid().ToString("N");
+        var producerGroup = scope.CreateProducerGroupName($"remoting-transaction-unknown-producer-{suffix}");
+        var tag = $"remoting-transaction-unknown-{suffix}";
+        var body = $"transaction-unknown-{suffix}";
+        var checkedMessage = new TaskCompletionSource<RemotingTransactionMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services
+            .AddRocketMQRemoting(options =>
+            {
+                options.NamesrvAddr = fixture.NameServerAddress;
+                options.InstanceName = $"remoting-transaction-unknown-{suffix}";
+                options.HeartbeatBrokerInterval = TimeSpan.FromMilliseconds(250);
+            })
+            .AddRemotingProducer(options =>
+            {
+                options.GroupName = producerGroup;
+                options.LocalTransactionExecutor = static (_, _, _) =>
+                    ValueTask.FromResult(RemotingTransactionResolution.Unknown);
+                options.TransactionChecker = (message, _) =>
+                {
+                    if (string.Equals(message.Topic, scope.Topic, StringComparison.Ordinal) &&
+                        string.Equals(message.Tag, tag, StringComparison.Ordinal) &&
+                        string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
+                    {
+                        checkedMessage.TrySetResult(message);
+                        return ValueTask.FromResult(RemotingTransactionResolution.Commit);
+                    }
+
+                    return ValueTask.FromResult(RemotingTransactionResolution.Unknown);
+                };
+            })
+            .AddRemotingPushConsumerWithTestHandler<RocketMQTransactionRecallIntegrationTests>(options =>
+            {
+                options.GroupName = consumerGroup;
+                options.InitialPosition = ConsumeFromPosition.Beginning;
+                options.LongPollingTimeout = TimeSpan.FromSeconds(1);
+                options.Subscribe(scope.Topic, new FilterExpression(tag));
+            }, (messages, _, _) =>
+            {
+                var message = Assert.Single(messages);
+                if (string.Equals(Encoding.UTF8.GetString(message.Body), body, StringComparison.Ordinal))
+                {
+                    delivered.TrySetResult(message.MessageId);
+                }
+
+                return ValueTask.FromResult(ConsumeResult.Success);
+            });
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        var producer = provider.GetRequiredService<IRemotingProducer>();
+        var consumer = provider.GetRequiredService<IRemotingPushConsumer>();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(UnknownTransactionTimeout);
+        await producer.StartAsync(cancellationToken);
+        await consumer.StartAsync(cancellationToken);
+        try
+        {
+            var transaction = await producer.SendTransactionAsync(
+                new Message(scope.Topic, Encoding.UTF8.GetBytes(body)) { Tag = tag },
+                cancellationToken: cancellationToken);
+
+            Assert.Equal(RemotingTransactionResolution.Unknown, transaction.LocalTransactionResolution);
+            Assert.Equal(RemotingSendStatus.SendOk, transaction.SendResult.Status);
+
+            var checkedTransaction = await checkedMessage.Task.WaitAsync(deadline.Token);
+            Assert.Equal(scope.Topic, checkedTransaction.Topic);
+            Assert.Equal(tag, checkedTransaction.Tag);
+            Assert.Equal(body, Encoding.UTF8.GetString(checkedTransaction.Body));
+            Assert.Equal(transaction.SendResult.MessageId, checkedTransaction.MessageId);
+            Assert.False(string.IsNullOrWhiteSpace(checkedTransaction.TransactionId));
+
+            var deliveredMessageId = await delivered.Task.WaitAsync(deadline.Token);
+            Assert.NotEmpty(deliveredMessageId);
         }
         finally
         {

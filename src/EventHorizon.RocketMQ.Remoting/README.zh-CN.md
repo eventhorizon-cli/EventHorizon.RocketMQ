@@ -92,6 +92,7 @@ builder.Services.AddRocketMQRemoting(options =>
 | `NamesrvAddr` | 一个或多个以分号分隔的 NameServer 地址。 |
 | `Namespace` | 为一个租户或环境限定主题和消费组。 |
 | `RequestTimeout` | 限制普通 NameServer 和 Broker 请求的耗时。 |
+| `HeartbeatBrokerInterval` | Broker 心跳间隔，默认 30 秒。Producer 启动并发现路由后，即使没有新消息，也会继续发送心跳，直到停止。 |
 | `AccessKey`、`AccessSecret`、`SecurityToken` | 配置 ACL 凭据。AccessKey 和 AccessSecret 必须同时提供。 |
 | `UseTLS` | 为 NameServer 和 Broker 连接启用 TLS。 |
 | `ConfigureLegacySslOptions` | 自定义信任设置、客户端证书、吊销检查、协议或 SNI。 |

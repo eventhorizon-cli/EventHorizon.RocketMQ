@@ -82,7 +82,9 @@ Rebalance service。
 heartbeat 属于逻辑 group session，而不属于物理 `RemotingClient`：活跃的 Push 或 LitePull 会在初始和周期协调时，
 经由分配给自己的 Client 发送心跳。LitePull 在拥有订阅或手工分配队列后开始这项维护。因此共享 Client 可以维护多个
 不同 group，而同组的隔离成员会分别维护自己的 Broker membership。低层 PULL 与 POP 操作只由 LitePull 和 Push
-内部使用，不会形成额外的公开角色或 group session；Producer 则维护自己的 producer heartbeat 生命周期。
+内部使用，不会形成额外的公开角色或 group session。Producer 每次启动都会创建一个 `ProducerHeartbeatSession`，
+由它记录操作中发现的 Master Broker、定期发送心跳，并在停止时等待心跳请求结束后注销。这个协作者只属于
+本次运行，不注册为 DI 服务。生命周期操作串行执行，上一轮注销完成后才能开始下一轮运行。
 
 Push 与 LitePull 各自在每次启动的 run 中保留队列分配决策。两者共享的经典消费组协议 wire 操作由无状态的
 `RemotingConsumerGroupClient` 负责；由 run 独占的 `RemotingConsumerGroupSession` 保存已知 Broker、subscription

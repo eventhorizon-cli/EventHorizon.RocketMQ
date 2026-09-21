@@ -101,6 +101,71 @@ public sealed class RemotingProducerTests
     }
 
     [Fact]
+    public async Task SendAsync_DiscoveredMasters_UnregistersOnStop()
+    {
+        var unregistered = new List<(string Address, string? Group)>();
+        var remoting = CreateRemotingClientMock((endpoint, request, _, _) =>
+        {
+            if (request.Code == RequestCode.UnregisterClient)
+            {
+                unregistered.Add((endpoint.ToString()!, request.ExtFields["producerGroup"].ToString()));
+            }
+
+            return Task.FromResult(SuccessResponse());
+        });
+        var routes = CreateRouteServiceMock(Route(("broker-a", "127.0.0.1:10911"), ("broker-b", "127.0.0.1:20911")));
+        await using var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+
+        await producer.SendAsync(new Message("orders", [1]), TestContext.Current.CancellationToken);
+        await producer.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["127.0.0.1:10911", "127.0.0.1:20911"],
+            unregistered.Select(value => value.Address).Order(StringComparer.Ordinal));
+        Assert.All(unregistered, value => Assert.Equal("tests", value.Group));
+    }
+
+    [Fact]
+    public async Task StartAsync_PreviousRunUnregisterBlocked_WaitsForCleanup()
+    {
+        var unregisterStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseUnregister = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var remoting = CreateRemotingClientMock(async (_, request, _, _) =>
+        {
+            if (request.Code == RequestCode.UnregisterClient)
+            {
+                unregisterStarted.TrySetResult();
+                await releaseUnregister.Task;
+            }
+
+            return SuccessResponse();
+        });
+        var routes = CreateRouteServiceMock(Route("broker-a", "127.0.0.1:10911"));
+        await using var producer = CreateProducer(remoting.Object, routes.Mock.Object);
+        await producer.StartAsync(TestContext.Current.CancellationToken);
+        await producer.SendAsync(new Message("orders", [1]), TestContext.Current.CancellationToken);
+
+        var stopping = producer.StopAsync(TestContext.Current.CancellationToken).AsTask();
+        try
+        {
+            await unregisterStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var restarting = producer.StartAsync(TestContext.Current.CancellationToken).AsTask();
+
+            Assert.False(restarting.IsCompleted);
+
+            releaseUnregister.TrySetResult();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            await restarting.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            releaseUnregister.TrySetResult();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_ResponseAndRequest_MapsResponseAndEncodesRequest()
     {
         RemotingCommand? captured = null;

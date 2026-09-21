@@ -81,7 +81,10 @@ sends its own heartbeat through its assigned client during initial and periodic 
 maintenance when it has subscriptions or manual queue assignments. A shared client can therefore maintain several
 distinct groups, while isolated same-group members maintain their own Broker membership separately. Low-level PULL
 and POP operations remain internal to LitePull and Push and do not create additional public roles or group sessions.
-Producers maintain their own producer heartbeat lifecycle.
+Each started Producer owns a `ProducerHeartbeatSession` that tracks the Master Brokers discovered by its operations,
+schedules heartbeats, and drains heartbeat requests before unregistering on stop. The session is a per-run
+collaborator, not a DI service. Lifecycle serialization prevents a new run from starting before the previous
+session has finished unregistering.
 
 Push and LitePull keep queue-allocation decisions in their own per-start runs. Their shared classic group wire
 operations are owned by the stateless `RemotingConsumerGroupClient`; a run-owned `RemotingConsumerGroupSession` keeps

@@ -32,7 +32,6 @@ internal sealed class ProducerHeartbeatSession
     private readonly object _stateGate = new();
     private readonly Dictionary<string, BrokerEndpoint> _brokers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BrokerEndpoint> _knownEndpoints = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim _heartbeatGate = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
     private readonly CancellationToken _shutdownToken;
     private readonly Task _heartbeatLoop;
@@ -71,7 +70,7 @@ internal sealed class ProducerHeartbeatSession
             {
                 if (broker.BrokerAddrs.TryGetValue(0, out var address) && !string.IsNullOrWhiteSpace(address))
                 {
-                    RememberBroker(new BrokerEndpoint(broker.BrokerName, address));
+                    RememberBroker(broker.BrokerName, address);
                 }
             }
         }
@@ -80,7 +79,7 @@ internal sealed class ProducerHeartbeatSession
     public async Task EnsureRegisteredAsync(string address, string brokerName, CancellationToken cancellationToken)
     {
         _shutdownToken.ThrowIfCancellationRequested();
-        var broker = new BrokerEndpoint(brokerName, address);
+        BrokerEndpoint broker;
         lock (_stateGate)
         {
             if (_stopping)
@@ -88,7 +87,7 @@ internal sealed class ProducerHeartbeatSession
                 throw new OperationCanceledException("The producer heartbeat session is stopping.", _shutdownToken);
             }
 
-            RememberBroker(broker);
+            broker = RememberBroker(brokerName, address);
         }
 
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownToken);
@@ -104,16 +103,19 @@ internal sealed class ProducerHeartbeatSession
 
         _shutdown.Cancel();
         await _heartbeatLoop.ConfigureAwait(false);
-        // An immediate request/reply heartbeat may still be completing outside the periodic loop.
-        await _heartbeatGate.WaitAsync().ConfigureAwait(false);
-        _heartbeatGate.Release();
-
         BrokerEndpoint[] endpoints;
         lock (_stateGate)
         {
             endpoints = _knownEndpoints.Values.ToArray();
             _brokers.Clear();
             _knownEndpoints.Clear();
+        }
+
+        // Immediate request/reply heartbeats may still be completing outside the periodic loop.
+        foreach (var broker in endpoints)
+        {
+            await broker.HeartbeatGate.WaitAsync().ConfigureAwait(false);
+            broker.HeartbeatGate.Release();
         }
 
         foreach (var broker in endpoints)
@@ -124,10 +126,18 @@ internal sealed class ProducerHeartbeatSession
         _shutdown.Dispose();
     }
 
-    private void RememberBroker(BrokerEndpoint broker)
+    private BrokerEndpoint RememberBroker(string brokerName, string address)
     {
-        _brokers[broker.BrokerName] = broker;
-        _knownEndpoints[broker.Key] = broker;
+        // Reuse endpoint state so route refreshes cannot bypass an in-flight heartbeat.
+        var key = $"{brokerName}|{address}";
+        if (!_knownEndpoints.TryGetValue(key, out var broker))
+        {
+            broker = new BrokerEndpoint(brokerName, address);
+            _knownEndpoints.Add(key, broker);
+        }
+
+        _brokers[brokerName] = broker;
+        return broker;
     }
 
     private async Task RunAsync()
@@ -171,7 +181,7 @@ internal sealed class ProducerHeartbeatSession
 
     private async Task SendHeartbeatAsync(BrokerEndpoint broker, CancellationToken cancellationToken)
     {
-        await _heartbeatGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await broker.HeartbeatGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -187,7 +197,7 @@ internal sealed class ProducerHeartbeatSession
         }
         finally
         {
-            _heartbeatGate.Release();
+            broker.HeartbeatGate.Release();
         }
     }
 
@@ -223,6 +233,6 @@ internal sealed class ProducerHeartbeatSession
 
     private sealed record BrokerEndpoint(string BrokerName, string Address)
     {
-        public string Key => $"{BrokerName}|{Address}";
+        public SemaphoreSlim HeartbeatGate { get; } = new(1, 1);
     }
 }

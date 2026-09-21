@@ -267,6 +267,86 @@ public sealed class RemotingProducerHeartbeatTests
     }
 
     [Fact]
+    public async Task RequestAsync_AnotherBrokerHeartbeatBlocked_CompletesOnHealthyBroker()
+    {
+        var harness = CreateHarness(Route(
+            ("broker-a", "localhost:10911"),
+            ("broker-b", "localhost:20911")));
+        var heartbeatStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHeartbeat = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RemotingRequestHandler? replyHandler = null;
+        harness.Remoting
+            .Setup(value => value.RegisterRequestHandler(
+                RequestCode.PushReplyMessageToClient,
+                It.IsAny<RemotingRequestHandler>()))
+            .Callback<int, RemotingRequestHandler>((_, handler) => replyHandler = handler)
+            .Returns(new NoopRegistration());
+        harness.InvocationHandler = async invocation =>
+        {
+            if (invocation.Request.Code == RequestCode.HeartBeat &&
+                EndpointName(invocation.EndPoint) == "localhost:10911")
+            {
+                heartbeatStarted.TrySetResult();
+                await releaseHeartbeat.Task.WaitAsync(invocation.CancellationToken);
+            }
+
+            if (invocation.Request.Code == RequestCode.SendMessage)
+            {
+                Assert.Equal("localhost:20911", EndpointName(invocation.EndPoint));
+                var properties = MessagePropertyCodec.Deserialize(
+                    Assert.IsType<string>(invocation.Request.ExtFields["properties"]));
+                var callback = new RemotingCommand(RequestCode.PushReplyMessageToClient)
+                {
+                    ExtFields = new Dictionary<string, object>
+                    {
+                        ["topic"] = "orders",
+                        ["sysFlag"] = "0",
+                        ["bornTimestamp"] = "1700000000000",
+                        ["storeTimestamp"] = "1700000000100",
+                        ["properties"] = MessagePropertyCodec.Serialize(new Dictionary<string, string>
+                        {
+                            ["CORRELATION_ID"] = properties["CORRELATION_ID"],
+                            ["UNIQ_KEY"] = "reply-id"
+                        })
+                    },
+                    Body = "reply"u8.ToArray()
+                };
+                Assert.NotNull(replyHandler);
+                var result = await replyHandler(new RemotingRequestContext(
+                    invocation.EndPoint, callback, invocation.CancellationToken));
+                Assert.True(result.IsHandled);
+            }
+
+            return SuccessResponse();
+        };
+        await harness.Producer.StartAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            await harness.Producer.GetPublishMessageQueuesAsync("orders", TestContext.Current.CancellationToken);
+            await harness.Clock.WaitForTimerCountAsync(1, TestContext.Current.CancellationToken);
+            harness.Clock.Advance(TimeSpan.FromSeconds(1));
+            await heartbeatStarted.Task.WaitAsync(TestTimeout, TestContext.Current.CancellationToken);
+
+            var reply = await harness.Producer.RequestAsync(
+                new Message("orders", "request"u8.ToArray()),
+                new RemotingMessageQueue("orders", "broker-b", 0),
+                TestTimeout,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal("reply"u8.ToArray(), reply.Body);
+            Assert.False(releaseHeartbeat.Task.IsCompleted);
+            Assert.Contains(harness.HeartbeatInvocations,
+                invocation => EndpointName(invocation.EndPoint) == "localhost:20911");
+        }
+        finally
+        {
+            releaseHeartbeat.TrySetResult();
+            await harness.Producer.StopAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_UpdatedMasterRoute_HeartbeatsLatestMasterAddress()
     {
         var harness = CreateHarness(

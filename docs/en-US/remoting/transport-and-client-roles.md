@@ -244,9 +244,9 @@ by its Producer operations; the heartbeat loop does not perform additional NameS
 Ordinary sends do not wait for a heartbeat response. A periodic heartbeat failure is logged and retried on
 the next interval without preventing other known Brokers from receiving their heartbeats. Request/reply
 retains its immediate heartbeat before sending because its reply needs the Broker's client-ID-to-channel
-mapping. Each session serializes its heartbeat requests; stopping it cancels and drains those requests
-before unregistering its known endpoints. A later start gets a fresh session, so an old operation cannot
-register targets in a new run.
+mapping. Each session serializes heartbeat requests per Broker endpoint, so a slow Broker does not delay
+immediate registration with another Broker. Stopping cancels and drains those requests before unregistering
+the known endpoints. A later start gets a fresh session, so an old operation cannot register targets in a new run.
 
 Heartbeats and unregister requests are control-plane operations and do not create messaging send spans or
 increment sent-message metrics. All existing Producer send success, cancellation, and failure telemetry

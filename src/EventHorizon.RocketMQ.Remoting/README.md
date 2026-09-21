@@ -93,6 +93,7 @@ Common connection options:
 | `NamesrvAddr` | One or more semicolon-separated NameServer addresses. |
 | `Namespace` | Qualifies topics and consumer groups for one tenant or environment. |
 | `RequestTimeout` | Limits normal NameServer and Broker requests. |
+| `HeartbeatBrokerInterval` | Broker heartbeat interval, defaulting to 30 seconds. Producer heartbeats continue during idle periods after route discovery, until the Producer stops. |
 | `AccessKey`, `AccessSecret`, `SecurityToken` | Configures ACL credentials. The key and secret must be supplied together. |
 | `UseTLS` | Enables TLS for NameServer and Broker connections. |
 | `ConfigureLegacySslOptions` | Customizes trust, client certificates, revocation, protocols, or SNI. |

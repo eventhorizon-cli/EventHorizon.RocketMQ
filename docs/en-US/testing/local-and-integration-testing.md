@@ -88,6 +88,15 @@ exercise a stable live failure path instead of limiting the integration suite to
 transport or persistence failures that the live environment cannot inject reliably remain mandatory deterministic
 unit-test cases; do not replace them with flaky Docker fault injection.
 
+Remoting Producer heartbeat tests use a controllable clock and isolated protocol collaborators to cover target
+discovery, idle renewal, failure isolation, address replacement, and stop/restart ordering. Docker integration tests
+read the real Broker's Producer registry and last-update timestamps to prove registration and renewal without
+additional message sends, then verify unregister on stop. A deliberate unregister on the Producer's own connection
+provides a stable recovery trigger: the next periodic heartbeat must restore its membership.
+A transaction integration case also returns `Unknown` from the local executor, waits for the real Broker to
+invoke the registered transaction checker, commits through that callback, and verifies message delivery.
+It uses the released Broker's normal transaction-check schedule rather than changing the shared fixture.
+
 For example, multi-Broker and multi-queue tests must cover route expansion, exactly-once queue assignment, more
 Consumers than queues, and per-queue scheduling and offset isolation in unit tests. Docker integration tests then
 validate the corresponding real NameServer route, Broker persistence, and coordination between client processes,

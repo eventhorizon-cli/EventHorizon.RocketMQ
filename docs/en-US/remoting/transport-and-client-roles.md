@@ -226,6 +226,32 @@ The Java concurrent path creates consume requests from a newly pulled message li
 ready queue and one-batch-per-turn extraction from `PullProcessQueue` are a .NET scheduling design, not an exact copy of
 the Java data path.
 
+### Producer heartbeat membership
+
+Every started Producer owns a heartbeat session for that run. Successful route lookups from queue discovery,
+standard, selected-queue, batch, one-way, transactional, reply, and recall operations register the discovered
+Master Brokers as heartbeat targets. Later route observations replace a Broker's previous Master address.
+The session sends the standard `HEART_BEAT` command with the logical client ID, namespaced Producer group,
+and an empty Consumer set at `HeartbeatBrokerInterval` (30 seconds by default), including while no messages
+are being sent. Starting without a discovered route creates no Broker membership yet.
+
+This follows the Producer membership behavior of the released Java client at `rocketmq-all-5.5.1`, with
+`apache/rocketmq-client-go` `v2.1.2` as the secondary reference: a Producer-only client heartbeats known
+Masters even without Consumers or request/reply operations. Broker membership enables transaction checks,
+reply delivery, and online-Producer inspection. This client's heartbeat targets follow the routes observed
+by its Producer operations; the heartbeat loop does not perform additional NameServer queries.
+
+Ordinary sends do not wait for a heartbeat response. A periodic heartbeat failure is logged and retried on
+the next interval without preventing other known Brokers from receiving their heartbeats. Request/reply
+retains its immediate heartbeat before sending because its reply needs the Broker's client-ID-to-channel
+mapping. Each session serializes heartbeat requests per Broker endpoint, so a slow Broker does not delay
+immediate registration with another Broker. Stopping cancels and drains those requests before unregistering
+the known endpoints. A later start gets a fresh session, so an old operation cannot register targets in a new run.
+
+Heartbeats and unregister requests are control-plane operations and do not create messaging send spans or
+increment sent-message metrics. All existing Producer send success, cancellation, and failure telemetry
+continues to describe the message operation alone.
+
 ### Read-only Admin and physical message IDs
 
 `IRemotingAdmin` is intentionally a separate, read-only role. It discovers readable queues as
